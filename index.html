@@ -2872,7 +2872,7 @@ function drawMushrooms(now){
     const col = (owner && COLOR_HEX[(owner.colors || [])[0]]) || "#ff5fd1";
     const colDark = darkenHex(col, 0.55);
     const pulse = 0.85 + 0.15 * Math.sin(now / 260);
-    const s = BASE_CELL * 0.5 * pulse; // "un po' piu' grande di una mina"
+    const s = BASE_CELL * 0.62 * pulse; // "un po' piu' grande di una mina" (ingrandito)
 
     // Gambo chiaro, leggermente svasato alla base.
     ctx.fillStyle = "#efe8da";
@@ -5157,7 +5157,7 @@ function onGameEvent(msg){
       // viene disegnato ad ogni frame leggendo currSnapshot.bushes
       // (autorita' server).
       bushCellBirth[msg.id + ":" + msg.x + "," + msg.y] = now;
-      if (msg.player === myId) showToast("Arbusto spinoso piantato! Crescera' di una casella al minuto: chiunque lo tocchi muore, solo bombolone, mongolfiera e scudo possono distruggerlo.");
+      if (msg.player === myId) showToast("Arbusto spinoso piantato! Si espandera' tutto intorno a se' ogni minuto: chiunque lo tocchi muore, solo bombolone, mongolfiera e scudo possono distruggerlo.");
       playBlobPlace();
       break;
     }

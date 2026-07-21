@@ -23,6 +23,15 @@ DEFAULT_PORT = 8765
 # requestAnimationFrame.
 TICK_HZ = 60
 TICK_DT = 1.0 / TICK_HZ
+# La logica di gioco (movimento, collisioni, timer dei bonus) gira sempre a
+# TICK_HZ pieno per restare precisa e reattiva. Lo stato COMPLETO (tutti gli
+# oggetti permanenti: torrette, mortai, pet, arbusti con le loro caselle,
+# Tesla, mine, ecc.) e' pero' molto piu' pesante da ricostruire/serializzare
+# e cresce col passare del round; per evitare che il gioco rallenti via via
+# che si sbloccano ed usano piu' gadget, lo si invia solo ogni N tick invece
+# che ad ogni tick. 2 = 30 volte al secondo, ancora fluidissimo per un gioco
+# a caselle come questo.
+STATE_BROADCAST_EVERY_N_TICKS = 2
 
 COUNTDOWN_SECONDS = 15
 ROUND_SECONDS = 1200  # durata di un round: 20 minuti
@@ -370,8 +379,9 @@ TERRITORY_TILES_REQUIRED = 20        # caselle nuove da calpestare per completar
 # morire, vedi update_bushes). Smette di crescere solo quando e' stato
 # eliminato DEL TUTTO (zero caselle rimaste).
 BUSH_THRESHOLD = 2800
-BUSH_GROW_INTERVAL_SECONDS = 60.0   # una nuova casella al minuto, per sempre
+BUSH_GROW_INTERVAL_SECONDS = 60.0   # un'espansione ad anello al minuto
 BUSH_HIT_RANGE = 0.6                # stessa distanza d'impatto del muro di spunzoni (frazione di cella, per asse)
+BUSH_MAX_EXPANSIONS = 4             # numero massimo di anelli di crescita (1 casella -> 3x3 -> 5x5 -> 7x7 -> 9x9, poi si ferma)
 
 # ---- vite extra ricorrenti ----
 # OGNI LIVES_EVERY_POINTS punti (1600, 3200, 4800, ...) si guadagnano
@@ -401,7 +411,7 @@ LIVES_EVERY_AMOUNT = 3
 # All'esplosione il client disegna il classico fungo atomico gassoso, nel
 # colore del proprietario, per MUSHROOM_CLOUD_SECONDS (2 secondi).
 MUSHROOM_THRESHOLD = 3000
-MUSHROOM_BLAST_RADIUS_CELLS = 10        # raggio di distruzione E dell'area avvelenata (caselle, Manhattan)
+MUSHROOM_BLAST_RADIUS_CELLS = 12        # raggio di distruzione E dell'area avvelenata (caselle, Manhattan)
 MUSHROOM_POISON_DURATION_SECONDS = 60.0 # l'area resta avvelenata per 1 minuto
 MUSHROOM_VISIBILITY_RANGE = 3           # visibile solo entro 3 caselle (Chebyshev); il proprietario lo vede sempre
 MUSHROOM_CLOUD_SECONDS = 2.0            # durata della nube a fungo (client)

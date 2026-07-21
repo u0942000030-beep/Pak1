@@ -41,7 +41,7 @@ from websockets.datastructures import Headers
 from websockets.http11 import Response
 
 from common import (
-    TICK_DT, COUNTDOWN_SECONDS, ROUND_SECONDS,
+    TICK_DT, STATE_BROADCAST_EVERY_N_TICKS, COUNTDOWN_SECONDS, ROUND_SECONDS,
     MAX_PLAYERS, MIN_PLAYERS, NORMAL_SPEED, ASSASSIN_SPEED_MULT,
     COLORS, CHARACTERS, DIRECTIONS, is_wall, ROOM_CODE_CHARS, SECONDARY_ONLY_COLORS,
     pick_random_maze, choose_power_pellet_cells, bfs_path,
@@ -74,7 +74,7 @@ from common import (
     SPIKE_WALL_THRESHOLD, SPIKE_WALL_HIT_RANGE,
     TESLA_THRESHOLD, TESLA_FIRE_INTERVAL_SECONDS, TESLA_RANGE_CELLS,
     TERRITORY_TRAP_THRESHOLD, TERRITORY_TILES_REQUIRED,
-    BUSH_THRESHOLD, BUSH_GROW_INTERVAL_SECONDS, BUSH_HIT_RANGE,
+    BUSH_THRESHOLD, BUSH_GROW_INTERVAL_SECONDS, BUSH_HIT_RANGE, BUSH_MAX_EXPANSIONS,
     LIVES_EVERY_POINTS, LIVES_EVERY_AMOUNT,
     MUSHROOM_THRESHOLD, MUSHROOM_BLAST_RADIUS_CELLS,
     MUSHROOM_POISON_DURATION_SECONDS, MUSHROOM_VISIBILITY_RANGE,
@@ -397,6 +397,14 @@ class Room:
         self.timer_left = 0.0
         self.loop_task = None
         self.last_result = None
+        # Contatore dei tick di gioco, usato per limitare la frequenza di
+        # invio dello stato COMPLETO (vedi STATE_BROADCAST_EVERY_N_TICKS in
+        # common.py): il movimento/la logica restano a TICK_HZ pieno, ma lo
+        # snapshot pesante (con tutti gli oggetti permanenti: torrette,
+        # mortai, pet, arbusti, Tesla, ecc.) viene ricostruito e inviato
+        # meno spesso per non far crescere il costo di CPU/rete col passare
+        # del round, quando i giocatori sbloccano ed usano piu' gadget.
+        self._snapshot_tick = 0
         # La vittoria e' "ultimo giocatore vivo": per decidere il titolo di
         # fine round teniamo traccia di com'e' avvenuta l'ultima eliminazione.
         self.last_kill = None
@@ -3551,9 +3559,12 @@ class Room:
         tutto il round) un piccolo arbusto spinoso, del colore del
         proprietario, nella cella corrente: da quel momento l'arbusto
         UCCIDE AL CONTATTO qualsiasi avversario (vedi update_bushes) e
-        ogni BUSH_GROW_INTERVAL_SECONDS (1 minuto) i suoi rami si
-        espandono occupando una nuova casella adiacente scelta a caso,
-        inghiottendo anche i muri, per sempre, finche' l'arbusto non viene
+        ogni BUSH_GROW_INTERVAL_SECONDS (1 minuto) si espande TUTTO
+        INTORNO A SE', occupando in un colpo solo le caselle adiacenti
+        (anche in diagonale) a quelle gia' occupate (1 casella -> 3x3 ->
+        5x5 -> ...), inghiottendo anche i muri, fino a un massimo di
+        BUSH_MAX_EXPANSIONS anelli di crescita, dopodiche' smette di
+        espandersi ma resta comunque letale finche' l'arbusto non viene
         eliminato del tutto (bombolone, bomba di mongolfiera o corazza).
 
         Se il giocatore e' intrappolato dalla trappola di un avversario,
@@ -3565,8 +3576,10 @@ class Room:
             "id": uuid.uuid4().hex[:8],
             "owner": player.id,
             "cells": [(player.x, player.y)],
-            # Conto alla rovescia per la PROSSIMA casella di crescita.
+            # Conto alla rovescia per la PROSSIMA espansione ad anello.
             "grow_left": BUSH_GROW_INTERVAL_SECONDS,
+            # Quante espansioni ad anello ha gia' fatto (max BUSH_MAX_EXPANSIONS).
+            "expansions": 0,
         }
         self.bushes.append(bush)
         self.push_event({
@@ -3583,32 +3596,38 @@ class Room:
         }
 
     def grow_bush(self, b):
-        """Fa crescere l'arbusto di UNA casella: sceglie a caso una cella
-        adiacente (4 direzioni) a una qualsiasi delle celle gia' occupate,
-        non ancora occupata dall'arbusto stesso e dentro il bordo esterno
-        della mappa. La crescita e' CIECA rispetto ai muri: l'arbusto li
+        """Fa espandere l'arbusto TUTTO INTORNO A SE' in un colpo solo:
+        ogni casella gia' occupata si allarga simultaneamente sulle 8
+        caselle adiacenti (comprese le diagonali) non ancora occupate e
+        dentro il bordo esterno della mappa, formando un anello
+        concentrico che si allarga di volta in volta (1 casella -> 3x3 ->
+        5x5 -> ...). La crescita e' CIECA rispetto ai muri: l'arbusto li
         inghiotte (la cella-muro resta invalicabile sotto i rami, ma viene
         ricoperta; se poi quella cella viene potata, il muro riappare).
-        L'evento pubblico bush_grow permette al client di animare la
-        nuova casella con una crescita graduale, mai all'improvviso."""
+        Per ogni nuova casella viene comunque emesso un evento bush_grow
+        separato (stesso schema di prima), cosi' il client continua ad
+        animare la crescita casella per casella invece che di colpo."""
         occupied = set(b["cells"])
-        candidates = set()
+        new_cells = set()
         for (cx, cy) in b["cells"]:
-            for (dx, dy) in DIRECTIONS.values():
-                nx, ny = cx + dx, cy + dy
-                # Il bordo esterno (cornice della mappa) resta intoccabile:
-                # inghiottirlo aprirebbe "buchi" verso il nulla.
-                if 1 <= nx <= self.maze_w - 2 and 1 <= ny <= self.maze_h - 2 \
-                        and (nx, ny) not in occupied:
-                    candidates.add((nx, ny))
-        if not candidates:
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    if dx == 0 and dy == 0:
+                        continue
+                    nx, ny = cx + dx, cy + dy
+                    # Il bordo esterno (cornice della mappa) resta intoccabile:
+                    # inghiottirlo aprirebbe "buchi" verso il nulla.
+                    if 1 <= nx <= self.maze_w - 2 and 1 <= ny <= self.maze_h - 2 \
+                            and (nx, ny) not in occupied:
+                        new_cells.add((nx, ny))
+        if not new_cells:
             return
-        nx, ny = random.choice(sorted(candidates))
-        b["cells"].append((nx, ny))
-        self.push_event({
-            "kind": "bush_grow", "id": b["id"], "x": nx, "y": ny,
-            "owner": b["owner"], "cells": len(b["cells"]),
-        })
+        for (nx, ny) in sorted(new_cells):
+            b["cells"].append((nx, ny))
+            self.push_event({
+                "kind": "bush_grow", "id": b["id"], "x": nx, "y": ny,
+                "owner": b["owner"], "cells": len(b["cells"]),
+            })
 
     def prune_bush_cells(self, b, cells, by, cause):
         """Rimuove dall'arbusto le celle indicate (potatura da bombolone,
@@ -3636,9 +3655,10 @@ class Room:
     def update_bushes(self):
         """Fa avanzare, ogni tick, tutti gli arbusti spinosi piazzati
         (bonus 2800 punti):
-          - scala il conto alla rovescia della crescita: ogni minuto una
-            nuova casella adiacente scelta a caso (vedi grow_bush), per
-            sempre, finche' l'arbusto esiste;
+          - scala il conto alla rovescia della crescita: ogni minuto
+            un'espansione ad anello tutto intorno a se' (vedi grow_bush),
+            fino a un massimo di BUSH_MAX_EXPANSIONS volte, dopodiche'
+            smette di crescere ma resta comunque letale;
           - uccide all'impatto QUALSIASI giocatore avversario che tocca
             una casella dell'arbusto (via kill_player, causa "bush"):
             stesso contatto frazionario del muro di spunzoni. Il ninja
@@ -3654,10 +3674,12 @@ class Room:
         if not self.bushes:
             return
         for b in list(self.bushes):
-            b["grow_left"] -= TICK_DT
-            if b["grow_left"] <= 0:
-                b["grow_left"] += BUSH_GROW_INTERVAL_SECONDS
-                self.grow_bush(b)
+            if b.get("expansions", 0) < BUSH_MAX_EXPANSIONS:
+                b["grow_left"] -= TICK_DT
+                if b["grow_left"] <= 0:
+                    b["grow_left"] += BUSH_GROW_INTERVAL_SECONDS
+                    self.grow_bush(b)
+                    b["expansions"] = b.get("expansions", 0) + 1
             owner = b["owner"]
             cells = set(b["cells"])
             # Giocatori avversari all'impatto (posizione frazionaria
@@ -4504,9 +4526,17 @@ class Room:
 
             await self.drain_events()
             await self.drain_private_events()
-            await self.broadcast(self.state_snapshot())
-
-        await asyncio.sleep(8)
+            # Gli eventi (uccisioni, esplosioni, suoni...) restano in tempo
+            # reale ad ogni tick perche' sono leggeri e vanno ad effetto
+            # immediato. Lo snapshot COMPLETO invece e' pesante (cresce con
+            # tutti i gadget permanenti piazzati durante il round) e non ha
+            # bisogno di essere ricostruito/inviato 60 volte al secondo per
+            # sembrare fluido: lo si manda ogni STATE_BROADCAST_EVERY_N_TICKS
+            # tick per tenere sotto controllo CPU e banda man mano che la
+            # partita si riempie di torrette, mortai, arbusti, ecc.
+            self._snapshot_tick += 1
+            if self._snapshot_tick % STATE_BROADCAST_EVERY_N_TICKS == 0:
+                await self.broadcast(self.state_snapshot())
         if self.code in ROOMS:
             self.reset_to_lobby()
             await self.broadcast_lobby()
