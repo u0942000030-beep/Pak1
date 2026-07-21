@@ -657,6 +657,7 @@ const BONUS_STEPS = [
 const MISSILE_SPEED_MULT = 1.1; // deve restare identica a MISSILE_SPEED_MULT in common.py
 const TRAP_DURATION_SECONDS = 3; // deve restare identica a TRAP_DURATION_SECONDS in common.py
 const MINE_VISIBILITY_RANGE = 5; // deve restare identica a MINE_VISIBILITY_RANGE in common.py
+const MUSHROOM_VISIBILITY_RANGE = 3; // deve restare identica a MUSHROOM_VISIBILITY_RANGE in common.py: il fungo atomico si nasconde da piu' lontano di una mina
 const SUPERBOMB_FUSE_SECONDS = 2.0;   // deve restare identica a SUPERBOMB_FUSE_SECONDS in common.py
 const SUPERBOMB_RADIUS_CELLS = 8;     // deve restare identica a SUPERBOMB_RADIUS_CELLS in common.py
 const BALLOON_BOMB_RADIUS_CELLS = 4;  // deve restare identica a BALLOON_BOMB_RADIUS_CELLS in common.py
@@ -869,6 +870,24 @@ let myTerritoryTiles = [];      // [[x,y], ...] celle che HO marcato finora
 let myTerritoryMarking = false; // true durante la mia fase di selezione
 let myTerritoryReady = false;   // true quando la mia selezione e' completa, in attesa della 2a pressione
 let territoryBursts = [];       // {tiles:[[x,y],...], color, start} spunzoni erotti, visibili a tutti
+
+// ---- bonus 2800 punti: arbusto spinoso (tasto "1", DOPO la trappola territoriale) ----
+// Momento di "nascita" di ogni casella dell'arbusto (chiave "id:x,y" ->
+// timestamp): serve SOLO all'animazione di crescita GRADUALE dei rami
+// (mai all'improvviso, come richiesto). Le caselle in se' arrivano ad
+// ogni frame da currSnapshot.bushes (autorita' server): gli eventi
+// bush_place/bush_grow registrano qui il timestamp di nascita, cosi' la
+// nuova casella "sboccia" partendo da zero invece di comparire di colpo.
+let bushCellBirth = {};
+const BUSH_GROW_ANIM_MS = 1400; // durata dello sbocciare di una casella
+
+// ---- bonus 3000 punti: fungo atomico (tasto "1", DOPO l'arbusto spinoso) ----
+// Nubi a fungo in corso ({x, y, color, start}): il classico fungo atomico
+// gassoso, nel colore di chi ha piazzato l'ordigno, disegnato per
+// NUKE_CLOUD_MS (2 secondi, = MUSHROOM_CLOUD_SECONDS server) dopo ogni
+// esplosione (evento mushroom_explode).
+let nukeClouds = [];
+const NUKE_CLOUD_MS = 2000;
 let swirls = [];           // effetti di teletrasporto in corso: {x,y,start,color}
 let themeFx = [];          // particelle atmosferiche a tema della mappa corrente
 let themeFxKind = null;    // tipo di effetto della mappa corrente (embers/snow/...)
@@ -1050,6 +1069,22 @@ function playSuperbombExplode(){
 // Lancio della mongolfiera (bonus 1600 punti, tasto 0 dopo il bombolone):
 // un "fiato" caldo e crescente, come il bruciatore che gonfia il pallone e
 // lo fa staccare da terra.
+// Piazzamento del fungo atomico: piccolo "pop" organico, volutamente
+// innocuo e discreto (e' una trappola nascosta, non deve farsi notare).
+function playMushroomPlace(){
+  tone(300, 0.06, "sine", 0.10, 0);
+  tone(430, 0.08, "sine", 0.10, 0.07);
+}
+// GROSSO BOATO del fungo atomico: il piu' devastante del gioco (raggio 10
+// caselle), piu' grosso perfino del bombolone: doppio strato di rumore
+// bianco lungo e tre bassi profondi a scalare, come un tuono che rotola.
+function playNukeBoom(){
+  noiseBurst(0.9, 0.34);
+  noiseBurst(0.5, 0.22);
+  tone(60, 0.7, "sine", 0.30, 0);
+  tone(45, 0.9, "sine", 0.26, 0.12);
+  tone(34, 1.1, "sine", 0.22, 0.28);
+}
 function playBalloonLaunch(){
   sweep(140, 320, 0.4, "sine", 0.12);
   tone(220, 0.12, "square", 0.08, 0.1);
@@ -2811,6 +2846,113 @@ function drawMines(now){
   ctx.restore();
 }
 
+// Fungo atomico (bonus 3000 punti, tasto 1 VERO ultimo gradino della
+// catena, dopo l'arbusto spinoso): un piccolo fungo dalla classica forma
+// "cappella + gambo" (come l'emoji), nel colore del proprietario, un po'
+// piu' grande di una mina. Come le mine e' una trappola nascosta: gli
+// avversari lo vedono solo entro MUSHROOM_VISIBILITY_RANGE caselle
+// (Chebyshev, ancora piu' corta di quella delle mine); il proprietario lo
+// vede sempre. Se calpestato esplode (server-authoritative, vedi
+// update_mushrooms/explode_mushroom in main.py).
+function drawMushrooms(now){
+  const all = (currSnapshot && currSnapshot.mushrooms) || [];
+  const me = findPlayer(currSnapshot, myId);
+  const list = all.filter(function(m){
+    if (m.owner === myId) return true;
+    if (!me) return false;
+    const dist = Math.max(Math.abs(m.x - me.x), Math.abs(m.y - me.y));
+    return dist <= MUSHROOM_VISIBILITY_RANGE;
+  });
+  if (!list.length) return;
+  ctx.save();
+  list.forEach(function(m){
+    const cx = m.x * BASE_CELL + BASE_CELL / 2;
+    const cy = m.y * BASE_CELL + BASE_CELL / 2;
+    const owner = findPlayer(currSnapshot, m.owner);
+    const col = (owner && COLOR_HEX[(owner.colors || [])[0]]) || "#ff5fd1";
+    const colDark = darkenHex(col, 0.55);
+    const pulse = 0.85 + 0.15 * Math.sin(now / 260);
+    const s = BASE_CELL * 0.5 * pulse; // "un po' piu' grande di una mina"
+
+    // Gambo chiaro, leggermente svasato alla base.
+    ctx.fillStyle = "#efe8da";
+    ctx.strokeStyle = "#6b6357";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(cx - s * 0.16, cy - s * 0.05);
+    ctx.lineTo(cx - s * 0.24, cy + s * 0.42);
+    ctx.quadraticCurveTo(cx, cy + s * 0.55, cx + s * 0.24, cy + s * 0.42);
+    ctx.lineTo(cx + s * 0.16, cy - s * 0.05);
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+
+    // Cappella a cupola nel colore del proprietario.
+    ctx.fillStyle = col;
+    ctx.strokeStyle = colDark;
+    ctx.lineWidth = 1.4;
+    ctx.beginPath();
+    ctx.arc(cx, cy - s * 0.02, s * 0.5, Math.PI, 0);
+    ctx.quadraticCurveTo(cx + s * 0.5, cy + s * 0.14, cx + s * 0.34, cy + s * 0.14);
+    ctx.lineTo(cx - s * 0.34, cy + s * 0.14);
+    ctx.quadraticCurveTo(cx - s * 0.5, cy + s * 0.14, cx - s * 0.5, cy - s * 0.02);
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+
+    // Puntini bianchi sulla cappella (come l'emoji del fungo).
+    ctx.fillStyle = "#fff";
+    ctx.beginPath(); ctx.arc(cx - s * 0.2, cy - s * 0.16, s * 0.09, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(cx + s * 0.14, cy - s * 0.26, s * 0.07, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(cx + s * 0.3, cy - s * 0.04, s * 0.06, 0, Math.PI * 2); ctx.fill();
+  });
+  ctx.restore();
+}
+
+// Nube a fungo atomico (2 secondi, colore del proprietario): gambo di gas
+// che sale dall'epicentro e cappella tondeggiante che si allarga in cima,
+// il tutto sfumando via via. Deterministica nel tempo (nessun random per
+// frame), disegnata SOPRA tutto il resto come le altre esplosioni.
+function drawNukeClouds(now){
+  nukeClouds = nukeClouds.filter(function(n){ return now - n.start < NUKE_CLOUD_MS; });
+  if (!nukeClouds.length) return;
+  ctx.save();
+  nukeClouds.forEach(function(n){
+    const t = (now - n.start) / NUKE_CLOUD_MS; // 0 -> 1
+    const px = n.x * BASE_CELL + BASE_CELL / 2;
+    const py = n.y * BASE_CELL + BASE_CELL / 2;
+    const rise = BASE_CELL * 4.2 * Math.min(1, t * 1.6);  // quanto e' salita la cappella
+    const fade = t < 0.15 ? t / 0.15 : (1 - Math.max(0, (t - 0.55)) / 0.45);
+    const capR = BASE_CELL * (1.1 + 2.2 * t);
+
+    // Gambo: colonna di sbuffi sovrapposti dal suolo alla cappella.
+    ctx.fillStyle = n.color;
+    for (let i = 0; i < 6; i++){
+      const f = i / 5;
+      const gy = py - rise * f;
+      const gr = BASE_CELL * (0.55 + 0.35 * Math.sin(f * Math.PI)) * (0.8 + 0.5 * t);
+      ctx.globalAlpha = 0.28 * fade * (1 - f * 0.25);
+      ctx.beginPath(); ctx.arc(px, gy, gr, 0, Math.PI * 2); ctx.fill();
+    }
+
+    // Cappella: grappolo di sbuffi tondi in cima, che si allarga.
+    const top = py - rise;
+    for (let k = 0; k < 7; k++){
+      const a = (k / 7) * Math.PI * 2;
+      const ox = Math.cos(a) * capR * 0.55;
+      const oy = Math.sin(a) * capR * 0.28 - capR * 0.1;
+      ctx.globalAlpha = 0.30 * fade;
+      ctx.beginPath(); ctx.arc(px + ox, top + oy, capR * 0.5, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.globalAlpha = 0.4 * fade;
+    ctx.beginPath(); ctx.arc(px, top - capR * 0.15, capR * 0.55, 0, Math.PI * 2); ctx.fill();
+
+    // Nucleo incandescente bianco al centro della cappella, solo
+    // all'inizio (il lampo dell'esplosione che si spegne salendo).
+    ctx.globalAlpha = Math.max(0, 0.7 - t * 1.6);
+    ctx.fillStyle = "#fff";
+    ctx.beginPath(); ctx.arc(px, top, capR * 0.3, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = n.color;
+  });
+  ctx.restore();
+}
+
 // Torretta automatica permanente (bonus 600 punti): a differenza delle
 // mine e' visibile a TUTTI (e' un piazzamento permanente, non una trappola
 // nascosta). Disegnata come un piccolo "cannoncino" fisso con un nucleo
@@ -3222,12 +3364,9 @@ function drawSpikeWalls(now){
     // resta ben solido e leggibile, solo un filo meno opaco di un muro
     // normale della mappa). Negli ultimi 5 secondi lampeggia sbiadendo
     // ulteriormente, per avvisare che sta per sgretolarsi.
-    let alpha = 0.86;
-    if (w.left <= 5){
-      const blink = Math.floor(now / 160) % 2 === 0;
-      alpha = blink ? 0.8 : 0.42;
-    }
-    ctx.globalAlpha = alpha;
+    // PERMANENTE: niente piu' lampeggio di fine durata, il muro resta in
+    // piedi per tutto il round (solo Tesla e fungo atomico lo abbattono).
+    ctx.globalAlpha = 0.86;
 
     // Spunzoni acuminati sulle superfici visibili: 3 punte per lato,
     // triangoli grigio-pietra con contorno scuro che sporgono FUORI dal
@@ -3317,6 +3456,112 @@ function drawSpikeWalls(now){
       ctx.lineTo(cx + i * 1.6 * s + 0.5 * s, cy + 3.4 * s);
       ctx.stroke();
     }
+  });
+  ctx.restore();
+}
+
+// Arbusto spinoso (bonus 2800 punti, tasto 1 vero ultimo gradino della
+// catena, dopo la trappola territoriale): un cespuglio di rovi nel colore
+// del proprietario che cresce di una casella al minuto, per sempre, e
+// uccide al contatto (server-authoritative, vedi try_place_bush/
+// grow_bush/update_bushes in main.py). Ogni casella e' un intreccio di 6
+// rami spinosi disegnati con curve pseudo-casuali ma DETERMINISTICHE
+// (seme = coordinate della cella, cosi' tutti i client vedono lo stesso
+// arbusto e i rami non "ballano" tra un frame e l'altro), che ondeggiano
+// piano come mossi dal vento. Le caselle nuove SBOCCIANO gradualmente
+// (scala 0 -> 1 in BUSH_GROW_ANIM_MS, ease-out) invece di comparire di
+// colpo, come richiesto. I rami vengono disegnati SOPRA i muri della
+// mappa: e' cosi' che l'arbusto "inghiotte" visivamente i muri che
+// ricopre crescendo.
+function bushCellRand(ix, iy, salt){
+  // Piccolo hash deterministico cella -> [0,1): stessi rami per tutti.
+  let h = (ix * 73856093) ^ (iy * 19349663) ^ ((salt || 0) * 83492791);
+  h = (h ^ (h >> 13)) >>> 0;
+  h = (h * 2654435761) >>> 0;
+  return (h % 100000) / 100000;
+}
+function drawBushes(now){
+  const list = (currSnapshot && currSnapshot.bushes) || [];
+  if (!list.length) return;
+  ctx.save();
+  ctx.lineCap = "round";
+  list.forEach(function(b){
+    const owner = findPlayer(currSnapshot, b.owner);
+    const col = (owner && COLOR_HEX[(owner.colors || [])[0]]) || "#33ff77";
+    const colDark = darkenHex(col, 0.45);
+    const colDarker = darkenHex(col, 0.72);
+    (b.cells || []).forEach(function(c){
+      const ix = c[0], iy = c[1];
+      const key = b.id + ":" + ix + "," + iy;
+      if (!(key in bushCellBirth)){
+        // Cella mai vista: chi entra a partita in corso (o la prima cella
+        // se l'evento e' andato perso) la vede gia' cresciuta del tutto.
+        bushCellBirth[key] = now - BUSH_GROW_ANIM_MS;
+      }
+      const t = Math.min(1, (now - bushCellBirth[key]) / BUSH_GROW_ANIM_MS);
+      const grow = 1 - Math.pow(1 - t, 3); // ease-out: sboccia piano
+      if (grow <= 0.02) return;
+      const cx = ix * BASE_CELL + BASE_CELL / 2;
+      const cy = iy * BASE_CELL + BASE_CELL / 2;
+      const seed = bushCellRand(ix, iy, 1);
+      const sway = Math.sin(now / 750 + seed * 6.283) * 0.06;
+
+      // Ombra/terriccio alla base: ancora il cespuglio alla casella.
+      ctx.globalAlpha = 0.5 * grow;
+      ctx.fillStyle = colDarker;
+      ctx.beginPath();
+      ctx.ellipse(cx, cy + BASE_CELL * 0.12, BASE_CELL * 0.34 * grow, BASE_CELL * 0.2 * grow, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.globalAlpha = 1;
+
+      // 6 rami spinosi che si aprono a ventaglio e si intrecciano con
+      // quelli delle celle vicine: ogni ramo e' una curva quadratica con
+      // angolo/lunghezza pseudo-casuali (ma fissi per cella), disegnata
+      // due volte: sotto piu' spessa e scura, sopra sottile nel colore
+      // pieno del proprietario, per dare volume.
+      for (let k = 0; k < 6; k++){
+        const rA = bushCellRand(ix, iy, 10 + k);
+        const rL = bushCellRand(ix, iy, 20 + k);
+        const rB = bushCellRand(ix, iy, 30 + k);
+        const ang = (k / 6) * Math.PI * 2 + rA * 0.9 + sway;
+        const len = BASE_CELL * (0.34 + 0.24 * rL) * grow;
+        const bx = cx + Math.cos(ang + (rB - 0.5) * 1.4) * len * 0.55;
+        const by = cy + Math.sin(ang + (rB - 0.5) * 1.4) * len * 0.55;
+        const tx = cx + Math.cos(ang) * len;
+        const ty = cy + Math.sin(ang) * len;
+        ctx.strokeStyle = colDark;
+        ctx.lineWidth = Math.max(1.5, BASE_CELL * 0.09 * grow);
+        ctx.beginPath(); ctx.moveTo(cx, cy); ctx.quadraticCurveTo(bx, by, tx, ty); ctx.stroke();
+        ctx.strokeStyle = col;
+        ctx.lineWidth = Math.max(1, BASE_CELL * 0.045 * grow);
+        ctx.beginPath(); ctx.moveTo(cx, cy); ctx.quadraticCurveTo(bx, by, tx, ty); ctx.stroke();
+        // Spine: due aculei per ramo, perpendicolari, a 1/3 e 2/3 della
+        // lunghezza (chiaro quasi bianco, come punte affilate).
+        ctx.strokeStyle = "#e8e8e2";
+        ctx.lineWidth = Math.max(1, BASE_CELL * 0.03);
+        for (let sfrac = 1; sfrac <= 2; sfrac++){
+          const f = sfrac / 3;
+          const px = cx + (tx - cx) * f + (bx - cx) * 0.2 * (1 - f);
+          const py = cy + (ty - cy) * f + (by - cy) * 0.2 * (1 - f);
+          const side = (sfrac + k) % 2 ? 1 : -1;
+          const sl = BASE_CELL * 0.09 * grow;
+          ctx.beginPath();
+          ctx.moveTo(px, py);
+          ctx.lineTo(px + Math.cos(ang + side * Math.PI / 2) * sl,
+                     py + Math.sin(ang + side * Math.PI / 2) * sl);
+          ctx.stroke();
+        }
+      }
+
+      // Nocciolo centrale: piccolo bulbo scuro con bordo nel colore
+      // pieno, da cui partono tutti i rami.
+      ctx.fillStyle = colDarker;
+      ctx.strokeStyle = col;
+      ctx.lineWidth = Math.max(1, BASE_CELL * 0.035);
+      ctx.beginPath();
+      ctx.arc(cx, cy, BASE_CELL * 0.14 * grow, 0, Math.PI * 2);
+      ctx.fill(); ctx.stroke();
+    });
   });
   ctx.restore();
 }
@@ -4224,12 +4469,14 @@ function renderLoop(now){
   drawThemeFx(now);
   drawPlayers(currSnapshot.players, now);
   drawMines(now);
+  drawMushrooms(now);
   drawPoisonZones(now);
   drawTurrets(now);
   drawPets(now);
   drawMortars(now);
   drawSuperbombs(now);
   drawSpikeWalls(now);
+  drawBushes(now);
   drawTeslas(now);
   drawBalloons(now);
   drawBlobs(now);
@@ -4242,6 +4489,7 @@ function renderLoop(now){
   drawTerritoryBursts(now);
   drawExplosions(now);
   drawShockwaves(now);
+  drawNukeClouds(now);
   drawSkyBolts(now);
   drawSwirls(now);
 }
@@ -4312,6 +4560,8 @@ function onState(msg){
     swirls = [];
     teslaBolts = [];
     territoryBursts = [];
+    bushCellBirth = {};
+    nukeClouds = [];
     myTerritoryTiles = [];
     myTerritoryMarking = false;
     myTerritoryReady = false;
@@ -4704,8 +4954,11 @@ function onGameEvent(msg){
         balloon:      ["MONGOLFIERA SBLOCCATA!", "vaga sulla mappa e sgancia bombe \u00b7 premi 1 (dopo il bombolone) per farla librare"],
         blob:         ["BLOB SBLOCCATO!", "blocca la strada e mangia chi passa \u00b7 premi 1 (dopo la mongolfiera) per piazzarlo \u00b7 si rimuove solo sparandogli"],
         blob_alive:   ["BLOB VIVO SBLOCCATO!", "premi 1 (dopo averlo piazzato) per risvegliarlo \u00b7 vaga sulla mappa lasciando una scia velenosa e mangia chi gli e' vicino"],
-        spike_wall:   ["MURO DI SPUNZONI SBLOCCATO!", "premi 1 (a fine catena) per piazzarlo dove ti trovi \u00b7 dura 1 minuto \u00b7 solo tu e i tuoi gadget lo attraversate, chiunque altro ci sbatta muore"],
+        spike_wall:   ["MURO DI SPUNZONI SBLOCCATO!", "premi 1 (a fine catena) per piazzarlo dove ti trovi \u00b7 PERMANENTE per tutto il round \u00b7 solo tu e i tuoi gadget lo attraversate, chiunque altro ci sbatta muore"],
         tesla:        ["TESLA LASER SBLOCCATA!", "premi 1 (dopo il muro di spunzoni) per piazzarla \u00b7 fulmina tutto cio' che e' nemico entro 8 caselle, ignorando i muri"],
+        territory_trap: ["TRAPPOLA TERRITORIALE SBLOCCATA!", "premi 1 (dopo la Tesla) e calpesta 20 caselle per marcarle in segreto \u00b7 ripremi 1 per far erompere gli spunzoni"],
+        bush:         ["ARBUSTO SPINOSO SBLOCCATO!", "premi 1 (a fine catena) per piantarlo \u00b7 uccide al contatto e cresce di una casella al minuto, inghiottendo anche i muri \u00b7 lo distruggono solo bombolone, mongolfiera e scudo"],
+        mushroom:     ["FUNGO ATOMICO SBLOCCATO!", "premi 1 (a fine catena) per piazzarlo \u00b7 nascosto come una mina (visibile solo da 3 caselle) \u00b7 se calpestato distrugge TUTTO in un raggio di 10 caselle e avvelena l'area per 1 minuto"],
       };
       const lb = labels[msg.bonus] || ["BONUS!", ""];
       const txt = lb[0] + (lb[1] ? " \u00b7 " + lb[1] : "");
@@ -4745,13 +4998,17 @@ function onGameEvent(msg){
       const bySpikeWall = msg.cause === "spike_wall";
       const byTesla = msg.cause === "tesla";
       const byTerritory = msg.cause === "territory_trap";
+      const byBush = msg.cause === "bush";
+      const byMushroom = msg.cause === "mushroom";
+      // Divorato dai rovi: stesso impatto "fisico" del muro di spunzoni.
+      if (byBush) playSpikeWallCrash();
       // Schianto contro un muro di spunzoni: oltre al suono di
       // eliminazione normale, l'impatto di roccia dedicato.
       if (bySpikeWall) playSpikeWallCrash();
       const causeTxt = byLaser ? " dal laser" : (byMine ? " da una mina" : (byAssassin ? " da un ninja invisibile"
         : (byMissile ? " da un missile guidato" : (byTrap ? " da una trappola" : (byArmor ? " dalla corazza laser"
         : (byLightning ? " da un fulmine" : (byPet ? " dal pet avversario" : (byMortar ? " da una bomba di mortaio"
-        : (byPoison ? " dalla nuvola velenosa" : (bySuperbomb ? " da un bombolone" : (byBalloon ? " da una bomba di mongolfiera" : (byBlob ? " mangiato da un blob gelatinoso" : (bySpikeWall ? " schiantato contro un muro di spunzoni" : (byTesla ? " fulminato da una Tesla laser" : (byTerritory ? " infilzato da una trappola territoriale" : "")))))))))))))));
+        : (byPoison ? " dalla nuvola velenosa" : (bySuperbomb ? " da un bombolone" : (byBalloon ? " da una bomba di mongolfiera" : (byBlob ? " mangiato da un blob gelatinoso" : (bySpikeWall ? " schiantato contro un muro di spunzoni" : (byTesla ? " fulminato da una Tesla laser" : (byTerritory ? " infilzato da una trappola territoriale" : (byBush ? " divorato dai rovi di un arbusto spinoso" : (byMushroom ? " disintegrato da un fungo atomico" : "")))))))))))))))));
       if (msg.victim === myId){
         showBonusBanner(msg.respawn ? ("HAI PERSO UNA VITA \u2665" + msg.lives) : "SEI STATO ELIMINATO");
       } else if (victim){
@@ -4881,7 +5138,7 @@ function onGameEvent(msg){
       // Muro di spunzoni piazzato (bonus 2200 punti): botto di roccia che
       // sbatte a terra. Il muro in se' viene disegnato ad ogni frame
       // leggendo currSnapshot.spike_walls (autorita' server).
-      if (msg.player === myId) showToast("Muro di spunzoni piazzato! Dura 1 minuto: solo tu e i tuoi gadget potete attraversarlo.");
+      if (msg.player === myId) showToast("Muro di spunzoni piazzato! E' permanente: solo tu e i tuoi gadget potete attraversarlo.");
       playSpikeWallPlace();
       break;
     }
@@ -4892,6 +5149,58 @@ function onGameEvent(msg){
       // punti, vedi tesla_zap in main.py): stesso identico effetto.
       sparks.push({ x: msg.x, y: msg.y, start: now });
       playSpikeWallCrumble();
+      break;
+    }
+    case "bush_place": {
+      // Arbusto spinoso piantato (bonus 2800 punti): registra la nascita
+      // della prima casella cosi' sboccia gradualmente. L'arbusto in se'
+      // viene disegnato ad ogni frame leggendo currSnapshot.bushes
+      // (autorita' server).
+      bushCellBirth[msg.id + ":" + msg.x + "," + msg.y] = now;
+      if (msg.player === myId) showToast("Arbusto spinoso piantato! Crescera' di una casella al minuto: chiunque lo tocchi muore, solo bombolone, mongolfiera e scudo possono distruggerlo.");
+      playBlobPlace();
+      break;
+    }
+    case "bush_grow": {
+      // Nuova casella dell'arbusto: registrare ADESSO la nascita fa si'
+      // che i rami sboccino da zero (animazione graduale, mai di colpo).
+      bushCellBirth[msg.id + ":" + msg.x + "," + msg.y] = now;
+      break;
+    }
+    case "bush_cells_destroyed": {
+      // Potatura (bombolone, bomba di mongolfiera o scudo): frana di
+      // detriti su ogni casella spezzata.
+      (msg.cells || []).forEach(function(c){
+        sparks.push({ x: c[0], y: c[1], start: now });
+        delete bushCellBirth[msg.id + ":" + c[0] + "," + c[1]];
+      });
+      playSpikeWallCrumble();
+      break;
+    }
+    case "mushroom_place": {
+      // Fungo atomico piazzato (bonus 3000 punti): il fungo in se' viene
+      // disegnato ad ogni frame leggendo currSnapshot.mushrooms
+      // (autorita' server, visibilita' 3 caselle lato client).
+      if (msg.player === myId) showToast("Fungo atomico piazzato! Chi lo calpesta scatena la distruzione totale in un raggio di 10 caselle.");
+      playMushroomPlace();
+      break;
+    }
+    case "mushroom_explode": {
+      // GROSSO BOATO + classica nube a fungo gassosa nel colore del
+      // proprietario per 2 secondi + onda d'urto concentrica raggio 10.
+      const nOwner = findPlayer(currSnapshot, msg.by);
+      const nCol = (nOwner && COLOR_HEX[(nOwner.colors || [])[0]]) || "#ffd400";
+      nukeClouds.push({ x: msg.x, y: msg.y, color: nCol, start: now });
+      shockwaves.push({ x: msg.x, y: msg.y, color: nCol, start: now, radiusCells: msg.radius || 10 });
+      playNukeBoom();
+      break;
+    }
+    case "bush_destroyed": {
+      // Zero caselle rimaste: l'arbusto e' eliminato DEL TUTTO e smette
+      // per sempre di crescere.
+      playBlobDestroyed();
+      if (msg.by === myId) showToast("Arbusto spinoso avversario eliminato del tutto!");
+      else if (msg.owner === myId) showToast("Il tuo arbusto spinoso e' stato eliminato del tutto!");
       break;
     }
     case "tesla_place": {
@@ -5352,6 +5661,10 @@ function mineChainStep(p){
   // icona, distinta localmente da myTerritoryMarking/myTerritoryReady
   // (vedi renderGadgetIcon).
   if (p.territory_trap && !p.territory_used) return "territory_trap";
+  // Bonus 2800 punti: l'arbusto spinoso.
+  if (p.bush && !p.bush_placed) return "bush";
+  // Nuovo, VERO ultimo gradino (bonus 3000 punti): il fungo atomico.
+  if (p.mushroom && !p.mushroom_placed) return "mushroom";
   return null;
 }
 const GADGET_RAIL_KEYS = [
@@ -5591,6 +5904,61 @@ function renderGadgetIcon(icx, key, color){
       icx.globalAlpha = 0.35;
       icx.fillRect(cx - res * 0.3, cy - res * 0.3, res * 0.6, res * 0.6);
     }
+  } else if (key === "bush"){
+    // Arbusto spinoso (bonus 2800 punti): mini-cespuglio di 6 rami
+    // spinosi nel mio colore, con nocciolo scuro alla base.
+    icx.strokeStyle = color;
+    icx.lineWidth = res * 0.05;
+    icx.lineCap = "round";
+    for (let k = 0; k < 6; k++){
+      const a2 = -Math.PI / 2 + (k - 2.5) * 0.55;
+      const len = res * (k % 2 ? 0.32 : 0.25);
+      const bx = cx + Math.cos(a2) * len * 0.45;
+      const by = cy + res * 0.08 + Math.sin(a2) * len * 0.6;
+      const tx = cx + Math.cos(a2) * len;
+      const ty = cy + res * 0.18 + Math.sin(a2) * len;
+      icx.beginPath();
+      icx.moveTo(cx, cy + res * 0.24);
+      icx.quadraticCurveTo(bx, by, tx, ty);
+      icx.stroke();
+      // spina bianca a meta' ramo
+      icx.strokeStyle = "#e8e8e2";
+      icx.lineWidth = res * 0.03;
+      icx.beginPath();
+      icx.moveTo((cx + tx) / 2, (cy + res * 0.24 + ty) / 2);
+      icx.lineTo((cx + tx) / 2 + Math.cos(a2 + Math.PI / 2) * res * 0.07,
+                 (cy + res * 0.24 + ty) / 2 + Math.sin(a2 + Math.PI / 2) * res * 0.07);
+      icx.stroke();
+      icx.strokeStyle = color;
+      icx.lineWidth = res * 0.05;
+    }
+    icx.fillStyle = darkenHex(color, 0.6);
+    icx.strokeStyle = color;
+    icx.lineWidth = res * 0.03;
+    icx.beginPath(); icx.arc(cx, cy + res * 0.24, res * 0.1, 0, Math.PI * 2); icx.fill(); icx.stroke();
+  } else if (key === "mushroom"){
+    // Fungo atomico (bonus 3000 punti): mini 🍄 nel mio colore.
+    icx.fillStyle = "#efe8da";
+    icx.strokeStyle = "#6b6357";
+    icx.lineWidth = res * 0.02;
+    icx.beginPath();
+    icx.moveTo(cx - res * 0.09, cy + res * 0.02);
+    icx.lineTo(cx - res * 0.13, cy + res * 0.3);
+    icx.quadraticCurveTo(cx, cy + res * 0.38, cx + res * 0.13, cy + res * 0.3);
+    icx.lineTo(cx + res * 0.09, cy + res * 0.02);
+    icx.closePath(); icx.fill(); icx.stroke();
+    icx.fillStyle = color;
+    icx.strokeStyle = darkenHex(color, 0.55);
+    icx.lineWidth = res * 0.03;
+    icx.beginPath();
+    icx.arc(cx, cy - res * 0.02, res * 0.28, Math.PI, 0);
+    icx.lineTo(cx + res * 0.28, cy + res * 0.08);
+    icx.lineTo(cx - res * 0.28, cy + res * 0.08);
+    icx.closePath(); icx.fill(); icx.stroke();
+    icx.fillStyle = "#fff";
+    icx.beginPath(); icx.arc(cx - res * 0.11, cy - res * 0.1, res * 0.05, 0, Math.PI * 2); icx.fill();
+    icx.beginPath(); icx.arc(cx + res * 0.08, cy - res * 0.15, res * 0.04, 0, Math.PI * 2); icx.fill();
+    icx.beginPath(); icx.arc(cx + res * 0.17, cy - res * 0.02, res * 0.035, 0, Math.PI * 2); icx.fill();
   } else if (key === "2" || key === "8"){
     // Ninja/pet (vedi drawPacmanVariant): stesso mini Pac-Man del gioco.
     // Il ninja e' semitrasparente con alone rosso pulsante (come si vede
@@ -5953,6 +6321,8 @@ function mineMortarChainPending(me){
   if (me.spike_wall && !me.spike_wall_placed) return true;
   if (me.tesla && !me.tesla_placed) return true;
   if (me.territory_trap && !me.territory_used) return true;
+  if (me.bush && !me.bush_placed) return true;
+  if (me.mushroom && !me.mushroom_placed) return true;
   return false;
 }
 

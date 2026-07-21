@@ -299,14 +299,16 @@ BLOB_ALIVE_SPEED_MULT = ROBOT_SPEED_MULT          # stessa velocita' della torre
 # (vedi try_place_spike_wall in main.py). Disegnato lato client come
 # bombolone/mongolfiera (corpo scuro, strisce nel colore del proprietario,
 # teschio bianco) ma con in piu' SPUNZONI ACUMINATI su tutte le superfici
-# visibili. Dura SPIKE_WALL_DURATION_SECONDS (1 minuto), poi si sgretola da
-# solo. Lo attraversano SOLO il proprietario e i suoi gadget: qualsiasi
+# visibili. E' PERMANENTE per tutto il round (non si sgretola piu' da
+# solo). Lo attraversano SOLO il proprietario e i suoi gadget: qualsiasi
 # giocatore avversario che ci sbatte contro MUORE all'impatto (vedi
 # update_spike_walls), i proiettili avversari (laser/missili) si schiantano
 # come contro un muro vero, e pet/torrette-navicella avversari che lo
 # toccano vengono distrutti.
 SPIKE_WALL_THRESHOLD = 2200
-SPIKE_WALL_DURATION_SECONDS = 60.0   # il muro resta in piedi 1 minuto, poi si sgretola
+# Il muro di spunzoni e' PERMANENTE: resta in piedi per tutto il round
+# (niente piu' durata di 1 minuto). Puo' essere abbattuto solo da un
+# fulmine di Tesla avversaria (vedi tesla_zap) o da un fungo atomico.
 SPIKE_WALL_HIT_RANGE = 0.6           # distanza (frazione di cella, per asse) sotto la quale un avversario e' considerato "all'impatto" con gli spunzoni
 
 # ---- bonus 2400 punti: Tesla laser (tasto "1", DOPO il muro di spunzoni) ----
@@ -346,6 +348,63 @@ TESLA_RANGE_CELLS = 8                # raggio d'azione (distanza Manhattan), ign
 # come tutti gli altri gradini della catena.
 TERRITORY_TRAP_THRESHOLD = 2600
 TERRITORY_TILES_REQUIRED = 20        # caselle nuove da calpestare per completare la selezione
+
+# ---- bonus 2800 punti: arbusto spinoso (tasto "1", DOPO la trappola territoriale) ----
+# Nuovo, ultimo gradino della catena del tasto "1". Appena piazzato e' un
+# piccolo arbusto del colore di chi lo piazza, con le spine e 6 rami, che
+# UCCIDE AL CONTATTO qualsiasi avversario (il proprietario e i suoi gadget
+# lo attraversano liberamente). Ogni BUSH_GROW_INTERVAL_SECONDS (1 minuto)
+# i rami si espandono e si intrecciano occupando UNA nuova casella scelta
+# a caso tra quelle adiacenti alle caselle gia' occupate (in tutte le
+# direzioni): la crescita non si ferma MAI da sola, e piano piano
+# l'arbusto INGHIOTTE anche i muri e tutto cio' che trova nel suo
+# tragitto (una cella-muro inghiottita resta invalicabile, ma viene
+# ricoperta dai rami; se poi quella cella dell'arbusto viene distrutta,
+# il muro sottostante riappare intatto). Il lato client anima ogni nuova
+# casella con una crescita GRADUALE dei rami (evento bush_grow), mai
+# "all'improvviso".
+# L'arbusto puo' essere distrutto SOLO da: bombolone (explode_superbomb),
+# bomba di mongolfiera (explode_balloon_bomb) - che nel raggio d'urto
+# potano le caselle colpite - e scudo/corazza (un avversario con la
+# corazza attiva che tocca una casella dell'arbusto la SPEZZA invece di
+# morire, vedi update_bushes). Smette di crescere solo quando e' stato
+# eliminato DEL TUTTO (zero caselle rimaste).
+BUSH_THRESHOLD = 2800
+BUSH_GROW_INTERVAL_SECONDS = 60.0   # una nuova casella al minuto, per sempre
+BUSH_HIT_RANGE = 0.6                # stessa distanza d'impatto del muro di spunzoni (frazione di cella, per asse)
+
+# ---- vite extra ricorrenti ----
+# OGNI LIVES_EVERY_POINTS punti (1600, 3200, 4800, ...) si guadagnano
+# LIVES_EVERY_AMOUNT vite extra in un colpo solo, senza limite: e' un
+# traguardo RICORRENTE, a differenza delle soglie fisse di
+# BONUS_THRESHOLDS (vedi Player.next_lives_milestone in main.py).
+LIVES_EVERY_POINTS = 1600
+LIVES_EVERY_AMOUNT = 3
+
+# ---- bonus 3000 punti: fungo atomico (tasto "1", DOPO l'arbusto spinoso) ----
+# Nuovo, vero ultimo gradino della catena del tasto "1". Un piccolo fungo
+# (forma classica a cappella + gambo, un po' piu' grande di una mina) nel
+# colore di chi lo piazza. Come una mina, resta a terra in attesa: se un
+# avversario (o un suo pet) lo CALPESTA, esplode con un GROSSO BOATO
+# uccidendo e distruggendo LETTERALMENTE TUTTO cio' che si trova entro
+# MUSHROOM_BLAST_RADIUS_CELLS caselle (distanza Manhattan): giocatori
+# (corazza e ninja NON proteggono; solo la protezione post-respawn si'),
+# mine, torrette/robot, mortai, pet, bomboloni (esplosione a catena),
+# mongolfiere (sgancio a catena), blob, muri di spunzoni, Tesla e arbusti
+# spinosi avversari. Sull'epicentro resta poi un'area concentrica
+# AVVELENATA di pari raggio per MUSHROOM_POISON_DURATION_SECONDS (1
+# minuto), con la STESSA logica del veleno del mortaio (una vita di danno
+# al secondo a chi ci resta dentro) ma nel COLORE del proprietario.
+# Il fungo e' VISIBILE solo entro MUSHROOM_VISIBILITY_RANGE caselle
+# (distanza a scacchi/Chebyshev, come le mine ma piu' corta): da piu'
+# lontano resta nascosto agli avversari (il proprietario lo vede sempre).
+# All'esplosione il client disegna il classico fungo atomico gassoso, nel
+# colore del proprietario, per MUSHROOM_CLOUD_SECONDS (2 secondi).
+MUSHROOM_THRESHOLD = 3000
+MUSHROOM_BLAST_RADIUS_CELLS = 10        # raggio di distruzione E dell'area avvelenata (caselle, Manhattan)
+MUSHROOM_POISON_DURATION_SECONDS = 60.0 # l'area resta avvelenata per 1 minuto
+MUSHROOM_VISIBILITY_RANGE = 3           # visibile solo entro 3 caselle (Chebyshev); il proprietario lo vede sempre
+MUSHROOM_CLOUD_SECONDS = 2.0            # durata della nube a fungo (client)
 BLOB_POISON_DURATION_SECONDS = 4.0                # quanto resta a terra ciascuna nuvola della scia del blob vivo
 BLOB_EAT_RANGE_CELLS = 1                          # distanza (caselle, stile scacchi/Chebyshev): il blob mangia anche chi non e' esattamente sopra di lui, ma solo adiacente
 

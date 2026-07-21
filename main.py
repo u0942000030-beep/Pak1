@@ -71,9 +71,14 @@ from common import (
     BLOB_THRESHOLD,
     BLOB_ALIVE_THRESHOLD, BLOB_ALIVE_SPEED_MULT,
     BLOB_POISON_DURATION_SECONDS, BLOB_EAT_RANGE_CELLS,
-    SPIKE_WALL_THRESHOLD, SPIKE_WALL_DURATION_SECONDS, SPIKE_WALL_HIT_RANGE,
+    SPIKE_WALL_THRESHOLD, SPIKE_WALL_HIT_RANGE,
     TESLA_THRESHOLD, TESLA_FIRE_INTERVAL_SECONDS, TESLA_RANGE_CELLS,
     TERRITORY_TRAP_THRESHOLD, TERRITORY_TILES_REQUIRED,
+    BUSH_THRESHOLD, BUSH_GROW_INTERVAL_SECONDS, BUSH_HIT_RANGE,
+    LIVES_EVERY_POINTS, LIVES_EVERY_AMOUNT,
+    MUSHROOM_THRESHOLD, MUSHROOM_BLAST_RADIUS_CELLS,
+    MUSHROOM_POISON_DURATION_SECONDS, MUSHROOM_VISIBILITY_RANGE,
+    MUSHROOM_CLOUD_SECONDS,
     RTT_PING_INTERVAL_SECONDS, RTT_DEFAULT_SECONDS,
     REWIND_MAX_SECONDS, REWIND_HISTORY_SECONDS,
 )
@@ -289,6 +294,22 @@ class Player:
         self.territory_ready = False     # True quando la selezione e' completa, in attesa della 2a pressione
         self.territory_used = False      # True dopo l'attivazione: tasto "1" (a fine catena) esaurito per sempre
         self.territory_tiles = set()     # celle (x, y) marcate finora, private
+
+        # ---- bonus 2800 punti: arbusto spinoso (tasto "1", DOPO la trappola territoriale) ----
+        # Sbloccato a BUSH_THRESHOLD punti, piazzabile UNA SOLA VOLTA per
+        # round col tasto "1" a fine catena (vedi try_place_bush).
+        # L'arbusto vero e proprio (celle occupate, timer di crescita) vive
+        # come dict dentro self.bushes della Room, non qui.
+        self.has_bush = False     # bonus sbloccato (una volta per round)
+        self.bush_placed = False  # True dopo il piazzamento: il tasto "1" (a fine catena) e' utilizzabile una sola volta
+
+        # ---- bonus 3000 punti: fungo atomico (tasto "1", DOPO l'arbusto spinoso) ----
+        self.has_mushroom = False     # bonus sbloccato (una volta per round)
+        self.mushroom_placed = False  # True dopo il piazzamento
+
+        # ---- vite extra ricorrenti: ogni LIVES_EVERY_POINTS punti +LIVES_EVERY_AMOUNT vite ----
+        # Prossimo traguardo da riscattare (1600, poi 3200, 4800, ...).
+        self.next_lives_milestone = LIVES_EVERY_POINTS
         # Uccisioni fatte in questo round: ogni 2 kill si guadagna una vita extra.
         self.kills = 0
 
@@ -360,6 +381,10 @@ class Player:
             "territory_marking": self.territory_marking,
             "territory_ready": self.territory_ready,
             "territory_used": self.territory_used,
+            "bush": self.has_bush,
+            "bush_placed": self.bush_placed,
+            "mushroom": self.has_mushroom,
+            "mushroom_placed": self.mushroom_placed,
         }
 
 
@@ -429,6 +454,14 @@ class Room:
         # non scadono mai (vedi update_teslas/tesla_zap). Azzerate ad ogni
         # nuovo round.
         self.teslas = []
+        # Arbusti spinosi piazzati (bonus 2800 punti): permanenti finche'
+        # non vengono eliminati DEL TUTTO (vedi update_bushes), crescono di
+        # una casella al minuto per sempre. Azzerati ad ogni nuovo round.
+        self.bushes = []
+        # Funghi atomici piazzati (bonus 3000 punti): restano a terra come
+        # mine in attesa di essere calpestati (vedi update_mushrooms).
+        # Azzerati ad ogni nuovo round.
+        self.mushrooms = []
         # Mappa corrente della stanza: viene ripescata a caso tra le 10
         # disponibili a OGNI inizio round (vedi run_round), cosi' ogni
         # partita puo' capitare su una mappa diversa per forma/colore/misura.
@@ -735,6 +768,11 @@ class Room:
             p.territory_ready = False
             p.territory_used = False
             p.territory_tiles = set()
+            p.has_bush = False
+            p.bush_placed = False
+            p.has_mushroom = False
+            p.mushroom_placed = False
+            p.next_lives_milestone = LIVES_EVERY_POINTS
             p.kills = 0
         self.lasers = []
         self.mines = []
@@ -747,6 +785,8 @@ class Room:
         self.blobs = []
         self.spike_walls = []
         self.teslas = []
+        self.bushes = []
+        self.mushrooms = []
         self.bombs = []
         self.poison_zones = []  # nuvole velenose lasciate a terra dagli impatti del mortaio
 
@@ -1170,6 +1210,18 @@ class Room:
                 "kind": "bonus", "player": p.id,
                 "bonus": kind, "points": threshold,
             })
+
+        # Traguardo RICORRENTE: ogni LIVES_EVERY_POINTS punti (1600, 3200,
+        # 4800, ...) si guadagnano LIVES_EVERY_AMOUNT vite extra in un
+        # colpo solo, senza limite. Il while gestisce anche il caso di un
+        # balzo di punti che scavalca piu' traguardi in un colpo.
+        while p.alive and p.points >= p.next_lives_milestone:
+            p.lives += LIVES_EVERY_AMOUNT
+            self.push_event({
+                "kind": "bonus", "player": p.id,
+                "bonus": "extra_life_3", "points": p.next_lives_milestone,
+            })
+            p.next_lives_milestone += LIVES_EVERY_POINTS
         # Bonus 300 punti: sblocca la modalita' ninja (invisibilita' +
         # velocita' + uccisione al contatto), ma NON la attiva. Si attiva
         # a comando col tasto "2" (vedi try_activate_ninja).
@@ -1414,6 +1466,45 @@ class Room:
             self.push_event({
                 "kind": "bonus", "player": p.id,
                 "bonus": "territory_trap", "points": TERRITORY_TRAP_THRESHOLD,
+            })
+
+        # Bonus 2800 punti: sblocca l'arbusto spinoso, ma NON lo piazza
+        # subito. Si piazza a comando RIUSANDO ancora il tasto "1" (vedi
+        # try_place_bush), UNA SOLA VOLTA per giocatore per round, ma solo
+        # DOPO aver esaurito tutta la catena precedente del tasto "1"
+        # (mine, mortaio, bombolone, mongolfiera, blob, risveglio del blob,
+        # muro di spunzoni, Tesla e trappola territoriale): finche' la
+        # catena non e' esaurita, il tasto "1" resta dedicato a quella
+        # (vedi il dispatch del messaggio "place_mortar").
+        if (
+            p.alive
+            and p.points >= BUSH_THRESHOLD
+            and BUSH_THRESHOLD not in p.claimed
+        ):
+            p.claimed.add(BUSH_THRESHOLD)
+            p.has_bush = True
+            self.push_event({
+                "kind": "bonus", "player": p.id,
+                "bonus": "bush", "points": BUSH_THRESHOLD,
+            })
+
+        # Bonus 3000 punti: sblocca il fungo atomico, ma NON lo piazza
+        # subito. Si piazza a comando RIUSANDO ancora il tasto "1" (vedi
+        # try_place_mushroom), UNA SOLA VOLTA per giocatore per round, ma
+        # solo DOPO aver esaurito tutta la catena precedente del tasto "1"
+        # (arbusto spinoso compreso): finche' la catena non e' esaurita,
+        # il tasto "1" resta dedicato a quella (vedi il dispatch del
+        # messaggio "place_mortar").
+        if (
+            p.alive
+            and p.points >= MUSHROOM_THRESHOLD
+            and MUSHROOM_THRESHOLD not in p.claimed
+        ):
+            p.claimed.add(MUSHROOM_THRESHOLD)
+            p.has_mushroom = True
+            self.push_event({
+                "kind": "bonus", "player": p.id,
+                "bonus": "mushroom", "points": MUSHROOM_THRESHOLD,
             })
 
     def try_portal(self, p):
@@ -2531,6 +2622,17 @@ class Room:
         for victim in victims:
             self.kill_player(victim, "superbomb", shooter_id=owner)
 
+        # Arbusti spinosi avversari (bonus 2800 punti): il bombolone e' una
+        # delle tre armi capaci di potarli. Tutte le celle dell'arbusto nel
+        # raggio d'urto vengono distrutte; se non resta nulla, l'arbusto e'
+        # eliminato del tutto e smette per sempre di crescere.
+        for b in list(self.bushes):
+            if b["owner"] == owner:
+                continue
+            hit = [c for c in b["cells"]
+                   if abs(c[0] - ox) + abs(c[1] - oy) <= SUPERBOMB_RADIUS_CELLS]
+            self.prune_bush_cells(b, hit, owner, "superbomb")
+
         if self.mines:
             remaining_mines = []
             for m in self.mines:
@@ -2771,6 +2873,15 @@ class Room:
         ]
         for victim in victims:
             self.kill_player(victim, "balloon", shooter_id=owner)
+
+        # Arbusti spinosi avversari (bonus 2800 punti): anche la bomba di
+        # mongolfiera li pota, con lo stesso raggio d'urto dell'esplosione.
+        for bsh in list(self.bushes):
+            if bsh["owner"] == owner:
+                continue
+            hit = [c for c in bsh["cells"]
+                   if abs(c[0] - ox) + abs(c[1] - oy) <= BALLOON_BOMB_RADIUS_CELLS]
+            self.prune_bush_cells(bsh, hit, owner, "balloon")
 
         if self.mines:
             remaining_mines = []
@@ -3037,37 +3148,47 @@ class Room:
         impossibile per sempre). Piazza UNA SOLA VOLTA (per tutto il round)
         un blocco di muro grande esattamente quanto un muro normale (una
         casella) nella cella corrente del giocatore: da quel momento, per
-        SPIKE_WALL_DURATION_SECONDS (1 minuto), quella cella e' un muro di
+        tutto il round, quella cella e' un muro di
         spunzoni acuminati che SOLO il proprietario e i suoi gadget possono
         attraversare. Qualsiasi avversario che ci sbatte contro MUORE
         all'impatto (vedi update_spike_walls), i proiettili avversari
         (laser/missili) si schiantano come contro un muro vero (vedi
         move_lasers/move_missiles) e pet/torrette-navicella avversari che
-        lo toccano vengono distrutti. Scaduto il minuto, il muro si
-        sgretola da solo.
+        lo toccano vengono distrutti. Il muro e' PERMANENTE: non si
+        sgretola piu' da solo.
 
         Se il giocatore e' intrappolato dalla trappola di un avversario,
         NON puo' usare alcun bonus finche' non torna libero di muoversi."""
         if not player.alive or player.trapped_left > 0 or not player.has_spike_wall or player.spike_wall_placed or player.is_assassin or player.armor_active:
             return
         player.spike_wall_placed = True
+        # Il muro va ESATTAMENTE sulla casella in cui il giocatore si
+        # trova in questo istante. player.x/player.y e' pero' la cella di
+        # PARTENZA mentre si sta scivolando verso la successiva
+        # (move_accum > 0): a meta' scivolamento il personaggio appare
+        # gia' nella cella dopo, e il muro finirebbe visivamente alle sue
+        # spalle. Si usa quindi la posizione frazionaria reale (la stessa
+        # di to_public) arrotondata alla cella piu' vicina: la cella di
+        # destinazione e' per costruzione libera (il movimento scivola
+        # solo verso celle aperte), quindi l'arrotondamento e' sicuro.
+        dx, dy = DIRECTIONS.get(player.direction, (0, 0)) if player.direction else (0, 0)
+        wx = int(round(player.x + dx * player.move_accum))
+        wy = int(round(player.y + dy * player.move_accum))
         wall = {
             "id": uuid.uuid4().hex[:8],
             "owner": player.id,
-            "x": player.x, "y": player.y,
-            "left": SPIKE_WALL_DURATION_SECONDS,
+            "x": wx, "y": wy,
         }
         self.spike_walls.append(wall)
         self.push_event({
             "kind": "spike_wall_place", "id": wall["id"], "player": player.id,
-            "x": player.x, "y": player.y,
-            "duration": SPIKE_WALL_DURATION_SECONDS,
+            "x": wx, "y": wy,
         })
 
     def spike_wall_public(self, w):
         return {
             "id": w["id"], "x": w["x"], "y": w["y"],
-            "owner": w["owner"], "left": round(w["left"], 1),
+            "owner": w["owner"],
         }
 
     def spike_wall_blocking(self, x, y, owner_id):
@@ -3084,9 +3205,6 @@ class Room:
     def update_spike_walls(self):
         """Fa avanzare, ogni tick, tutti i muri di spunzoni piazzati
         (bonus 2200 punti):
-          - scala il conto alla rovescia della durata (1 minuto): allo
-            scadere il muro si sgretola da solo (evento spike_wall_expired,
-            usato dal client per suono/effetto di sgretolamento);
           - uccide all'impatto QUALSIASI giocatore avversario che prova ad
             attraversarlo (via kill_player, causa "spike_wall"): il
             contatto si misura sulla posizione frazionaria reale (cella +
@@ -3101,14 +3219,9 @@ class Room:
         if not self.spike_walls:
             return
         for w in list(self.spike_walls):
-            w["left"] -= TICK_DT
-            if w["left"] <= 0:
-                self.spike_walls.remove(w)
-                self.push_event({
-                    "kind": "spike_wall_expired", "id": w["id"],
-                    "x": w["x"], "y": w["y"],
-                })
-                continue
+            # PERMANENTE: nessun conto alla rovescia, il muro resta in
+            # piedi per tutto il round (puo' abbatterlo solo un fulmine di
+            # Tesla avversaria o un fungo atomico).
             wx, wy = w["x"], w["y"]
             owner = w["owner"]
             # Giocatori avversari all'impatto: posizione frazionaria reale
@@ -3425,6 +3538,368 @@ class Room:
         self.push_event({
             "kind": "territory_trigger", "player": player.id,
             "tiles": [[x, y] for (x, y) in tiles], "hits": hits,
+        })
+
+    # ---- bonus 2800 punti: arbusto spinoso (tasto "1", DOPO la trappola territoriale) ----
+
+    def try_place_bush(self, player):
+        """Tasto '1', RIUSATO un'ennesima volta: viene chiamato dal
+        dispatch del messaggio "place_mortar" solo quando TUTTA la catena
+        precedente del tasto "1" e' esaurita (mine, mortaio, bombolone,
+        mongolfiera, blob, risveglio del blob, muro di spunzoni, Tesla e
+        trappola territoriale gia' consumata). Piazza UNA SOLA VOLTA (per
+        tutto il round) un piccolo arbusto spinoso, del colore del
+        proprietario, nella cella corrente: da quel momento l'arbusto
+        UCCIDE AL CONTATTO qualsiasi avversario (vedi update_bushes) e
+        ogni BUSH_GROW_INTERVAL_SECONDS (1 minuto) i suoi rami si
+        espandono occupando una nuova casella adiacente scelta a caso,
+        inghiottendo anche i muri, per sempre, finche' l'arbusto non viene
+        eliminato del tutto (bombolone, bomba di mongolfiera o corazza).
+
+        Se il giocatore e' intrappolato dalla trappola di un avversario,
+        NON puo' usare alcun bonus finche' non torna libero di muoversi."""
+        if not player.alive or player.trapped_left > 0 or not player.has_bush or player.bush_placed or player.is_assassin or player.armor_active:
+            return
+        player.bush_placed = True
+        bush = {
+            "id": uuid.uuid4().hex[:8],
+            "owner": player.id,
+            "cells": [(player.x, player.y)],
+            # Conto alla rovescia per la PROSSIMA casella di crescita.
+            "grow_left": BUSH_GROW_INTERVAL_SECONDS,
+        }
+        self.bushes.append(bush)
+        self.push_event({
+            "kind": "bush_place", "id": bush["id"], "player": player.id,
+            "x": player.x, "y": player.y,
+            "grow_interval": BUSH_GROW_INTERVAL_SECONDS,
+        })
+
+    def bush_public(self, b):
+        return {
+            "id": b["id"], "owner": b["owner"],
+            "cells": [[c[0], c[1]] for c in b["cells"]],
+            "grow_left": round(b["grow_left"], 1),
+        }
+
+    def grow_bush(self, b):
+        """Fa crescere l'arbusto di UNA casella: sceglie a caso una cella
+        adiacente (4 direzioni) a una qualsiasi delle celle gia' occupate,
+        non ancora occupata dall'arbusto stesso e dentro il bordo esterno
+        della mappa. La crescita e' CIECA rispetto ai muri: l'arbusto li
+        inghiotte (la cella-muro resta invalicabile sotto i rami, ma viene
+        ricoperta; se poi quella cella viene potata, il muro riappare).
+        L'evento pubblico bush_grow permette al client di animare la
+        nuova casella con una crescita graduale, mai all'improvviso."""
+        occupied = set(b["cells"])
+        candidates = set()
+        for (cx, cy) in b["cells"]:
+            for (dx, dy) in DIRECTIONS.values():
+                nx, ny = cx + dx, cy + dy
+                # Il bordo esterno (cornice della mappa) resta intoccabile:
+                # inghiottirlo aprirebbe "buchi" verso il nulla.
+                if 1 <= nx <= self.maze_w - 2 and 1 <= ny <= self.maze_h - 2 \
+                        and (nx, ny) not in occupied:
+                    candidates.add((nx, ny))
+        if not candidates:
+            return
+        nx, ny = random.choice(sorted(candidates))
+        b["cells"].append((nx, ny))
+        self.push_event({
+            "kind": "bush_grow", "id": b["id"], "x": nx, "y": ny,
+            "owner": b["owner"], "cells": len(b["cells"]),
+        })
+
+    def prune_bush_cells(self, b, cells, by, cause):
+        """Rimuove dall'arbusto le celle indicate (potatura da bombolone,
+        bomba di mongolfiera o corazza). Se non resta piu' nulla,
+        l'arbusto e' eliminato DEL TUTTO e smette (ovviamente) di
+        crescere: evento bush_destroyed dedicato per suono/effetto."""
+        if not cells:
+            return
+        removed = [c for c in b["cells"] if c in set(cells)]
+        if not removed:
+            return
+        b["cells"] = [c for c in b["cells"] if c not in set(removed)]
+        self.push_event({
+            "kind": "bush_cells_destroyed", "id": b["id"],
+            "cells": [[c[0], c[1]] for c in removed],
+            "by": by, "cause": cause, "owner": b["owner"],
+        })
+        if not b["cells"] and b in self.bushes:
+            self.bushes.remove(b)
+            self.push_event({
+                "kind": "bush_destroyed", "id": b["id"],
+                "by": by, "cause": cause, "owner": b["owner"],
+            })
+
+    def update_bushes(self):
+        """Fa avanzare, ogni tick, tutti gli arbusti spinosi piazzati
+        (bonus 2800 punti):
+          - scala il conto alla rovescia della crescita: ogni minuto una
+            nuova casella adiacente scelta a caso (vedi grow_bush), per
+            sempre, finche' l'arbusto esiste;
+          - uccide all'impatto QUALSIASI giocatore avversario che tocca
+            una casella dell'arbusto (via kill_player, causa "bush"):
+            stesso contatto frazionario del muro di spunzoni. Il ninja
+            NON protegge (sono spine fisiche); la protezione post-respawn
+            (prot_left) e il ghost si';
+          - ECCEZIONE corazza/scudo: un avversario con la corazza attiva
+            che tocca una casella dell'arbusto la SPEZZA invece di morire
+            (vedi prune_bush_cells): e' una delle tre armi - con bombolone
+            e bomba di mongolfiera - capaci di distruggere l'arbusto;
+          - distrugge pet e torrette/navicelle avversari che finiscono su
+            una casella dell'arbusto (i gadget del PROPRIETARIO invece lo
+            attraversano liberamente)."""
+        if not self.bushes:
+            return
+        for b in list(self.bushes):
+            b["grow_left"] -= TICK_DT
+            if b["grow_left"] <= 0:
+                b["grow_left"] += BUSH_GROW_INTERVAL_SECONDS
+                self.grow_bush(b)
+            owner = b["owner"]
+            cells = set(b["cells"])
+            # Giocatori avversari all'impatto (posizione frazionaria
+            # reale, come per il muro di spunzoni).
+            for q in self.players.values():
+                if not q.alive or q.id == owner or q.prot_left > 0 or q.ghost_left > 0:
+                    continue
+                dx, dy = DIRECTIONS.get(q.direction, (0, 0)) if q.direction else (0, 0)
+                fx = q.x + dx * q.move_accum
+                fy = q.y + dy * q.move_accum
+                touched = [c for c in b["cells"]
+                           if abs(fx - c[0]) < BUSH_HIT_RANGE and abs(fy - c[1]) < BUSH_HIT_RANGE]
+                if not touched:
+                    continue
+                if q.armor_active:
+                    # Lo scudo spezza i rami toccati invece di far morire.
+                    self.prune_bush_cells(b, touched, q.id, "armor")
+                else:
+                    self.kill_player(q, "bush", shooter_id=owner)
+            # Pet avversari su una casella dell'arbusto: distrutti.
+            for pet in [pt for pt in self.pets if pt["owner"] != owner
+                        and (pt["x"], pt["y"]) in cells]:
+                self.destroy_pet(pet, "bush", owner)
+            # Torrette/navicelle avversarie su una casella dell'arbusto.
+            doomed_turrets = [t for t in self.turrets if t["owner"] != owner
+                              and (t["x"], t["y"]) in cells]
+            for t in doomed_turrets:
+                self.turrets.remove(t)
+                self.push_event({
+                    "kind": "turret_destroyed", "id": t["id"],
+                    "x": t["x"], "y": t["y"], "by": owner,
+                    "cause": "bush",
+                    "evolved": t.get("evolved", False),
+                })
+
+    # ---- bonus 3000 punti: fungo atomico (tasto "1", DOPO l'arbusto spinoso) ----
+
+    def try_place_mushroom(self, player):
+        """Tasto '1', RIUSATO come VERO ultimo gradino della catena: viene
+        chiamato dal dispatch del messaggio "place_mortar" solo quando
+        TUTTA la catena precedente e' esaurita (arbusto spinoso compreso).
+        Piazza UNA SOLA VOLTA (per tutto il round) un piccolo fungo
+        atomico, del colore del proprietario, nella cella corrente: resta
+        a terra come una mina, visibile agli avversari solo entro
+        MUSHROOM_VISIBILITY_RANGE caselle (lato client), finche' un
+        avversario (o un suo pet) non lo CALPESTA facendolo esplodere
+        (vedi update_mushrooms/explode_mushroom).
+
+        Se il giocatore e' intrappolato dalla trappola di un avversario,
+        NON puo' usare alcun bonus finche' non torna libero di muoversi."""
+        if not player.alive or player.trapped_left > 0 or not player.has_mushroom or player.mushroom_placed or player.is_assassin or player.armor_active:
+            return
+        player.mushroom_placed = True
+        m = {
+            "id": uuid.uuid4().hex[:8],
+            "owner": player.id,
+            "x": player.x, "y": player.y,
+        }
+        self.mushrooms.append(m)
+        self.push_event({
+            "kind": "mushroom_place", "id": m["id"], "player": player.id,
+            "x": m["x"], "y": m["y"],
+        })
+
+    def mushroom_public(self, m):
+        return {"id": m["id"], "x": m["x"], "y": m["y"], "owner": m["owner"]}
+
+    def update_mushrooms(self):
+        """Fa esplodere i funghi atomici CALPESTATI: come per le mine, il
+        contatto e' sulla cella esatta. Lo innescano un avversario vivo
+        (corazza e ninja NON lo disinnescano: lo fanno esplodere comunque,
+        il fungo distrugge tutto; solo ghost e protezione post-respawn
+        non lo innescano) oppure un pet avversario che ci passa sopra."""
+        if not self.mushrooms:
+            return
+        for m in list(self.mushrooms):
+            stepped = any(
+                q.alive and q.id != m["owner"]
+                and q.ghost_left <= 0 and q.prot_left <= 0
+                and q.x == m["x"] and q.y == m["y"]
+                for q in self.players.values()
+            ) or any(
+                pet["owner"] != m["owner"] and pet["x"] == m["x"] and pet["y"] == m["y"]
+                for pet in self.pets
+            )
+            if stepped:
+                self.mushrooms.remove(m)
+                self.explode_mushroom(m)
+
+    def explode_mushroom(self, m):
+        """Esplosione del fungo atomico (bonus 3000 punti): l'ordigno piu'
+        devastante del gioco. Con un GROSSO BOATO uccide e distrugge
+        LETTERALMENTE TUTTO cio' che si trova entro
+        MUSHROOM_BLAST_RADIUS_CELLS caselle (distanza Manhattan), tranne
+        le cose del proprietario:
+          - fa perdere una vita a ogni avversario vivo nel raggio (corazza
+            e ninja NON proteggono; ghost e protezione post-respawn si');
+          - distrugge mine, torrette/robot, mortai, pet avversari;
+          - fa esplodere a catena bomboloni avversari e fa sganciare a
+            catena le bombe delle mongolfiere avversarie;
+          - distrugge blob, muri di spunzoni, Tesla e arbusti spinosi
+            avversari (pota TUTTE le celle dell'arbusto nel raggio);
+          - lascia sull'epicentro un'area concentrica AVVELENATA di pari
+            raggio per MUSHROOM_POISON_DURATION_SECONDS (1 minuto), con la
+            stessa logica del veleno del mortaio (una vita di danno al
+            secondo, vedi update_poison_zones) ma nel COLORE del
+            proprietario (flag "atomic" nella zona).
+        Il client, all'evento mushroom_explode, disegna la classica nube a
+        fungo gassosa nel colore del proprietario per
+        MUSHROOM_CLOUD_SECONDS (2 secondi)."""
+        ox, oy = m["x"], m["y"]
+        owner = m["owner"]
+        self.push_event({
+            "kind": "mushroom_explode", "id": m["id"],
+            "x": ox, "y": oy, "by": owner,
+            "radius": MUSHROOM_BLAST_RADIUS_CELLS,
+            "cloud": MUSHROOM_CLOUD_SECONDS,
+        })
+
+        # Giocatori: corazza e ninja NON proteggono.
+        victims = [
+            p for p in self.players.values()
+            if p.alive and p.id != owner
+            and p.ghost_left <= 0 and p.prot_left <= 0
+            and abs(p.x - ox) + abs(p.y - oy) <= MUSHROOM_BLAST_RADIUS_CELLS
+        ]
+        for victim in victims:
+            self.kill_player(victim, "mushroom", shooter_id=owner)
+
+        # Mine avversarie: distrutte.
+        remaining_mines = []
+        for mn in self.mines:
+            if mn["owner"] != owner and abs(mn["x"] - ox) + abs(mn["y"] - oy) <= MUSHROOM_BLAST_RADIUS_CELLS:
+                self.push_event({
+                    "kind": "mine_destroyed", "id": mn["id"],
+                    "x": mn["x"], "y": mn["y"], "by": owner, "cause": "mushroom",
+                })
+            else:
+                remaining_mines.append(mn)
+        self.mines = remaining_mines
+
+        # Torrette/robot avversari: distrutti.
+        remaining_turrets = []
+        for t in self.turrets:
+            if t["owner"] != owner and abs(t["x"] - ox) + abs(t["y"] - oy) <= MUSHROOM_BLAST_RADIUS_CELLS:
+                self.push_event({
+                    "kind": "turret_destroyed", "id": t["id"],
+                    "x": t["x"], "y": t["y"], "by": owner, "cause": "mushroom",
+                    "evolved": t.get("evolved", False),
+                })
+            else:
+                remaining_turrets.append(t)
+        self.turrets = remaining_turrets
+
+        # Mortai avversari: distrutti.
+        remaining_mortars = []
+        for mt in self.mortars:
+            if mt["owner"] != owner and abs(mt["x"] - ox) + abs(mt["y"] - oy) <= MUSHROOM_BLAST_RADIUS_CELLS:
+                self.push_event({
+                    "kind": "mortar_destroyed", "id": mt["id"],
+                    "x": mt["x"], "y": mt["y"], "by": owner, "cause": "mushroom",
+                })
+            else:
+                remaining_mortars.append(mt)
+        self.mortars = remaining_mortars
+
+        # Pet avversari: distrutti.
+        for pet in list(self.pets):
+            if pet["owner"] != owner and abs(pet["x"] - ox) + abs(pet["y"] - oy) <= MUSHROOM_BLAST_RADIUS_CELLS:
+                self.destroy_pet(pet, "mushroom", owner)
+
+        # Bomboloni avversari inesplosi: esplosione a catena.
+        for other in list(self.superbombs):
+            if (other["owner"] != owner and not other.get("destroyed")
+                    and abs(other["x"] - ox) + abs(other["y"] - oy) <= MUSHROOM_BLAST_RADIUS_CELLS):
+                other["destroyed"] = True
+                self.explode_superbomb(other)
+
+        # Mongolfiere avversarie in volo: sgancio a catena.
+        for bal in list(self.balloons):
+            if (bal["owner"] != owner and not bal.get("destroyed")
+                    and abs(bal["x"] - ox) + abs(bal["y"] - oy) <= MUSHROOM_BLAST_RADIUS_CELLS):
+                bal["destroyed"] = True
+                self.explode_balloon_bomb(bal)
+
+        # Blob avversari: distrutti.
+        for blob in list(self.blobs):
+            if blob["owner"] != owner and abs(blob["x"] - ox) + abs(blob["y"] - oy) <= MUSHROOM_BLAST_RADIUS_CELLS:
+                self.destroy_blob(blob, "mushroom", owner)
+
+        # Muri di spunzoni avversari: sgretolati (stesso evento del
+        # fulmine di Tesla, riusato dal client per suono/effetto).
+        remaining_walls = []
+        for w in self.spike_walls:
+            if w["owner"] != owner and abs(w["x"] - ox) + abs(w["y"] - oy) <= MUSHROOM_BLAST_RADIUS_CELLS:
+                self.push_event({
+                    "kind": "spike_wall_expired", "id": w["id"],
+                    "x": w["x"], "y": w["y"],
+                })
+            else:
+                remaining_walls.append(w)
+        self.spike_walls = remaining_walls
+
+        # Tesla avversarie: distrutte.
+        remaining_teslas = []
+        for tesla in self.teslas:
+            if tesla["owner"] != owner and abs(tesla["x"] - ox) + abs(tesla["y"] - oy) <= MUSHROOM_BLAST_RADIUS_CELLS:
+                self.push_event({
+                    "kind": "tesla_destroyed", "id": tesla["id"],
+                    "x": tesla["x"], "y": tesla["y"], "by": owner, "cause": "mushroom",
+                })
+            else:
+                remaining_teslas.append(tesla)
+        self.teslas = remaining_teslas
+
+        # Arbusti spinosi avversari: pota TUTTE le celle nel raggio.
+        for bsh in list(self.bushes):
+            if bsh["owner"] == owner:
+                continue
+            hit = [c for c in bsh["cells"]
+                   if abs(c[0] - ox) + abs(c[1] - oy) <= MUSHROOM_BLAST_RADIUS_CELLS]
+            self.prune_bush_cells(bsh, hit, owner, "mushroom")
+
+        # Area concentrica avvelenata: stessa logica del veleno del
+        # mortaio (update_poison_zones), ma raggio 10, durata 1 minuto e
+        # flag "atomic" per farla colorare del colore del proprietario.
+        poison = {
+            "id": uuid.uuid4().hex[:8],
+            "owner": owner,
+            "x": ox, "y": oy,
+            "left": MUSHROOM_POISON_DURATION_SECONDS,
+            "tick_cd": POISON_TICK_SECONDS,
+            "radius": MUSHROOM_BLAST_RADIUS_CELLS,
+            "atomic": True,
+        }
+        self.poison_zones.append(poison)
+        self.push_event({
+            "kind": "poison_spawn", "id": poison["id"],
+            "x": ox, "y": oy,
+            "duration": MUSHROOM_POISON_DURATION_SECONDS,
+            "radius": MUSHROOM_BLAST_RADIUS_CELLS,
+            "atomic": True,
         })
 
     def mortar_public(self, mt):
@@ -3840,6 +4315,10 @@ class Room:
                     # del blob vivo (radius 0) nel colore di chi ha piazzato
                     # il blob, invece del verde veleno generico.
                     "owner": pz.get("owner"),
+                    # Le zone del fungo atomico vengono colorate dal
+                    # client nel colore del proprietario (vedi
+                    # drawPoisonZones in index.html).
+                    "atomic": pz.get("atomic", False),
                 }
                 for pz in self.poison_zones
             ],
@@ -3848,6 +4327,8 @@ class Room:
             "balloons": [self.balloon_public(b) for b in self.balloons],
             "blobs": [self.blob_public(b) for b in self.blobs],
             "spike_walls": [self.spike_wall_public(w) for w in self.spike_walls],
+            "bushes": [self.bush_public(b) for b in self.bushes],
+            "mushrooms": [self.mushroom_public(m) for m in self.mushrooms],
             "teslas": [self.tesla_public(t) for t in self.teslas],
             "portal_on": self.portal_on,
             "portal_cycle_left": round(max(self.portal_cycle_left, 0), 1),
@@ -3881,6 +4362,8 @@ class Room:
         self.blobs = []
         self.spike_walls = []
         self.teslas = []
+        self.bushes = []
+        self.mushrooms = []
         self.bombs = []
         self.poison_zones = []  # nuvole velenose lasciate a terra dagli impatti del mortaio
         for p in self.players.values():
@@ -3934,6 +4417,11 @@ class Room:
             p.territory_ready = False
             p.territory_used = False
             p.territory_tiles = set()
+            p.has_bush = False
+            p.bush_placed = False
+            p.has_mushroom = False
+            p.mushroom_placed = False
+            p.next_lives_milestone = LIVES_EVERY_POINTS
             p.kills = 0
 
     # ---------- main loop ----------
@@ -3981,6 +4469,8 @@ class Room:
                 self.update_spike_walls()  # bonus 2200 punti: scala la durata dei muri di spunzoni (1 minuto) e uccide gli avversari che ci sbattono contro
                 self.update_teslas()  # bonus 2400 punti: la Tesla fulmina ad area, ogni 2.5s, tutto cio' che appartiene al nemico entro 8 caselle, ignorando i muri
                 self.update_territory_marking()  # bonus 2600 punti: marca (in privato) le caselle calpestate durante la fase di selezione della trappola territoriale
+                self.update_bushes()  # bonus 2800 punti: cresce gli arbusti spinosi (una casella al minuto), uccide al contatto, la corazza li spezza
+                self.update_mushrooms()  # bonus 3000 punti: fa esplodere i funghi atomici calpestati (distruzione totale raggio 10 + area avvelenata 1 minuto)
                 self.move_missiles()  # bonus 400 punti: avanza i missili guidati verso il bersaglio
                 self.update_bombs()   # bonus 1200 punti: avanza le bombe di mortaio in volo e le fa esplodere all'impatto
                 self.update_poison_zones()  # bonus 1200 punti: le nuvole velenose lasciate dagli impatti continuano a fare danno nel tempo
@@ -4301,7 +4791,23 @@ async def handle_client(ws):
                                 # trappola territoriale (vedi
                                 # try_use_territory_trap): prima pressione
                                 # avvia la selezione, seconda la innesca.
-                                room.try_use_territory_trap(player)
+                                # Trappola territoriale gia' CONSUMATA:
+                                # la stessa pressione piazza infine
+                                # l'arbusto spinoso (bonus 2800 punti,
+                                # vedi try_place_bush), nuovo, vero ultimo
+                                # gradino della catena.
+                                if player.territory_used:
+                                    # Arbusto gia' piantato: la stessa
+                                    # pressione piazza infine il fungo
+                                    # atomico (bonus 3000 punti, vedi
+                                    # try_place_mushroom), VERO ultimo
+                                    # gradino della catena.
+                                    if player.bush_placed:
+                                        room.try_place_mushroom(player)
+                                    else:
+                                        room.try_place_bush(player)
+                                else:
+                                    room.try_use_territory_trap(player)
                             else:
                                 room.try_place_tesla(player)
                         else:
