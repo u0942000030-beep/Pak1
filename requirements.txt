@@ -1,0 +1,4 @@
+# websockets >=13 usa la nuova firma di process_request(connection, request)
+# usata in health_check (main.py). Pinnato con un tetto massimo per evitare
+# che un futuro major bump rompa di nuovo il deploy senza preavviso.
+websockets>=13,<17
