@@ -71,7 +71,7 @@ from common import (
     BLOB_THRESHOLD,
     BLOB_ALIVE_THRESHOLD, BLOB_ALIVE_SPEED_MULT,
     BLOB_POISON_DURATION_SECONDS, BLOB_EAT_RANGE_CELLS,
-    SPIKE_WALL_THRESHOLD, SPIKE_WALL_HIT_RANGE,
+    SPIKE_WALL_THRESHOLD, SPIKE_WALL_HIT_RANGE, SPIKE_WALL_AREA_SIDE,
     TESLA_THRESHOLD, TESLA_FIRE_INTERVAL_SECONDS, TESLA_RANGE_CELLS,
     TERRITORY_TRAP_THRESHOLD, TERRITORY_TILES_REQUIRED,
     BUSH_THRESHOLD, BUSH_GROW_INTERVAL_SECONDS, BUSH_HIT_RANGE, BUSH_MAX_EXPANSIONS,
@@ -79,6 +79,8 @@ from common import (
     MUSHROOM_THRESHOLD, MUSHROOM_BLAST_RADIUS_CELLS,
     MUSHROOM_POISON_DURATION_SECONDS, MUSHROOM_VISIBILITY_RANGE,
     MUSHROOM_CLOUD_SECONDS,
+    OCCULT_TESLA_THRESHOLD, OCCULT_TESLA_ATTACK_SECONDS,
+    OCCULT_TESLA_HIDDEN_SECONDS, OCCULT_TESLA_TELEPORT_DISTANCE_CELLS,
     RTT_PING_INTERVAL_SECONDS, RTT_DEFAULT_SECONDS,
     REWIND_MAX_SECONDS, REWIND_HISTORY_SECONDS,
 )
@@ -307,6 +309,15 @@ class Player:
         self.has_mushroom = False     # bonus sbloccato (una volta per round)
         self.mushroom_placed = False  # True dopo il piazzamento
 
+        # ---- bonus 3200 punti: Tesla occulta (tasto "1", DOPO il fungo atomico) ----
+        # Ultimo gradino della catena del tasto "1". Non piazza nulla di
+        # nuovo: potenzia la Tesla laser (bonus 2400 punti) gia' piazzata
+        # dallo stesso giocatore, facendola sprofondare e riemergere altrove
+        # a ripetizione per il resto del round (vedi
+        # try_activate_occult_tesla/update_teslas in main.py).
+        self.has_occult_tesla = False   # bonus sbloccato (una volta per round)
+        self.occult_tesla_used = False  # True dopo l'attivazione: il tasto "1" (a fine catena) e' utilizzabile una sola volta
+
         # ---- vite extra ricorrenti: ogni LIVES_EVERY_POINTS punti +LIVES_EVERY_AMOUNT vite ----
         # Prossimo traguardo da riscattare (1600, poi 3200, 4800, ...).
         self.next_lives_milestone = LIVES_EVERY_POINTS
@@ -385,6 +396,8 @@ class Player:
             "bush_placed": self.bush_placed,
             "mushroom": self.has_mushroom,
             "mushroom_placed": self.mushroom_placed,
+            "occult_tesla": self.has_occult_tesla,
+            "occult_tesla_used": self.occult_tesla_used,
         }
 
 
@@ -780,6 +793,8 @@ class Room:
             p.bush_placed = False
             p.has_mushroom = False
             p.mushroom_placed = False
+            p.has_occult_tesla = False
+            p.occult_tesla_used = False
             p.next_lives_milestone = LIVES_EVERY_POINTS
             p.kills = 0
         self.lasers = []
@@ -1513,6 +1528,27 @@ class Room:
             self.push_event({
                 "kind": "bonus", "player": p.id,
                 "bonus": "mushroom", "points": MUSHROOM_THRESHOLD,
+            })
+
+        # Bonus 3200 punti: sblocca la Tesla occulta, ma NON la attiva
+        # subito. Si attiva a comando RIUSANDO ancora il tasto "1" (vedi
+        # try_activate_occult_tesla), UNA SOLA VOLTA per giocatore per
+        # round, ma solo DOPO aver esaurito tutta la catena precedente del
+        # tasto "1" (fungo atomico compreso): finche' la catena non e'
+        # esaurita, il tasto "1" resta dedicato a quella (vedi il dispatch
+        # del messaggio "place_mortar"). A differenza degli altri gradini
+        # non piazza nulla di nuovo: potenzia la Tesla laser (bonus 2400
+        # punti) gia' piazzata dallo stesso giocatore.
+        if (
+            p.alive
+            and p.points >= OCCULT_TESLA_THRESHOLD
+            and OCCULT_TESLA_THRESHOLD not in p.claimed
+        ):
+            p.claimed.add(OCCULT_TESLA_THRESHOLD)
+            p.has_occult_tesla = True
+            self.push_event({
+                "kind": "bonus", "player": p.id,
+                "bonus": "occult_tesla", "points": OCCULT_TESLA_THRESHOLD,
             })
 
     def try_portal(self, p):
@@ -2688,7 +2724,14 @@ class Room:
         if self.teslas:
             remaining_teslas = []
             for tesla in self.teslas:
-                if tesla["owner"] != owner and abs(tesla["x"] - ox) + abs(tesla["y"] - oy) <= SUPERBOMB_RADIUS_CELLS:
+                # Bonus 3200 punti (Tesla occulta): mentre e' sottoterra
+                # (occult_phase == "hidden") e' irraggiungibile, come le
+                # altre armi che non possono colpirla in quella fase.
+                if (
+                    tesla["owner"] != owner
+                    and tesla.get("occult_phase") != "hidden"
+                    and abs(tesla["x"] - ox) + abs(tesla["y"] - oy) <= SUPERBOMB_RADIUS_CELLS
+                ):
                     self.push_event({
                         "kind": "tesla_destroyed", "id": tesla["id"],
                         "x": tesla["x"], "y": tesla["y"], "by": owner, "cause": "superbomb",
@@ -3182,15 +3225,36 @@ class Room:
         dx, dy = DIRECTIONS.get(player.direction, (0, 0)) if player.direction else (0, 0)
         wx = int(round(player.x + dx * player.move_accum))
         wy = int(round(player.y + dy * player.move_accum))
-        wall = {
-            "id": uuid.uuid4().hex[:8],
-            "owner": player.id,
-            "x": wx, "y": wy,
-        }
-        self.spike_walls.append(wall)
+        # L'arbusto spinoso si espande su un'intera area quadrata
+        # SPIKE_WALL_AREA_SIDE x SPIKE_WALL_AREA_SIDE (15x15) centrata sulla
+        # cella di piazzamento, ma le spine crescono SOLO nelle celle
+        # vuote del labirinto (corridoi/spazi aperti): ogni cella che e'
+        # gia' un muro (is_wall) viene saltata e resta un muro normale,
+        # cosi' l'arbusto non si sovrappone mai alla struttura della mappa.
+        half = SPIKE_WALL_AREA_SIDE // 2
+        group_id = uuid.uuid4().hex[:8]
+        new_cells = []
+        for cy in range(wy - half, wy + half + 1):
+            for cx in range(wx - half, wx + half + 1):
+                if is_wall(self.maze, self.maze_w, self.maze_h, cx, cy):
+                    continue
+                wall = {
+                    "id": f"{group_id}-{cx}-{cy}",
+                    "owner": player.id,
+                    "x": cx, "y": cy,
+                }
+                self.spike_walls.append(wall)
+                new_cells.append([cx, cy])
+        if not new_cells:
+            # Caso limite (praticamente impossibile: la cella di partenza
+            # e' per costruzione libera): garantisce comunque la cella
+            # centrale come fallback.
+            wall = {"id": group_id, "owner": player.id, "x": wx, "y": wy}
+            self.spike_walls.append(wall)
+            new_cells.append([wx, wy])
         self.push_event({
-            "kind": "spike_wall_place", "id": wall["id"], "player": player.id,
-            "x": wx, "y": wy,
+            "kind": "spike_wall_place", "id": group_id, "player": player.id,
+            "x": wx, "y": wy, "cells": new_cells,
         })
 
     def spike_wall_public(self, w):
@@ -3306,6 +3370,11 @@ class Room:
             # in fretta man mano che si ricarica, esattamente come la
             # mira continua della torretta (t["aim"]).
             "charge": round(max(0.0, 1 - t["cd"] / TESLA_FIRE_INTERVAL_SECONDS), 2),
+            # Bonus 3200 punti (Tesla occulta): se attiva, il client sa che
+            # deve alternare il disegno normale a quello della botola di
+            # legno/sottoterra in base a "hidden" (vedi update_teslas).
+            "occult": t.get("occult", False),
+            "hidden": t.get("occult_phase") == "hidden",
         }
 
     def update_teslas(self):
@@ -3322,6 +3391,42 @@ class Room:
         if not self.teslas:
             return
         for t in self.teslas:
+            # Bonus 3200 punti (Tesla occulta): se il potenziamento e'
+            # stato attivato, la torre alterna in perpetuo una fase
+            # "attack" (identica al comportamento normale) a una fase
+            # "hidden" sottoterra, invisibile e inattiva, al termine della
+            # quale riemerge in un punto casuale a
+            # OCCULT_TESLA_TELEPORT_DISTANCE_CELLS caselle da dove si
+            # trovava. Mentre e' nascosta non fulmina (vedi sotto) e non
+            # puo' essere colpita (vedi explode_superbomb/explode_mushroom,
+            # che ora saltano le Tesla con occult_phase == "hidden").
+            if t.get("occult"):
+                t["occult_timer"] = t.get("occult_timer", OCCULT_TESLA_ATTACK_SECONDS) - TICK_DT
+                if t["occult_timer"] <= 0:
+                    if t.get("occult_phase") == "hidden":
+                        # Fine della fase sottoterra: riemerge altrove e
+                        # torna in modalita' attacco.
+                        new_x, new_y = self.pick_teleport_cell((t["x"], t["y"]))
+                        t["x"], t["y"] = new_x, new_y
+                        t["occult_phase"] = "attack"
+                        t["occult_timer"] = OCCULT_TESLA_ATTACK_SECONDS
+                        t["cd"] = TESLA_FIRE_INTERVAL_SECONDS
+                        self.push_event({
+                            "kind": "tesla_reappear", "id": t["id"], "owner": t["owner"],
+                            "x": new_x, "y": new_y,
+                        })
+                    else:
+                        # Fine della fase di attacco: sprofonda sotto la
+                        # botola di legno.
+                        t["occult_phase"] = "hidden"
+                        t["occult_timer"] = OCCULT_TESLA_HIDDEN_SECONDS
+                        self.push_event({
+                            "kind": "tesla_go_underground", "id": t["id"], "owner": t["owner"],
+                            "x": t["x"], "y": t["y"],
+                        })
+                if t.get("occult_phase") == "hidden":
+                    # Sottoterra: non fulmina, non ricarica.
+                    continue
             t["cd"] -= TICK_DT
             if t["cd"] > 0:
                 continue
@@ -3747,6 +3852,62 @@ class Room:
     def mushroom_public(self, m):
         return {"id": m["id"], "x": m["x"], "y": m["y"], "owner": m["owner"]}
 
+    def try_activate_occult_tesla(self, player):
+        """Tasto '1', RIUSATO come VERO ultimo gradino della catena: viene
+        chiamato dal dispatch del messaggio "place_mortar" solo quando
+        TUTTA la catena precedente e' esaurita (fungo atomico compreso).
+        A differenza di tutti gli altri gradini non piazza nulla di nuovo
+        sulla mappa: potenzia UNA SOLA VOLTA (per tutto il round) la Tesla
+        laser (bonus 2400 punti) gia' piazzata dallo stesso giocatore, SE
+        e SOLO SE e' ancora in piedi (non distrutta da un bombolone
+        avversario, vedi explode_superbomb/explode_mushroom). Da quel
+        momento la Tesla sprofonda sotto una botola di legno e inizia il
+        ciclo perpetuo gestito da update_teslas (attacco -> sottoterra ->
+        riemersione altrove, per il resto del round).
+
+        Se il giocatore e' intrappolato dalla trappola di un avversario,
+        NON puo' usare alcun bonus finche' non torna libero di muoversi."""
+        if not player.alive or player.trapped_left > 0 or not player.has_occult_tesla or player.occult_tesla_used or player.is_assassin or player.armor_active:
+            return
+        tesla = next((t for t in self.teslas if t["owner"] == player.id), None)
+        if tesla is None:
+            # Nessuna Tesla in piedi (mai piazzata, oppure gia' distrutta
+            # da un avversario): il potenziamento non ha nulla su cui
+            # applicarsi, quindi resta silenziosamente inutilizzabile.
+            # Non consuma il gradino: il giocatore potra' riprovare piu'
+            # avanti, se e quando la situazione cambiasse (es. dopo un
+            # respawn, se in futuro fosse possibile ripiazzarla).
+            return
+        player.occult_tesla_used = True
+        tesla["occult"] = True
+        tesla["occult_phase"] = "attack"
+        tesla["occult_timer"] = OCCULT_TESLA_ATTACK_SECONDS
+        self.push_event({
+            "kind": "tesla_occult_activate", "id": tesla["id"], "player": player.id,
+            "x": tesla["x"], "y": tesla["y"],
+        })
+
+    def pick_teleport_cell(self, origin, distance=OCCULT_TESLA_TELEPORT_DISTANCE_CELLS):
+        """Sceglie una cella di pavimento CASUALE (mai un muro) che si trovi
+        a esattamente 'distance' caselle (distanza Manhattan) da 'origin':
+        usata dalla Tesla occulta per riemergere sempre a
+        OCCULT_TESLA_TELEPORT_DISTANCE_CELLS caselle da dove si trovava
+        prima di sprofondare. Se nessuna cella della mappa rispetta la
+        distanza esatta (mappe molto piccole o irregolari), si ripiega
+        sulla cella di pavimento che vi si avvicina di piu'."""
+        ox, oy = origin
+        candidates = [
+            c for c in self.free_cells
+            if self.is_floor(c[0], c[1]) and abs(c[0] - ox) + abs(c[1] - oy) == distance
+        ]
+        if candidates:
+            return random.choice(candidates)
+        floor_only = [c for c in self.free_cells if self.is_floor(c[0], c[1])]
+        if not floor_only:
+            return origin
+        closest = min(floor_only, key=lambda c: abs(abs(c[0] - ox) + abs(c[1] - oy) - distance))
+        return closest
+
     def update_mushrooms(self):
         """Fa esplodere i funghi atomici CALPESTATI: come per le mine, il
         contatto e' sulla cella esatta. Lo innescano un avversario vivo
@@ -3883,10 +4044,16 @@ class Room:
                 remaining_walls.append(w)
         self.spike_walls = remaining_walls
 
-        # Tesla avversarie: distrutte.
+        # Tesla avversarie: distrutte (tranne quelle occulte sottoterra in
+        # quel momento, vedi bonus 3200 punti: irraggiungibili mentre sono
+        # nella fase "hidden").
         remaining_teslas = []
         for tesla in self.teslas:
-            if tesla["owner"] != owner and abs(tesla["x"] - ox) + abs(tesla["y"] - oy) <= MUSHROOM_BLAST_RADIUS_CELLS:
+            if (
+                tesla["owner"] != owner
+                and tesla.get("occult_phase") != "hidden"
+                and abs(tesla["x"] - ox) + abs(tesla["y"] - oy) <= MUSHROOM_BLAST_RADIUS_CELLS
+            ):
                 self.push_event({
                     "kind": "tesla_destroyed", "id": tesla["id"],
                     "x": tesla["x"], "y": tesla["y"], "by": owner, "cause": "mushroom",
@@ -4443,6 +4610,8 @@ class Room:
             p.bush_placed = False
             p.has_mushroom = False
             p.mushroom_placed = False
+            p.has_occult_tesla = False
+            p.occult_tesla_used = False
             p.next_lives_milestone = LIVES_EVERY_POINTS
             p.kills = 0
 
@@ -4790,12 +4959,20 @@ async def handle_client(ws):
                 # try_animate_blob), poi piazza il muro di spunzoni (bonus
                 # 2200 punti, vedi try_place_spike_wall) e infine, ultimo
                 # gradino della catena, la Tesla laser (bonus 2400 punti,
-                # vedi try_place_tesla). Ogni step e' utilizzabile una sola
-                # volta per giocatore (i due bomboloni fanno eccezione, ne
-                # hanno due) (vedi try_place_mortar/try_place_superbomb/
+                # vedi try_place_tesla), poi la trappola territoriale
+                # (2600), l'arbusto spinoso (2800), il fungo atomico (3000)
+                # e infine, nuovo VERO ultimo gradino, la Tesla occulta
+                # (3200, vedi try_activate_occult_tesla): a differenza di
+                # tutti gli altri step, questa non piazza nulla di nuovo,
+                # ma potenzia la Tesla laser gia' piazzata. Ogni step e'
+                # utilizzabile una sola volta per giocatore (i due
+                # bomboloni fanno eccezione, ne hanno due) (vedi
+                # try_place_mortar/try_place_superbomb/
                 # try_launch_balloon/try_place_blob/try_animate_blob/
-                # try_place_spike_wall/try_place_tesla): il server resta
-                # l'autorita'.
+                # try_place_spike_wall/try_place_tesla/
+                # try_use_territory_trap/try_place_bush/
+                # try_place_mushroom/try_activate_occult_tesla): il server
+                # resta l'autorita'.
                 if not room or not player:
                     continue
                 superbomb_done = player.has_superbomb and player.superbomb_left <= 0
@@ -4830,10 +5007,17 @@ async def handle_client(ws):
                                     # Arbusto gia' piantato: la stessa
                                     # pressione piazza infine il fungo
                                     # atomico (bonus 3000 punti, vedi
-                                    # try_place_mushroom), VERO ultimo
-                                    # gradino della catena.
+                                    # try_place_mushroom). Una volta che
+                                    # ANCHE il fungo e' stato piazzato, la
+                                    # stessa pressione attiva infine la
+                                    # Tesla occulta (bonus 3200 punti, vedi
+                                    # try_activate_occult_tesla), nuovo,
+                                    # VERO ultimo gradino della catena.
                                     if player.bush_placed:
-                                        room.try_place_mushroom(player)
+                                        if player.mushroom_placed:
+                                            room.try_activate_occult_tesla(player)
+                                        else:
+                                            room.try_place_mushroom(player)
                                     else:
                                         room.try_place_bush(player)
                                 else:

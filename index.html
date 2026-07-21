@@ -859,6 +859,12 @@ let portals = [];          // [[x,y],[x,y]] ricevuti dal server con la mappa
 let beams = [];            // (non piu' usato: il vecchio raggio istantaneo e' stato sostituito dai proiettili)
 let sparks = [];           // scintille per rimbalzo/estinzione laser: {x,y,start}
 let teslaBolts = [];       // fulmini in corso di una Tesla: {x,y,targets:[[x,y],...],start}
+// Bonus 3200 punti (Tesla occulta): effetti one-shot di botola che si apre/
+// chiude quando una Tesla sprofonda o riemerge (vedi eventi
+// "tesla_go_underground"/"tesla_reappear"); lo stato PERMANENTE (nascosta o
+// no) arriva invece ad ogni frame dentro currSnapshot.teslas (t.hidden),
+// letto direttamente da drawTeslas.
+let teslaTrapdoors = [];    // {x,y,color,start,kind:"open"|"close"}
 // ---- bonus 2600 punti: trappola territoriale a spunzoni (tasto "1", DOPO la Tesla) ----
 // Le caselle marcate durante la selezione arrivano SOLO a me (eventi
 // privati "territory_tile"/"territory_start"/"territory_ready", mai nello
@@ -2847,12 +2853,16 @@ function drawMines(now){
 }
 
 // Fungo atomico (bonus 3000 punti, tasto 1 VERO ultimo gradino della
-// catena, dopo l'arbusto spinoso): un piccolo fungo dalla classica forma
-// "cappella + gambo" (come l'emoji), nel colore del proprietario, un po'
-// piu' grande di una mina. Come le mine e' una trappola nascosta: gli
-// avversari lo vedono solo entro MUSHROOM_VISIBILITY_RANGE caselle
-// (Chebyshev, ancora piu' corta di quella delle mine); il proprietario lo
-// vede sempre. Se calpestato esplode (server-authoritative, vedi
+// catena, dopo l'arbusto spinoso): NON il classico fungo a puntini
+// dell'emoji, ma un grosso fungo PORCINO - cappella marrone liscia e
+// bombata, gambo tozzo e bulboso alla base con venature verticali - nel
+// colore del proprietario solo come sottile alone identificativo sul
+// bordo della cappella. Sopra la testa del fungo fluttua il simbolo
+// ufficiale della radioattivita' (☢), a ribadire che si tratta di un
+// fungo ATOMICO. Come le mine e' una trappola nascosta: gli avversari lo
+// vedono solo entro MUSHROOM_VISIBILITY_RANGE caselle (Chebyshev, ancora
+// piu' corta di quella delle mine); il proprietario lo vede sempre. Se
+// calpestato esplode (server-authoritative, vedi
 // update_mushrooms/explode_mushroom in main.py).
 function drawMushrooms(now){
   const all = (currSnapshot && currSnapshot.mushrooms) || [];
@@ -2870,37 +2880,64 @@ function drawMushrooms(now){
     const cy = m.y * BASE_CELL + BASE_CELL / 2;
     const owner = findPlayer(currSnapshot, m.owner);
     const col = (owner && COLOR_HEX[(owner.colors || [])[0]]) || "#ff5fd1";
-    const colDark = darkenHex(col, 0.55);
     const pulse = 0.85 + 0.15 * Math.sin(now / 260);
-    const s = BASE_CELL * 0.62 * pulse; // "un po' piu' grande di una mina" (ingrandito)
+    const s = BASE_CELL * 0.8 * pulse; // grosso fungo porcino: piu' massiccio del vecchio fungo a puntini
 
-    // Gambo chiaro, leggermente svasato alla base.
-    ctx.fillStyle = "#efe8da";
-    ctx.strokeStyle = "#6b6357";
+    // Gambo tozzo, chiaro, bulboso alla base (tipico del porcino).
+    ctx.fillStyle = "#efe2c8";
+    ctx.strokeStyle = "#8a7a56";
     ctx.lineWidth = 1;
     ctx.beginPath();
-    ctx.moveTo(cx - s * 0.16, cy - s * 0.05);
-    ctx.lineTo(cx - s * 0.24, cy + s * 0.42);
-    ctx.quadraticCurveTo(cx, cy + s * 0.55, cx + s * 0.24, cy + s * 0.42);
-    ctx.lineTo(cx + s * 0.16, cy - s * 0.05);
+    ctx.moveTo(cx - s * 0.15, cy - s * 0.04);
+    ctx.quadraticCurveTo(cx - s * 0.32, cy + s * 0.26, cx - s * 0.24, cy + s * 0.5);
+    ctx.quadraticCurveTo(cx, cy + s * 0.62, cx + s * 0.24, cy + s * 0.5);
+    ctx.quadraticCurveTo(cx + s * 0.32, cy + s * 0.26, cx + s * 0.15, cy - s * 0.04);
     ctx.closePath(); ctx.fill(); ctx.stroke();
 
-    // Cappella a cupola nel colore del proprietario.
-    ctx.fillStyle = col;
-    ctx.strokeStyle = colDark;
-    ctx.lineWidth = 1.4;
+    // Venature verticali del gambo (reticolo tipico del porcino).
+    ctx.strokeStyle = "rgba(138,122,86,0.55)";
+    ctx.lineWidth = 0.8;
+    for (let i = -1; i <= 1; i++){
+      ctx.beginPath();
+      ctx.moveTo(cx + i * s * 0.09, cy + s * 0.04);
+      ctx.quadraticCurveTo(cx + i * s * 0.13, cy + s * 0.3, cx + i * s * 0.1, cy + s * 0.48);
+      ctx.stroke();
+    }
+
+    // Cappella marrone, liscia e bombata (niente puntini bianchi: il
+    // porcino ha la cuticola liscia). Sfumatura scura sui bordi per dare
+    // volume, con un sottile alone nel colore del proprietario che ne
+    // segue il profilo cosi' resta comunque riconoscibile a colpo
+    // d'occhio.
+    const capGrad = ctx.createRadialGradient(cx - s * 0.16, cy - s * 0.36, s * 0.05, cx, cy - s * 0.14, s * 0.64);
+    capGrad.addColorStop(0, "#ad7f4e");
+    capGrad.addColorStop(0.55, "#7c5029");
+    capGrad.addColorStop(1, "#4a2c14");
+    ctx.fillStyle = capGrad;
+    ctx.strokeStyle = col;
+    ctx.lineWidth = 1.6;
     ctx.beginPath();
-    ctx.arc(cx, cy - s * 0.02, s * 0.5, Math.PI, 0);
-    ctx.quadraticCurveTo(cx + s * 0.5, cy + s * 0.14, cx + s * 0.34, cy + s * 0.14);
-    ctx.lineTo(cx - s * 0.34, cy + s * 0.14);
-    ctx.quadraticCurveTo(cx - s * 0.5, cy + s * 0.14, cx - s * 0.5, cy - s * 0.02);
+    ctx.arc(cx, cy - s * 0.12, s * 0.58, Math.PI, 0);
+    ctx.quadraticCurveTo(cx + s * 0.6, cy + s * 0.1, cx + s * 0.4, cy + s * 0.13);
+    ctx.lineTo(cx - s * 0.4, cy + s * 0.13);
+    ctx.quadraticCurveTo(cx - s * 0.6, cy + s * 0.1, cx - s * 0.6, cy - s * 0.12);
     ctx.closePath(); ctx.fill(); ctx.stroke();
 
-    // Puntini bianchi sulla cappella (come l'emoji del fungo).
-    ctx.fillStyle = "#fff";
-    ctx.beginPath(); ctx.arc(cx - s * 0.2, cy - s * 0.16, s * 0.09, 0, Math.PI * 2); ctx.fill();
-    ctx.beginPath(); ctx.arc(cx + s * 0.14, cy - s * 0.26, s * 0.07, 0, Math.PI * 2); ctx.fill();
-    ctx.beginPath(); ctx.arc(cx + s * 0.3, cy - s * 0.04, s * 0.06, 0, Math.PI * 2); ctx.fill();
+    // Bordo piu' chiaro sotto la cappella (l'imenio poroso del porcino,
+    // al posto delle classiche lamelle).
+    ctx.globalAlpha = 0.75;
+    ctx.fillStyle = "#d9c48d";
+    ctx.beginPath();
+    ctx.ellipse(cx, cy + s * 0.12, s * 0.4, s * 0.05, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+
+    // Simbolo di radioattivita' che fluttua sopra la testa del fungo:
+    // l'emoji ufficiale ☢, a marcare che e' un fungo ATOMICO.
+    ctx.font = Math.round(s * 0.62) + "px sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText("\u2622\uFE0F", cx, cy - s * 0.85);
   });
   ctx.restore();
 }
@@ -3587,6 +3624,31 @@ function drawTeslas(now){
     const charge = t.charge || 0;
     const pulse = 0.55 + 0.45 * Math.abs(Math.sin(now / (140 - charge * 90)));
 
+    // Bonus 3200 punti (Tesla occulta): mentre e' sottoterra (t.hidden,
+    // vedi update_teslas/tesla_public in main.py) non c'e' nessuna torre
+    // da disegnare: solo la botola di legno chiusa, nel colore del
+    // proprietario, che pulsa leggermente per segnalare che la Tesla e'
+    // ancora li' sotto, in attesa di riemergere altrove.
+    if (t.hidden){
+      const doorPulse = 0.5 + 0.5 * Math.abs(Math.sin(now / 260));
+      ctx.globalAlpha = 0.9;
+      ctx.fillStyle = "#5c4326";
+      ctx.beginPath(); ctx.ellipse(cx, cy, 11, 6.5, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = darkenHex(col, 0.4);
+      ctx.lineWidth = 1.4;
+      ctx.globalAlpha = 0.5 + 0.3 * doorPulse;
+      ctx.stroke();
+      // Assi della botola.
+      ctx.strokeStyle = "#3a2a15";
+      ctx.lineWidth = 1;
+      ctx.globalAlpha = 0.8;
+      for (let i = -2; i <= 2; i++){
+        ctx.beginPath(); ctx.moveTo(cx + i * 3.6, cy - 5); ctx.lineTo(cx + i * 3.6, cy + 5); ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
+      return; // niente altro da disegnare per questa Tesla in questo frame
+    }
+
     // Anello del raggio d'azione (8 caselle): visibile solo al proprietario.
     if (t.owner === myId){
       ctx.globalAlpha = 0.10;
@@ -3611,6 +3673,17 @@ function drawTeslas(now){
     ctx.strokeStyle = col;
     ctx.lineWidth = 1.5;
     ctx.stroke();
+
+    // Se la Tesla e' occulta (ma al momento in superficie), una piccola
+    // botola socchiusa resta visibile alla base come indizio permanente
+    // che quella Tesla e' "diversa" dalle altre.
+    if (t.occult){
+      ctx.globalAlpha = 0.6;
+      ctx.strokeStyle = "#3a2a15";
+      ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.ellipse(cx, cy + 3, 10, 4, 0, 0, Math.PI * 2); ctx.stroke();
+      ctx.globalAlpha = 0.95;
+    }
 
     // Traliccio che sale ben oltre il bordo superiore della cella: e'
     // questo che rende la Tesla visivamente "piu' alta di un muro".
@@ -3658,6 +3731,39 @@ function drawTeslas(now){
       }
     }
   });
+  ctx.restore();
+}
+
+// Bonus 3200 punti (Tesla occulta): animazione one-shot della botola di
+// legno che si apre (Tesla risvegliata o appena riemersa altrove, eventi
+// "tesla_occult_activate"/"tesla_reappear") o si chiude (Tesla appena
+// sprofondata, evento "tesla_go_underground"). Lo stato PERMANENTE
+// "nascosta" e' invece letto ad ogni frame da drawTeslas (t.hidden): qui
+// c'e' solo il breve lampo di polvere/schegge di legno che accompagna la
+// transizione, esattamente come teslaBolts per i fulmini.
+function drawTeslaTrapdoors(now){
+  teslaTrapdoors = teslaTrapdoors.filter(function(d){ return now - d.start < 450; });
+  if (!teslaTrapdoors.length) return;
+  ctx.save();
+  teslaTrapdoors.forEach(function(d){
+    const cx = d.x * BASE_CELL + BASE_CELL / 2, cy = d.y * BASE_CELL + BASE_CELL / 2;
+    const t = (now - d.start) / 450;
+    const grow = d.kind === "close" ? (1 - t) : t;
+    ctx.globalAlpha = (1 - t) * 0.9;
+    ctx.strokeStyle = d.color;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.arc(cx, cy, 6 + grow * 16, 0, Math.PI * 2); ctx.stroke();
+    // Schegge di legno che schizzano via.
+    ctx.fillStyle = "#8a6a3a";
+    for (let i = 0; i < 6; i++){
+      const a = (i / 6) * Math.PI * 2;
+      const r = 4 + t * 18;
+      ctx.beginPath();
+      ctx.arc(cx + Math.cos(a) * r, cy + Math.sin(a) * r * 0.6, 1.6, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  });
+  ctx.globalAlpha = 1;
   ctx.restore();
 }
 
@@ -4485,6 +4591,7 @@ function renderLoop(now){
   drawLaserProjectiles(now);
   drawSparks(now);
   drawTeslaBolts(now);
+  drawTeslaTrapdoors(now);
   drawMyTerritoryTiles(now);
   drawTerritoryBursts(now);
   drawExplosions(now);
@@ -4559,6 +4666,7 @@ function onState(msg){
     sparks = [];
     swirls = [];
     teslaBolts = [];
+    teslaTrapdoors = [];
     territoryBursts = [];
     bushCellBirth = {};
     nukeClouds = [];
@@ -4954,11 +5062,12 @@ function onGameEvent(msg){
         balloon:      ["MONGOLFIERA SBLOCCATA!", "vaga sulla mappa e sgancia bombe \u00b7 premi 1 (dopo il bombolone) per farla librare"],
         blob:         ["BLOB SBLOCCATO!", "blocca la strada e mangia chi passa \u00b7 premi 1 (dopo la mongolfiera) per piazzarlo \u00b7 si rimuove solo sparandogli"],
         blob_alive:   ["BLOB VIVO SBLOCCATO!", "premi 1 (dopo averlo piazzato) per risvegliarlo \u00b7 vaga sulla mappa lasciando una scia velenosa e mangia chi gli e' vicino"],
-        spike_wall:   ["MURO DI SPUNZONI SBLOCCATO!", "premi 1 (a fine catena) per piazzarlo dove ti trovi \u00b7 PERMANENTE per tutto il round \u00b7 solo tu e i tuoi gadget lo attraversate, chiunque altro ci sbatta muore"],
+        spike_wall:   ["ARBUSTO SPINOSO SBLOCCATO!", "premi 1 (a fine catena) per farlo crescere intorno a te \u00b7 occupa un'area 15x15 ma SOLO negli spazi liberi (mai dentro i muri) \u00b7 PERMANENTE per tutto il round \u00b7 solo tu e i tuoi gadget lo attraversate, chiunque altro ci sbatta muore"],
         tesla:        ["TESLA LASER SBLOCCATA!", "premi 1 (dopo il muro di spunzoni) per piazzarla \u00b7 fulmina tutto cio' che e' nemico entro 8 caselle, ignorando i muri"],
         territory_trap: ["TRAPPOLA TERRITORIALE SBLOCCATA!", "premi 1 (dopo la Tesla) e calpesta 20 caselle per marcarle in segreto \u00b7 ripremi 1 per far erompere gli spunzoni"],
         bush:         ["ARBUSTO SPINOSO SBLOCCATO!", "premi 1 (a fine catena) per piantarlo \u00b7 uccide al contatto e cresce di una casella al minuto, inghiottendo anche i muri \u00b7 lo distruggono solo bombolone, mongolfiera e scudo"],
         mushroom:     ["FUNGO ATOMICO SBLOCCATO!", "premi 1 (a fine catena) per piazzarlo \u00b7 nascosto come una mina (visibile solo da 3 caselle) \u00b7 se calpestato distrugge TUTTO in un raggio di 10 caselle e avvelena l'area per 1 minuto"],
+        occult_tesla: ["TESLA OCCULTA SBLOCCATA!", "premi 1 (a fine catena) per risvegliare la tua Tesla \u00b7 sprofonda sottoterra e riemerge altrove a 10 caselle di distanza, alternando 8 secondi di attacco a 1 secondo nascosta"],
       };
       const lb = labels[msg.bonus] || ["BONUS!", ""];
       const txt = lb[0] + (lb[1] ? " \u00b7 " + lb[1] : "");
@@ -5138,7 +5247,7 @@ function onGameEvent(msg){
       // Muro di spunzoni piazzato (bonus 2200 punti): botto di roccia che
       // sbatte a terra. Il muro in se' viene disegnato ad ogni frame
       // leggendo currSnapshot.spike_walls (autorita' server).
-      if (msg.player === myId) showToast("Muro di spunzoni piazzato! E' permanente: solo tu e i tuoi gadget potete attraversarlo.");
+      if (msg.player === myId) showToast("Arbusto spinoso cresciuto negli spazi liberi (area 15x15)! E' permanente: solo tu e i tuoi gadget potete attraversarlo.");
       playSpikeWallPlace();
       break;
     }
@@ -5225,6 +5334,45 @@ function onGameEvent(msg){
       noiseBurst(0.2, 0.16);
       tone(220, 0.16, "sawtooth", 0.14);
       tone(1600, 0.05, "square", 0.1, 0.03);
+      break;
+    }
+    case "tesla_occult_activate": {
+      // Bonus 3200 punti, nuovo VERO ultimo gradino della catena del
+      // tasto "1": la Tesla del proprietario viene risvegliata e da
+      // questo momento entra nel ciclo perpetuo attacco/sottoterra
+      // gestito server-side (vedi update_teslas in main.py); qui c'e' solo
+      // il feedback immediato della botola che inizia ad aprirsi.
+      const ownerOcc = findPlayer(currSnapshot, msg.player);
+      const colOcc = (ownerOcc && COLOR_HEX[(ownerOcc.colors || [])[0]]) || "#5ad1ff";
+      teslaTrapdoors.push({ x: msg.x, y: msg.y, color: colOcc, start: now, kind: "open" });
+      if (msg.player === myId) showToast("Tesla occulta risvegliata! Ora sprofonda e riemerge a 10 caselle di distanza, alternando 8 secondi di attacco a 1 secondo nascosta sottoterra.");
+      tone(140, 0.22, "sawtooth", 0.12);
+      break;
+    }
+    case "tesla_go_underground": {
+      // La Tesla occulta sprofonda sotto la botola di legno (fine della
+      // fase di attacco): resta invisibile e inattiva finche' non arriva
+      // "tesla_reappear". Lo stato "nascosta" vero e proprio e' comunque
+      // sempre letto da currSnapshot.teslas (t.hidden): questo evento
+      // serve solo per l'animazione one-shot della botola che si chiude.
+      const ownerU = findPlayer(currSnapshot, msg.owner);
+      const colU = (ownerU && COLOR_HEX[(ownerU.colors || [])[0]]) || "#5ad1ff";
+      teslaTrapdoors.push({ x: msg.x, y: msg.y, color: colU, start: now, kind: "close" });
+      tone(180, 0.18, "sawtooth", 0.1);
+      tone(90, 0.16, "sine", 0.12, 0.04);
+      break;
+    }
+    case "tesla_reappear": {
+      // La Tesla occulta riemerge in un nuovo punto della mappa, sempre a
+      // 10 caselle esatte da dove si trovava (vedi
+      // OCCULT_TESLA_TELEPORT_DISTANCE_CELLS/pick_teleport_cell in
+      // main.py): animazione one-shot della botola che si riapre nel
+      // nuovo punto.
+      const ownerR = findPlayer(currSnapshot, msg.owner);
+      const colR = (ownerR && COLOR_HEX[(ownerR.colors || [])[0]]) || "#5ad1ff";
+      teslaTrapdoors.push({ x: msg.x, y: msg.y, color: colR, start: now, kind: "open" });
+      tone(500, 0.1, "sawtooth", 0.12);
+      tone(1000, 0.06, "square", 0.09, 0.05);
       break;
     }
     case "territory_start": {
@@ -5665,6 +5813,11 @@ function mineChainStep(p){
   if (p.bush && !p.bush_placed) return "bush";
   // Nuovo, VERO ultimo gradino (bonus 3000 punti): il fungo atomico.
   if (p.mushroom && !p.mushroom_placed) return "mushroom";
+  // Nuovissimo, VERO ultimo gradino (bonus 3200 punti): la Tesla occulta.
+  // A differenza degli altri non piazza nulla: potenzia la Tesla laser
+  // gia' piazzata (se ancora in piedi). Resta comunque l'icona attiva
+  // finche' non e' stata usata (occult_tesla_used), come tutti gli altri.
+  if (p.occult_tesla && !p.occult_tesla_used) return "occult_tesla";
   return null;
 }
 const GADGET_RAIL_KEYS = [
@@ -5937,9 +6090,11 @@ function renderGadgetIcon(icx, key, color){
     icx.lineWidth = res * 0.03;
     icx.beginPath(); icx.arc(cx, cy + res * 0.24, res * 0.1, 0, Math.PI * 2); icx.fill(); icx.stroke();
   } else if (key === "mushroom"){
-    // Fungo atomico (bonus 3000 punti): mini 🍄 nel mio colore.
-    icx.fillStyle = "#efe8da";
-    icx.strokeStyle = "#6b6357";
+    // Fungo atomico (bonus 3000 punti): mini fungo PORCINO (cappella
+    // marrone liscia, niente puntini) con il simbolo ☢ sopra la testa,
+    // coerente con la versione grande disegnata da drawMushrooms.
+    icx.fillStyle = "#efe2c8";
+    icx.strokeStyle = "#8a7a56";
     icx.lineWidth = res * 0.02;
     icx.beginPath();
     icx.moveTo(cx - res * 0.09, cy + res * 0.02);
@@ -5947,18 +6102,50 @@ function renderGadgetIcon(icx, key, color){
     icx.quadraticCurveTo(cx, cy + res * 0.38, cx + res * 0.13, cy + res * 0.3);
     icx.lineTo(cx + res * 0.09, cy + res * 0.02);
     icx.closePath(); icx.fill(); icx.stroke();
-    icx.fillStyle = color;
-    icx.strokeStyle = darkenHex(color, 0.55);
+    icx.fillStyle = "#7c5029";
+    icx.strokeStyle = color;
     icx.lineWidth = res * 0.03;
     icx.beginPath();
     icx.arc(cx, cy - res * 0.02, res * 0.28, Math.PI, 0);
     icx.lineTo(cx + res * 0.28, cy + res * 0.08);
     icx.lineTo(cx - res * 0.28, cy + res * 0.08);
     icx.closePath(); icx.fill(); icx.stroke();
+    icx.font = Math.round(res * 0.32) + "px sans-serif";
+    icx.textAlign = "center";
+    icx.textBaseline = "middle";
+    icx.fillText("\u2622\uFE0F", cx, cy - res * 0.32);
+  } else if (key === "occult_tesla"){
+    // Tesla occulta (bonus 3200 punti): stessa mini Tesla dell'icona
+    // "tesla", ma con una botola di legno socchiusa alla base al posto
+    // del semplice bordo ottagonale, per segnalare a colpo d'occhio che
+    // questo gradino la fa sprofondare e riemergere altrove.
+    const METAL2 = "#3a3d46", METAL_LIGHT2 = "#6b6f7a";
+    const by2 = cy + res * 0.20;
+    icx.fillStyle = "#5c4326";
+    icx.beginPath(); icx.ellipse(cx, by2, res * 0.22, res * 0.11, 0, 0, Math.PI * 2); icx.fill();
+    icx.strokeStyle = "#3a2a15";
+    icx.lineWidth = res * 0.018;
+    for (let i = -1; i <= 1; i++){
+      icx.beginPath();
+      icx.moveTo(cx + i * res * 0.09, by2 - res * 0.08);
+      icx.lineTo(cx + i * res * 0.09, by2 + res * 0.08);
+      icx.stroke();
+    }
+    const topY2 = cy - res * 0.34;
+    icx.strokeStyle = METAL_LIGHT2;
+    icx.lineWidth = res * 0.06;
+    icx.lineCap = "round";
+    icx.beginPath();
+    icx.moveTo(cx - res * 0.10, by2); icx.lineTo(cx - res * 0.05, topY2);
+    icx.moveTo(cx + res * 0.10, by2); icx.lineTo(cx + res * 0.05, topY2);
+    icx.stroke();
+    icx.lineCap = "butt";
+    icx.fillStyle = color;
+    icx.globalAlpha = 0.5;
+    icx.beginPath(); icx.arc(cx, topY2, res * 0.14, 0, Math.PI * 2); icx.fill();
+    icx.globalAlpha = 1;
     icx.fillStyle = "#fff";
-    icx.beginPath(); icx.arc(cx - res * 0.11, cy - res * 0.1, res * 0.05, 0, Math.PI * 2); icx.fill();
-    icx.beginPath(); icx.arc(cx + res * 0.08, cy - res * 0.15, res * 0.04, 0, Math.PI * 2); icx.fill();
-    icx.beginPath(); icx.arc(cx + res * 0.17, cy - res * 0.02, res * 0.035, 0, Math.PI * 2); icx.fill();
+    icx.beginPath(); icx.arc(cx, topY2, res * 0.06, 0, Math.PI * 2); icx.fill();
   } else if (key === "2" || key === "8"){
     // Ninja/pet (vedi drawPacmanVariant): stesso mini Pac-Man del gioco.
     // Il ninja e' semitrasparente con alone rosso pulsante (come si vede
@@ -6323,6 +6510,7 @@ function mineMortarChainPending(me){
   if (me.territory_trap && !me.territory_used) return true;
   if (me.bush && !me.bush_placed) return true;
   if (me.mushroom && !me.mushroom_placed) return true;
+  if (me.occult_tesla && !me.occult_tesla_used) return true;
   return false;
 }
 

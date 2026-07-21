@@ -319,6 +319,7 @@ SPIKE_WALL_THRESHOLD = 2200
 # (niente piu' durata di 1 minuto). Puo' essere abbattuto solo da un
 # fulmine di Tesla avversaria (vedi tesla_zap) o da un fungo atomico.
 SPIKE_WALL_HIT_RANGE = 0.6           # distanza (frazione di cella, per asse) sotto la quale un avversario e' considerato "all'impatto" con gli spunzoni
+SPIKE_WALL_AREA_SIDE = 15            # l'arbusto spinoso cresce su un'area quadrata di 15x15 caselle centrata sul punto di piazzamento, occupando SOLO le celle vuote (non muro): vedi try_place_spike_wall
 
 # ---- bonus 2400 punti: Tesla laser (tasto "1", DOPO il muro di spunzoni) ----
 # Ultimo gradino della catena del tasto "1". Ispirata alla torre "Tesla" di
@@ -415,6 +416,28 @@ MUSHROOM_BLAST_RADIUS_CELLS = 12        # raggio di distruzione E dell'area avve
 MUSHROOM_POISON_DURATION_SECONDS = 60.0 # l'area resta avvelenata per 1 minuto
 MUSHROOM_VISIBILITY_RANGE = 3           # visibile solo entro 3 caselle (Chebyshev); il proprietario lo vede sempre
 MUSHROOM_CLOUD_SECONDS = 2.0            # durata della nube a fungo (client)
+
+# ---- bonus 3200 punti: Tesla occulta (tasto "1", DOPO il fungo atomico) ----
+# Nuovo, vero ultimo gradino della catena del tasto "1". A differenza di
+# tutti gli altri gradini NON piazza nulla di nuovo sulla mappa: e' un
+# POTENZIAMENTO che si applica alla Tesla laser (bonus 2400 punti) gia'
+# piazzata dallo stesso giocatore, sempre che sia ancora in piedi (non
+# distrutta da un bombolone avversario). Alla pressione del tasto "1"
+# (vedi try_activate_occult_tesla in main.py) sotto la Tesla si apre una
+# botola di legno che la fa sparire sotto terra: da quel momento la Tesla
+# entra in un ciclo perpetuo, per il resto del round, alternando
+# OCCULT_TESLA_ATTACK_SECONDS in "modalita' attacco" (fulmina normalmente,
+# come prima, ogni TESLA_FIRE_INTERVAL_SECONDS) a OCCULT_TESLA_HIDDEN_SECONDS
+# nascosta sottoterra (non fulmina e non puo' essere colpita), per poi
+# riemergere in un punto CASUALE della mappa, sempre a esattamente
+# OCCULT_TESLA_TELEPORT_DISTANCE_CELLS caselle (distanza Manhattan) da dove
+# si trovava prima di sprofondare. Come lo sblocco/utilizzo degli altri
+# gradini della catena, e' consumato UNA SOLA VOLTA per giocatore per round
+# (vedi Player.occult_tesla_used).
+OCCULT_TESLA_THRESHOLD = 3200
+OCCULT_TESLA_ATTACK_SECONDS = 8.0          # durata di ogni fase "in superficie", a fulminare come al solito
+OCCULT_TESLA_HIDDEN_SECONDS = 1.0          # durata di ogni fase "sottoterra", invisibile e inattiva
+OCCULT_TESLA_TELEPORT_DISTANCE_CELLS = 10  # distanza (Manhattan) esatta a cui riemerge rispetto a dove si trovava
 BLOB_POISON_DURATION_SECONDS = 4.0                # quanto resta a terra ciascuna nuvola della scia del blob vivo
 BLOB_EAT_RANGE_CELLS = 1                          # distanza (caselle, stile scacchi/Chebyshev): il blob mangia anche chi non e' esattamente sopra di lui, ma solo adiacente
 
