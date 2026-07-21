@@ -71,7 +71,7 @@ from common import (
     BLOB_THRESHOLD,
     BLOB_ALIVE_THRESHOLD, BLOB_ALIVE_SPEED_MULT,
     BLOB_POISON_DURATION_SECONDS, BLOB_EAT_RANGE_CELLS,
-    SPIKE_WALL_THRESHOLD, SPIKE_WALL_HIT_RANGE, SPIKE_WALL_AREA_SIDE,
+    SPIKE_WALL_THRESHOLD, SPIKE_WALL_HIT_RANGE,
     TESLA_THRESHOLD, TESLA_FIRE_INTERVAL_SECONDS, TESLA_RANGE_CELLS,
     TERRITORY_TRAP_THRESHOLD, TERRITORY_TILES_REQUIRED,
     BUSH_THRESHOLD, BUSH_GROW_INTERVAL_SECONDS, BUSH_HIT_RANGE, BUSH_MAX_EXPANSIONS,
@@ -3225,36 +3225,14 @@ class Room:
         dx, dy = DIRECTIONS.get(player.direction, (0, 0)) if player.direction else (0, 0)
         wx = int(round(player.x + dx * player.move_accum))
         wy = int(round(player.y + dy * player.move_accum))
-        # L'arbusto spinoso si espande su un'intera area quadrata
-        # SPIKE_WALL_AREA_SIDE x SPIKE_WALL_AREA_SIDE (15x15) centrata sulla
-        # cella di piazzamento, ma le spine crescono SOLO nelle celle
-        # vuote del labirinto (corridoi/spazi aperti): ogni cella che e'
-        # gia' un muro (is_wall) viene saltata e resta un muro normale,
-        # cosi' l'arbusto non si sovrappone mai alla struttura della mappa.
-        half = SPIKE_WALL_AREA_SIDE // 2
+        # Un singolo blocco di muro, grande esattamente quanto una cella
+        # di muro normale, piazzato sulla cella corrente del giocatore.
         group_id = uuid.uuid4().hex[:8]
-        new_cells = []
-        for cy in range(wy - half, wy + half + 1):
-            for cx in range(wx - half, wx + half + 1):
-                if is_wall(self.maze, self.maze_w, self.maze_h, cx, cy):
-                    continue
-                wall = {
-                    "id": f"{group_id}-{cx}-{cy}",
-                    "owner": player.id,
-                    "x": cx, "y": cy,
-                }
-                self.spike_walls.append(wall)
-                new_cells.append([cx, cy])
-        if not new_cells:
-            # Caso limite (praticamente impossibile: la cella di partenza
-            # e' per costruzione libera): garantisce comunque la cella
-            # centrale come fallback.
-            wall = {"id": group_id, "owner": player.id, "x": wx, "y": wy}
-            self.spike_walls.append(wall)
-            new_cells.append([wx, wy])
+        wall = {"id": group_id, "owner": player.id, "x": wx, "y": wy}
+        self.spike_walls.append(wall)
         self.push_event({
             "kind": "spike_wall_place", "id": group_id, "player": player.id,
-            "x": wx, "y": wy, "cells": new_cells,
+            "x": wx, "y": wy, "cells": [[wx, wy]],
         })
 
     def spike_wall_public(self, w):
@@ -3667,7 +3645,8 @@ class Room:
         ogni BUSH_GROW_INTERVAL_SECONDS (1 minuto) si espande TUTTO
         INTORNO A SE', occupando in un colpo solo le caselle adiacenti
         (anche in diagonale) a quelle gia' occupate (1 casella -> 3x3 ->
-        5x5 -> ...), inghiottendo anche i muri, fino a un massimo di
+        5x5 -> ...), occupando SOLO le celle vuote (i muri restano
+        intoccati), fino a un massimo di
         BUSH_MAX_EXPANSIONS anelli di crescita, dopodiche' smette di
         espandersi ma resta comunque letale finche' l'arbusto non viene
         eliminato del tutto (bombolone, bomba di mongolfiera o corazza).
@@ -3706,10 +3685,11 @@ class Room:
         caselle adiacenti (comprese le diagonali) non ancora occupate e
         dentro il bordo esterno della mappa, formando un anello
         concentrico che si allarga di volta in volta (1 casella -> 3x3 ->
-        5x5 -> ...). La crescita e' CIECA rispetto ai muri: l'arbusto li
-        inghiotte (la cella-muro resta invalicabile sotto i rami, ma viene
-        ricoperta; se poi quella cella viene potata, il muro riappare).
-        Per ogni nuova casella viene comunque emesso un evento bush_grow
+        5x5 -> ...). La crescita rispetta i muri del labirinto: ogni
+        cella che e' gia' un muro (is_wall) viene saltata e resta un muro
+        normale, cosi' l'arbusto si espande solo negli spazi vuoti
+        (corridoi/aree aperte) e non si sovrappone mai alla struttura
+        della mappa. Per ogni nuova casella viene comunque emesso un evento bush_grow
         separato (stesso schema di prima), cosi' il client continua ad
         animare la crescita casella per casella invece che di colpo."""
         occupied = set(b["cells"])
@@ -3723,7 +3703,8 @@ class Room:
                     # Il bordo esterno (cornice della mappa) resta intoccabile:
                     # inghiottirlo aprirebbe "buchi" verso il nulla.
                     if 1 <= nx <= self.maze_w - 2 and 1 <= ny <= self.maze_h - 2 \
-                            and (nx, ny) not in occupied:
+                            and (nx, ny) not in occupied \
+                            and not is_wall(self.maze, self.maze_w, self.maze_h, nx, ny):
                         new_cells.add((nx, ny))
         if not new_cells:
             return

@@ -319,7 +319,7 @@ SPIKE_WALL_THRESHOLD = 2200
 # (niente piu' durata di 1 minuto). Puo' essere abbattuto solo da un
 # fulmine di Tesla avversaria (vedi tesla_zap) o da un fungo atomico.
 SPIKE_WALL_HIT_RANGE = 0.6           # distanza (frazione di cella, per asse) sotto la quale un avversario e' considerato "all'impatto" con gli spunzoni
-SPIKE_WALL_AREA_SIDE = 15            # l'arbusto spinoso cresce su un'area quadrata di 15x15 caselle centrata sul punto di piazzamento, occupando SOLO le celle vuote (non muro): vedi try_place_spike_wall
+
 
 # ---- bonus 2400 punti: Tesla laser (tasto "1", DOPO il muro di spunzoni) ----
 # Ultimo gradino della catena del tasto "1". Ispirata alla torre "Tesla" di
