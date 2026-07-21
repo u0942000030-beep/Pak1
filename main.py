@@ -318,8 +318,11 @@ class Player:
         self.has_occult_tesla = False   # bonus sbloccato (una volta per round)
         self.occult_tesla_used = False  # True dopo l'attivazione: il tasto "1" (a fine catena) e' utilizzabile una sola volta
 
-        # ---- vite extra ricorrenti: ogni LIVES_EVERY_POINTS punti +LIVES_EVERY_AMOUNT vite ----
-        # Prossimo traguardo da riscattare (1600, poi 3200, 4800, ...).
+        # next_lives_milestone: campo storico del bonus vite ricorrente
+        # ogni LIVES_EVERY_POINTS punti, ora RIMOSSO su richiesta (restava
+        # solo extra_life/extra_life_3 alle soglie fisse di
+        # BONUS_THRESHOLDS). Tenuto per non toccare altro codice, ma non
+        # produce piu' alcun effetto.
         self.next_lives_milestone = LIVES_EVERY_POINTS
         # Uccisioni fatte in questo round: ogni 2 kill si guadagna una vita extra.
         self.kills = 0
@@ -1234,17 +1237,6 @@ class Room:
                 "bonus": kind, "points": threshold,
             })
 
-        # Traguardo RICORRENTE: ogni LIVES_EVERY_POINTS punti (1600, 3200,
-        # 4800, ...) si guadagnano LIVES_EVERY_AMOUNT vite extra in un
-        # colpo solo, senza limite. Il while gestisce anche il caso di un
-        # balzo di punti che scavalca piu' traguardi in un colpo.
-        while p.alive and p.points >= p.next_lives_milestone:
-            p.lives += LIVES_EVERY_AMOUNT
-            self.push_event({
-                "kind": "bonus", "player": p.id,
-                "bonus": "extra_life_3", "points": p.next_lives_milestone,
-            })
-            p.next_lives_milestone += LIVES_EVERY_POINTS
         # Bonus 300 punti: sblocca la modalita' ninja (invisibilita' +
         # velocita' + uccisione al contatto), ma NON la attiva. Si attiva
         # a comando col tasto "2" (vedi try_activate_ninja).
@@ -3923,12 +3915,8 @@ class Room:
           - fa esplodere a catena bomboloni avversari e fa sganciare a
             catena le bombe delle mongolfiere avversarie;
           - distrugge blob, muri di spunzoni, Tesla e arbusti spinosi
-            avversari (pota TUTTE le celle dell'arbusto nel raggio);
-          - lascia sull'epicentro un'area concentrica AVVELENATA di pari
-            raggio per MUSHROOM_POISON_DURATION_SECONDS (1 minuto), con la
-            stessa logica del veleno del mortaio (una vita di danno al
-            secondo, vedi update_poison_zones) ma nel COLORE del
-            proprietario (flag "atomic" nella zona).
+            avversari (pota TUTTE le celle dell'arbusto nel raggio).
+        Nessuna area avvelenata residua: e' pura esplosione istantanea.
         Il client, all'evento mushroom_explode, disegna la classica nube a
         fungo gassosa nel colore del proprietario per
         MUSHROOM_CLOUD_SECONDS (2 secondi)."""
@@ -4051,26 +4039,11 @@ class Room:
                    if abs(c[0] - ox) + abs(c[1] - oy) <= MUSHROOM_BLAST_RADIUS_CELLS]
             self.prune_bush_cells(bsh, hit, owner, "mushroom")
 
-        # Area concentrica avvelenata: stessa logica del veleno del
-        # mortaio (update_poison_zones), ma raggio 10, durata 1 minuto e
-        # flag "atomic" per farla colorare del colore del proprietario.
-        poison = {
-            "id": uuid.uuid4().hex[:8],
-            "owner": owner,
-            "x": ox, "y": oy,
-            "left": MUSHROOM_POISON_DURATION_SECONDS,
-            "tick_cd": POISON_TICK_SECONDS,
-            "radius": MUSHROOM_BLAST_RADIUS_CELLS,
-            "atomic": True,
-        }
-        self.poison_zones.append(poison)
-        self.push_event({
-            "kind": "poison_spawn", "id": poison["id"],
-            "x": ox, "y": oy,
-            "duration": MUSHROOM_POISON_DURATION_SECONDS,
-            "radius": MUSHROOM_BLAST_RADIUS_CELLS,
-            "atomic": True,
-        })
+        # Il fungo atomico ora e' pura esplosione istantanea: niente piu'
+        # area avvelenata residua sull'epicentro (rimossa su richiesta:
+        # "la nube radioattiva del fungo deve solo esplodere"). Restano il
+        # boato, i danni/distruzioni nel raggio e la nube animata client
+        # (2 secondi, drawNukeClouds) come unico effetto visivo.
 
     def mortar_public(self, mt):
         return {

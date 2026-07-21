@@ -412,7 +412,7 @@ LIVES_EVERY_AMOUNT = 3
 # All'esplosione il client disegna il classico fungo atomico gassoso, nel
 # colore del proprietario, per MUSHROOM_CLOUD_SECONDS (2 secondi).
 MUSHROOM_THRESHOLD = 3000
-MUSHROOM_BLAST_RADIUS_CELLS = 12        # raggio di distruzione E dell'area avvelenata (caselle, Manhattan)
+MUSHROOM_BLAST_RADIUS_CELLS = 8         # raggio di distruzione (caselle, Manhattan)
 MUSHROOM_POISON_DURATION_SECONDS = 60.0 # l'area resta avvelenata per 1 minuto
 MUSHROOM_VISIBILITY_RANGE = 3           # visibile solo entro 3 caselle (Chebyshev); il proprietario lo vede sempre
 MUSHROOM_CLOUD_SECONDS = 2.0            # durata della nube a fungo (client)

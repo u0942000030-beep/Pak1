@@ -2854,16 +2854,13 @@ function drawMines(now){
 
 // Fungo atomico (bonus 3000 punti, tasto 1 VERO ultimo gradino della
 // catena, dopo l'arbusto spinoso): NON il classico fungo a puntini
-// dell'emoji, ma un grosso fungo PORCINO - cappella marrone liscia e
-// bombata, gambo tozzo e bulboso alla base con venature verticali - nel
-// colore del proprietario solo come sottile alone identificativo sul
-// bordo della cappella. Sopra la testa del fungo fluttua il simbolo
-// ufficiale della radioattivita' (☢), a ribadire che si tratta di un
-// fungo ATOMICO. Come le mine e' una trappola nascosta: gli avversari lo
-// vedono solo entro MUSHROOM_VISIBILITY_RANGE caselle (Chebyshev, ancora
-// piu' corta di quella delle mine); il proprietario lo vede sempre. Se
-// calpestato esplode (server-authoritative, vedi
-// update_mushrooms/explode_mushroom in main.py).
+// dell'emoji, ma un grosso fungo PORCINO - cappella liscia e bombata nel
+// colore PIENO del proprietario (sfumata per dare volume), gambo tozzo e
+// bulboso alla base con venature verticali. Come le mine e' una trappola
+// nascosta: gli avversari lo vedono solo entro MUSHROOM_VISIBILITY_RANGE
+// caselle (Chebyshev, ancora piu' corta di quella delle mine); il
+// proprietario lo vede sempre. Se calpestato esplode (server-authoritative,
+// vedi update_mushrooms/explode_mushroom in main.py).
 function drawMushrooms(now){
   const all = (currSnapshot && currSnapshot.mushrooms) || [];
   const me = findPlayer(currSnapshot, myId);
@@ -2904,17 +2901,17 @@ function drawMushrooms(now){
       ctx.stroke();
     }
 
-    // Cappella marrone, liscia e bombata (niente puntini bianchi: il
-    // porcino ha la cuticola liscia). Sfumatura scura sui bordi per dare
-    // volume, con un sottile alone nel colore del proprietario che ne
-    // segue il profilo cosi' resta comunque riconoscibile a colpo
+    // Cappella liscia e bombata (niente puntini bianchi: il porcino ha la
+    // cuticola liscia), ora nel colore PIENO del proprietario invece che
+    // marrone: sfumatura chiaro/scuro derivata dallo stesso colore per
+    // dare volume, cosi' il fungo resta subito riconoscibile a colpo
     // d'occhio.
     const capGrad = ctx.createRadialGradient(cx - s * 0.16, cy - s * 0.36, s * 0.05, cx, cy - s * 0.14, s * 0.64);
-    capGrad.addColorStop(0, "#ad7f4e");
-    capGrad.addColorStop(0.55, "#7c5029");
-    capGrad.addColorStop(1, "#4a2c14");
+    capGrad.addColorStop(0, lightenHex(col, 0.45));
+    capGrad.addColorStop(0.55, col);
+    capGrad.addColorStop(1, darkenHex(col, 0.55));
     ctx.fillStyle = capGrad;
-    ctx.strokeStyle = col;
+    ctx.strokeStyle = darkenHex(col, 0.35);
     ctx.lineWidth = 1.6;
     ctx.beginPath();
     ctx.arc(cx, cy - s * 0.12, s * 0.58, Math.PI, 0);
@@ -2924,20 +2921,14 @@ function drawMushrooms(now){
     ctx.closePath(); ctx.fill(); ctx.stroke();
 
     // Bordo piu' chiaro sotto la cappella (l'imenio poroso del porcino,
-    // al posto delle classiche lamelle).
+    // al posto delle classiche lamelle), sempre derivato dal colore del
+    // proprietario.
     ctx.globalAlpha = 0.75;
-    ctx.fillStyle = "#d9c48d";
+    ctx.fillStyle = lightenHex(col, 0.55);
     ctx.beginPath();
     ctx.ellipse(cx, cy + s * 0.12, s * 0.4, s * 0.05, 0, 0, Math.PI * 2);
     ctx.fill();
     ctx.globalAlpha = 1;
-
-    // Simbolo di radioattivita' che fluttua sopra la testa del fungo:
-    // l'emoji ufficiale ☢, a marcare che e' un fungo ATOMICO.
-    ctx.font = Math.round(s * 0.62) + "px sans-serif";
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    ctx.fillText("\u2622\uFE0F", cx, cy - s * 0.85);
   });
   ctx.restore();
 }
@@ -5066,7 +5057,7 @@ function onGameEvent(msg){
         tesla:        ["TESLA LASER SBLOCCATA!", "premi 1 (dopo il muro di spunzoni) per piazzarla \u00b7 fulmina tutto cio' che e' nemico entro 8 caselle, ignorando i muri"],
         territory_trap: ["TRAPPOLA TERRITORIALE SBLOCCATA!", "premi 1 (dopo la Tesla) e calpesta 20 caselle per marcarle in segreto \u00b7 ripremi 1 per far erompere gli spunzoni"],
         bush:         ["ARBUSTO SPINOSO SBLOCCATO!", "premi 1 (a fine catena) per piantarlo \u00b7 uccide al contatto e cresce di una casella al minuto, SOLO negli spazi liberi (mai dentro i muri) \u00b7 lo distruggono solo bombolone, mongolfiera e scudo"],
-        mushroom:     ["FUNGO ATOMICO SBLOCCATO!", "premi 1 (a fine catena) per piazzarlo \u00b7 nascosto come una mina (visibile solo da 3 caselle) \u00b7 se calpestato distrugge TUTTO in un raggio di 10 caselle e avvelena l'area per 1 minuto"],
+        mushroom:     ["FUNGO ATOMICO SBLOCCATO!", "premi 1 (a fine catena) per piazzarlo \u00b7 nascosto come una mina (visibile solo da 3 caselle) \u00b7 se calpestato distrugge TUTTO in un raggio di 8 caselle"],
         occult_tesla: ["TESLA OCCULTA SBLOCCATA!", "premi 1 (a fine catena) per risvegliare la tua Tesla \u00b7 sprofonda sottoterra e riemerge altrove a 10 caselle di distanza, alternando 8 secondi di attacco a 1 secondo nascosta"],
       };
       const lb = labels[msg.bonus] || ["BONUS!", ""];
@@ -5290,7 +5281,7 @@ function onGameEvent(msg){
       // Fungo atomico piazzato (bonus 3000 punti): il fungo in se' viene
       // disegnato ad ogni frame leggendo currSnapshot.mushrooms
       // (autorita' server, visibilita' 3 caselle lato client).
-      if (msg.player === myId) showToast("Fungo atomico piazzato! Chi lo calpesta scatena la distruzione totale in un raggio di 10 caselle.");
+      if (msg.player === myId) showToast("Fungo atomico piazzato! Chi lo calpesta scatena la distruzione totale in un raggio di 8 caselle.");
       playMushroomPlace();
       break;
     }
@@ -5300,7 +5291,7 @@ function onGameEvent(msg){
       const nOwner = findPlayer(currSnapshot, msg.by);
       const nCol = (nOwner && COLOR_HEX[(nOwner.colors || [])[0]]) || "#ffd400";
       nukeClouds.push({ x: msg.x, y: msg.y, color: nCol, start: now });
-      shockwaves.push({ x: msg.x, y: msg.y, color: nCol, start: now, radiusCells: msg.radius || 10 });
+      shockwaves.push({ x: msg.x, y: msg.y, color: nCol, start: now, radiusCells: msg.radius || 8 });
       playNukeBoom();
       break;
     }
@@ -6091,8 +6082,8 @@ function renderGadgetIcon(icx, key, color){
     icx.beginPath(); icx.arc(cx, cy + res * 0.24, res * 0.1, 0, Math.PI * 2); icx.fill(); icx.stroke();
   } else if (key === "mushroom"){
     // Fungo atomico (bonus 3000 punti): mini fungo PORCINO (cappella
-    // marrone liscia, niente puntini) con il simbolo ☢ sopra la testa,
-    // coerente con la versione grande disegnata da drawMushrooms.
+    // liscia, niente puntini) nel colore del proprietario, coerente con
+    // la versione grande disegnata da drawMushrooms.
     icx.fillStyle = "#efe2c8";
     icx.strokeStyle = "#8a7a56";
     icx.lineWidth = res * 0.02;
@@ -6102,18 +6093,14 @@ function renderGadgetIcon(icx, key, color){
     icx.quadraticCurveTo(cx, cy + res * 0.38, cx + res * 0.13, cy + res * 0.3);
     icx.lineTo(cx + res * 0.09, cy + res * 0.02);
     icx.closePath(); icx.fill(); icx.stroke();
-    icx.fillStyle = "#7c5029";
-    icx.strokeStyle = color;
+    icx.fillStyle = color;
+    icx.strokeStyle = darkenHex(color, 0.35);
     icx.lineWidth = res * 0.03;
     icx.beginPath();
     icx.arc(cx, cy - res * 0.02, res * 0.28, Math.PI, 0);
     icx.lineTo(cx + res * 0.28, cy + res * 0.08);
     icx.lineTo(cx - res * 0.28, cy + res * 0.08);
     icx.closePath(); icx.fill(); icx.stroke();
-    icx.font = Math.round(res * 0.32) + "px sans-serif";
-    icx.textAlign = "center";
-    icx.textBaseline = "middle";
-    icx.fillText("\u2622\uFE0F", cx, cy - res * 0.32);
   } else if (key === "occult_tesla"){
     // Tesla occulta (bonus 3200 punti): stessa mini Tesla dell'icona
     // "tesla", ma con una botola di legno socchiusa alla base al posto
