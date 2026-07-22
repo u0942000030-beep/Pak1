@@ -399,7 +399,7 @@ TERRITORY_TILES_REQUIRED = 20        # caselle nuove da calpestare per completar
 BUSH_THRESHOLD = 2800
 BUSH_GROW_INTERVAL_SECONDS = 60.0   # un'espansione ad anello al minuto
 BUSH_HIT_RANGE = 0.6                # stessa distanza d'impatto del muro di spunzoni (frazione di cella, per asse)
-BUSH_MAX_EXPANSIONS = 4             # numero massimo di anelli di crescita (1 casella -> 3x3 -> 5x5 -> 7x7 -> 9x9, poi si ferma)
+BUSH_MAX_EXPANSIONS = 6             # numero massimo di anelli di crescita (1 casella -> 3x3 -> 5x5 -> 7x7 -> 9x9 -> 11x11 -> 13x13, poi si ferma): dimensione massima raggiunta dopo 6 minuti dal piazzamento
 
 # ---- vite extra ricorrenti ----
 # OGNI LIVES_EVERY_POINTS punti (1600, 3200, 4800, ...) si guadagnano
@@ -433,6 +433,7 @@ MUSHROOM_BLAST_RADIUS_CELLS = 8         # raggio di distruzione (caselle, Manhat
 MUSHROOM_POISON_DURATION_SECONDS = 60.0 # l'area resta avvelenata per 1 minuto
 MUSHROOM_VISIBILITY_RANGE = 3           # visibile solo entro 3 caselle (Chebyshev); il proprietario lo vede sempre
 MUSHROOM_CLOUD_SECONDS = 2.0            # durata della nube a fungo (client)
+MUSHROOM_RESPAWN_INTERVAL_SECONDS = 60.0 # il fungo "originale" ne genera un altro a caso sulla mappa ogni minuto, finche' non viene fatto esplodere
 
 # ---- bonus 3200 punti: Tesla occulta (tasto "1", DOPO il fungo atomico) ----
 # Nuovo, vero ultimo gradino della catena del tasto "1". A differenza di

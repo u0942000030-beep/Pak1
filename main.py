@@ -78,7 +78,7 @@ from common import (
     LIVES_EVERY_POINTS, LIVES_EVERY_AMOUNT,
     MUSHROOM_THRESHOLD, MUSHROOM_BLAST_RADIUS_CELLS,
     MUSHROOM_POISON_DURATION_SECONDS, MUSHROOM_VISIBILITY_RANGE,
-    MUSHROOM_CLOUD_SECONDS,
+    MUSHROOM_CLOUD_SECONDS, MUSHROOM_RESPAWN_INTERVAL_SECONDS,
     OCCULT_TESLA_THRESHOLD, OCCULT_TESLA_ATTACK_SECONDS,
     OCCULT_TESLA_HIDDEN_SECONDS, OCCULT_TESLA_TELEPORT_DISTANCE_CELLS,
     RTT_PING_INTERVAL_SECONDS, RTT_DEFAULT_SECONDS,
@@ -1939,6 +1939,36 @@ class Room:
                 survivors.append(lz)
         self.lasers = survivors
 
+    def cell_has_gadget(self, x, y, exclude=None):
+        """Ritorna True se la cella (x, y) e' gia' occupata da un gadget di
+        qualunque tipo (mina, torretta/robot, mortaio, bombolone, blob,
+        muro di spunzoni, Tesla, arbusto spinoso o fungo atomico), di
+        QUALSIASI proprietario. Usata da tutte le try_place_* per impedire
+        che due gadget DIVERSI finiscano sovrapposti sulla stessa casella.
+
+        'exclude' e' il nome della lista da NON controllare (es. \"mines\"
+        quando si sta per piazzare una mina): la sovrapposizione fra due
+        gadget dello STESSO tipo e' gestita a parte da ciascuna funzione
+        (o, come per i bomboloni, e' voluta), quindi qui si controllano
+        solo le liste degli ALTRI tipi di gadget."""
+        checks = {
+            "mines": lambda: any(o["x"] == x and o["y"] == y for o in self.mines),
+            "turrets": lambda: any(o["x"] == x and o["y"] == y for o in self.turrets),
+            "mortars": lambda: any(o["x"] == x and o["y"] == y for o in self.mortars),
+            "superbombs": lambda: any(o["x"] == x and o["y"] == y for o in self.superbombs),
+            "blobs": lambda: any(o["x"] == x and o["y"] == y for o in self.blobs),
+            "spike_walls": lambda: any(o["x"] == x and o["y"] == y for o in self.spike_walls),
+            "teslas": lambda: any(o["x"] == x and o["y"] == y for o in self.teslas),
+            "bushes": lambda: any((x, y) in b["cells"] for b in self.bushes),
+            "mushrooms": lambda: any(o["x"] == x and o["y"] == y for o in self.mushrooms),
+        }
+        for name, fn in checks.items():
+            if name == exclude:
+                continue
+            if fn():
+                return True
+        return False
+
     def try_place_mine(self, player):
         """Bonus 200 punti: sgancia una mina nella cella corrente del
         giocatore (finche' ne ha ancora disponibili). Chiamato dalla
@@ -1951,6 +1981,8 @@ class Room:
             return
         if any(m["x"] == player.x and m["y"] == player.y for m in self.mines):
             return  # niente due mine sulla stessa cella
+        if self.cell_has_gadget(player.x, player.y, exclude="mines"):
+            return  # niente mine sopra un gadget diverso gia' presente
         player.mines_left -= 1
         mine = {"id": uuid.uuid4().hex[:8], "owner": player.id, "x": player.x, "y": player.y}
         self.mines.append(mine)
@@ -2427,6 +2459,8 @@ class Room:
         NON puo' usare alcun bonus finche' non torna libero di muoversi."""
         if not player.alive or player.trapped_left > 0 or not player.has_turret or player.turret_placed or player.is_assassin or player.armor_active:
             return
+        if self.cell_has_gadget(player.x, player.y, exclude="turrets"):
+            return  # niente torretta sopra un gadget diverso gia' presente
         player.turret_placed = True
         turret = {
             "id": uuid.uuid4().hex[:8],
@@ -2598,6 +2632,8 @@ class Room:
         NON puo' usare alcun bonus finche' non torna libero di muoversi."""
         if not player.alive or player.trapped_left > 0 or not player.has_mortar or player.mortar_placed or player.is_assassin or player.armor_active:
             return
+        if self.cell_has_gadget(player.x, player.y, exclude="mortars"):
+            return  # niente mortaio sopra un gadget diverso gia' presente
         player.mortar_placed = True
         mortar = {
             "id": uuid.uuid4().hex[:8],
@@ -2634,6 +2670,8 @@ class Room:
         NON puo' usare alcun bonus finche' non torna libero di muoversi."""
         if not player.alive or player.trapped_left > 0 or not player.has_superbomb or player.superbomb_left <= 0 or player.is_assassin or player.armor_active:
             return
+        if self.cell_has_gadget(player.x, player.y, exclude="superbombs"):
+            return  # niente bombolone sopra un gadget diverso gia' presente
         player.superbomb_left -= 1
         bomb = {
             "id": uuid.uuid4().hex[:8],
@@ -3071,6 +3109,8 @@ class Room:
         NON puo' usare alcun bonus finche' non torna libero di muoversi."""
         if not player.alive or player.trapped_left > 0 or not player.has_blob or player.blob_placed or player.is_assassin or player.armor_active:
             return
+        if self.cell_has_gadget(player.x, player.y, exclude="blobs"):
+            return  # niente blob sopra un gadget diverso gia' presente
         player.blob_placed = True
         blob = {
             "id": uuid.uuid4().hex[:8],
@@ -3265,7 +3305,6 @@ class Room:
         NON puo' usare alcun bonus finche' non torna libero di muoversi."""
         if not player.alive or player.trapped_left > 0 or not player.has_spike_wall or player.spike_wall_placed or player.is_assassin or player.armor_active:
             return
-        player.spike_wall_placed = True
         # Il muro va ESATTAMENTE sulla casella in cui il giocatore si
         # trova in questo istante. player.x/player.y e' pero' la cella di
         # PARTENZA mentre si sta scivolando verso la successiva
@@ -3278,6 +3317,9 @@ class Room:
         dx, dy = DIRECTIONS.get(player.direction, (0, 0)) if player.direction else (0, 0)
         wx = int(round(player.x + dx * player.move_accum))
         wy = int(round(player.y + dy * player.move_accum))
+        if self.cell_has_gadget(wx, wy, exclude="spike_walls"):
+            return  # niente muro di spunzoni sopra un gadget diverso gia' presente: il bonus resta disponibile, si potra' riprovare
+        player.spike_wall_placed = True
         # Un singolo blocco di muro, grande esattamente quanto una cella
         # di muro normale, piazzato sulla cella corrente del giocatore.
         group_id = uuid.uuid4().hex[:8]
@@ -3380,6 +3422,8 @@ class Room:
         NON puo' usare alcun bonus finche' non torna libero di muoversi."""
         if not player.alive or player.trapped_left > 0 or not player.has_tesla or player.tesla_placed or player.is_assassin or player.armor_active:
             return
+        if self.cell_has_gadget(player.x, player.y, exclude="teslas"):
+            return  # niente Tesla sopra un gadget diverso gia' presente
         player.tesla_placed = True
         tesla = {
             "id": uuid.uuid4().hex[:8],
@@ -3708,6 +3752,8 @@ class Room:
         NON puo' usare alcun bonus finche' non torna libero di muoversi."""
         if not player.alive or player.trapped_left > 0 or not player.has_bush or player.bush_placed or player.is_assassin or player.armor_active:
             return
+        if self.cell_has_gadget(player.x, player.y, exclude="bushes"):
+            return  # niente arbusto sopra un gadget diverso gia' presente
         player.bush_placed = True
         bush = {
             "id": uuid.uuid4().hex[:8],
@@ -3867,15 +3913,27 @@ class Room:
         avversario (o un suo pet) non lo CALPESTA facendolo esplodere
         (vedi update_mushrooms/explode_mushroom).
 
+        Questo PRIMO fungo piazzato e' anche l'unico "generatore": finche'
+        resta intatto (nessuno lo calpesta), ogni
+        MUSHROOM_RESPAWN_INTERVAL_SECONDS (1 minuto) fa comparire un ALTRO
+        fungo dello stesso proprietario in un punto CASUALE della mappa
+        (vedi update_mushroom_spawners). I funghi generati in questo modo
+        non generano a loro volta altri funghi: solo l'originale continua
+        a farlo, finche' non esplode.
+
         Se il giocatore e' intrappolato dalla trappola di un avversario,
         NON puo' usare alcun bonus finche' non torna libero di muoversi."""
         if not player.alive or player.trapped_left > 0 or not player.has_mushroom or player.mushroom_placed or player.is_assassin or player.armor_active:
             return
+        if self.cell_has_gadget(player.x, player.y, exclude="mushrooms"):
+            return  # niente fungo sopra un gadget diverso gia' presente
         player.mushroom_placed = True
         m = {
             "id": uuid.uuid4().hex[:8],
             "owner": player.id,
             "x": player.x, "y": player.y,
+            "spawner": True,  # e' il fungo originale: genera altri funghi nel tempo
+            "spawn_left": MUSHROOM_RESPAWN_INTERVAL_SECONDS,
         }
         self.mushrooms.append(m)
         self.push_event({
@@ -3885,6 +3943,54 @@ class Room:
 
     def mushroom_public(self, m):
         return {"id": m["id"], "x": m["x"], "y": m["y"], "owner": m["owner"]}
+
+    def pick_random_mushroom_cell(self):
+        """Sceglie una cella di pavimento CASUALE su TUTTA la mappa, libera
+        da muri e da qualsiasi altro gadget (vedi cell_has_gadget), per la
+        ricomparsa automatica del fungo atomico "generatore". Se per un
+        colpo di sfortuna (mappa satura di gadget) non si trova nessuna
+        cella libera, rinuncia per questo giro: si ritentera' al prossimo
+        minuto."""
+        candidates = [
+            c for c in self.free_cells
+            if self.is_floor(c[0], c[1]) and not self.cell_has_gadget(c[0], c[1])
+        ]
+        if not candidates:
+            return None
+        return random.choice(candidates)
+
+    def update_mushroom_spawners(self):
+        """Fa avanzare, ogni tick, il conto alla rovescia del fungo
+        atomico "generatore" (il primo piazzato da ciascun giocatore,
+        vedi try_place_mushroom): se non e' ancora stato calpestato, ogni
+        MUSHROOM_RESPAWN_INTERVAL_SECONDS fa comparire un NUOVO fungo
+        dello stesso proprietario in un punto casuale della mappa (non un
+        muro, non sopra un altro gadget). Il nuovo fungo NON e' a sua
+        volta un generatore: solo l'originale continua a riprodursi,
+        finche' qualcuno non lo fa esplodere."""
+        if not self.mushrooms:
+            return
+        for m in list(self.mushrooms):
+            if not m.get("spawner"):
+                continue
+            m["spawn_left"] = m.get("spawn_left", MUSHROOM_RESPAWN_INTERVAL_SECONDS) - TICK_DT
+            if m["spawn_left"] > 0:
+                continue
+            m["spawn_left"] += MUSHROOM_RESPAWN_INTERVAL_SECONDS
+            cell = self.pick_random_mushroom_cell()
+            if cell is None:
+                continue
+            new_m = {
+                "id": uuid.uuid4().hex[:8],
+                "owner": m["owner"],
+                "x": cell[0], "y": cell[1],
+                "spawner": False,
+            }
+            self.mushrooms.append(new_m)
+            self.push_event({
+                "kind": "mushroom_place", "id": new_m["id"], "player": m["owner"],
+                "x": new_m["x"], "y": new_m["y"],
+            })
 
     def try_activate_occult_tesla(self, player):
         """Tasto '1', RIUSATO come VERO ultimo gradino della catena: viene
@@ -4677,6 +4783,7 @@ class Room:
                 self.update_territory_marking()  # bonus 2600 punti: marca (in privato) le caselle calpestate durante la fase di selezione della trappola territoriale
                 self.update_bushes()  # bonus 2800 punti: cresce gli arbusti spinosi (una casella al minuto), uccide al contatto, la corazza li spezza
                 self.update_mushrooms()  # bonus 3000 punti: fa esplodere i funghi atomici calpestati (distruzione totale raggio 10 + area avvelenata 1 minuto)
+                self.update_mushroom_spawners()  # il fungo "generatore" ne crea un altro a caso sulla mappa ogni minuto, finche' non viene fatto esplodere
                 self.move_missiles()  # bonus 400 punti: avanza i missili guidati verso il bersaglio
                 self.update_bombs()   # bonus 1200 punti: avanza le bombe di mortaio in volo e le fa esplodere all'impatto
                 self.update_poison_zones()  # bonus 1200 punti: le nuvole velenose lasciate dagli impatti continuano a fare danno nel tempo

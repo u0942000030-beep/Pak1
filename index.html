@@ -2991,6 +2991,38 @@ function drawMines(now){
 // caselle (Chebyshev, ancora piu' corta di quella delle mine); il
 // proprietario lo vede sempre. Se calpestato esplode (server-authoritative,
 // vedi update_mushrooms/explode_mushroom in main.py).
+// Genera 6 numeri pseudocasuali deterministici (0..1) a partire dall'id
+// del fungo: stesso fungo = sempre la stessa "forma" a ogni frame (nessun
+// flickering), ma funghi diversi risultano leggermente diversi tra loro
+// per dimensione, proporzioni e inclinazione. Cache per non ricalcolare
+// l'hash a ogni frame.
+const _mushroomShapeCache = {};
+function getMushroomShape(id){
+  if (_mushroomShapeCache[id]) return _mushroomShapeCache[id];
+  let h = 2166136261;
+  for (let i = 0; i < id.length; i++){
+    h ^= id.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  let state = h >>> 0;
+  function next(){
+    state |= 0; state = (state + 0x6D2B79F5) | 0;
+    let t = Math.imul(state ^ (state >>> 15), 1 | state);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  }
+  const shape = {
+    sizeMult: 0.82 + next() * 0.36,      // 0.82 - 1.18
+    capWidthMult: 0.88 + next() * 0.24,  // 0.88 - 1.12
+    capHeightMult: 0.88 + next() * 0.24, // 0.88 - 1.12
+    tilt: (next() - 0.5) * 0.5,          // ~ -0.25..0.25 rad (~14 gradi)
+    capOffsetX: (next() - 0.5) * 0.14,   // cappella leggermente decentrata rispetto al gambo
+    stemBend: (next() - 0.5) * 0.18,     // gambo leggermente storto
+  };
+  _mushroomShapeCache[id] = shape;
+  return shape;
+}
+
 function drawMushrooms(now){
   const all = (currSnapshot && currSnapshot.mushrooms) || [];
   const me = findPlayer(currSnapshot, myId);
@@ -3007,18 +3039,23 @@ function drawMushrooms(now){
     const cy = m.y * BASE_CELL + BASE_CELL / 2;
     const owner = findPlayer(currSnapshot, m.owner);
     const col = (owner && COLOR_HEX[(owner.colors || [])[0]]) || "#ff5fd1";
-    const pulse = 0.85 + 0.15 * Math.sin(now / 260);
-    const s = BASE_CELL * 0.8 * pulse; // grosso fungo porcino: piu' massiccio del vecchio fungo a puntini
+    const shape = getMushroomShape(m.id);
+    const s = BASE_CELL * 0.8 * shape.sizeMult; // grosso fungo porcino, statico: dimensione fissa ma diversa per ogni esemplare
+    const cw = shape.capWidthMult, chh = shape.capHeightMult, ox = shape.capOffsetX * s, bend = shape.stemBend;
+
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate(shape.tilt);
 
     // Gambo tozzo, chiaro, bulboso alla base (tipico del porcino).
     ctx.fillStyle = "#efe2c8";
     ctx.strokeStyle = "#8a7a56";
     ctx.lineWidth = 1;
     ctx.beginPath();
-    ctx.moveTo(cx - s * 0.15, cy - s * 0.04);
-    ctx.quadraticCurveTo(cx - s * 0.32, cy + s * 0.26, cx - s * 0.24, cy + s * 0.5);
-    ctx.quadraticCurveTo(cx, cy + s * 0.62, cx + s * 0.24, cy + s * 0.5);
-    ctx.quadraticCurveTo(cx + s * 0.32, cy + s * 0.26, cx + s * 0.15, cy - s * 0.04);
+    ctx.moveTo(-s * 0.15, -s * 0.04);
+    ctx.quadraticCurveTo(-s * (0.32 + bend), s * 0.26, -s * 0.24, s * 0.5);
+    ctx.quadraticCurveTo(0, s * 0.62, s * 0.24, s * 0.5);
+    ctx.quadraticCurveTo(s * (0.32 - bend), s * 0.26, s * 0.15, -s * 0.04);
     ctx.closePath(); ctx.fill(); ctx.stroke();
 
     // Venature verticali del gambo (reticolo tipico del porcino).
@@ -3026,8 +3063,8 @@ function drawMushrooms(now){
     ctx.lineWidth = 0.8;
     for (let i = -1; i <= 1; i++){
       ctx.beginPath();
-      ctx.moveTo(cx + i * s * 0.09, cy + s * 0.04);
-      ctx.quadraticCurveTo(cx + i * s * 0.13, cy + s * 0.3, cx + i * s * 0.1, cy + s * 0.48);
+      ctx.moveTo(i * s * 0.09, s * 0.04);
+      ctx.quadraticCurveTo(i * s * 0.13 + bend * s * 0.3, s * 0.3, i * s * 0.1, s * 0.48);
       ctx.stroke();
     }
 
@@ -3036,7 +3073,7 @@ function drawMushrooms(now){
     // marrone: sfumatura chiaro/scuro derivata dallo stesso colore per
     // dare volume, cosi' il fungo resta subito riconoscibile a colpo
     // d'occhio.
-    const capGrad = ctx.createRadialGradient(cx - s * 0.16, cy - s * 0.36, s * 0.05, cx, cy - s * 0.14, s * 0.64);
+    const capGrad = ctx.createRadialGradient(ox - s * 0.16 * cw, -s * 0.36 * chh, s * 0.05, ox, -s * 0.14 * chh, s * 0.64 * Math.max(cw, chh));
     capGrad.addColorStop(0, lightenHex(col, 0.45));
     capGrad.addColorStop(0.55, col);
     capGrad.addColorStop(1, darkenHex(col, 0.55));
@@ -3044,10 +3081,10 @@ function drawMushrooms(now){
     ctx.strokeStyle = darkenHex(col, 0.35);
     ctx.lineWidth = 1.6;
     ctx.beginPath();
-    ctx.arc(cx, cy - s * 0.12, s * 0.58, Math.PI, 0);
-    ctx.quadraticCurveTo(cx + s * 0.6, cy + s * 0.1, cx + s * 0.4, cy + s * 0.13);
-    ctx.lineTo(cx - s * 0.4, cy + s * 0.13);
-    ctx.quadraticCurveTo(cx - s * 0.6, cy + s * 0.1, cx - s * 0.6, cy - s * 0.12);
+    ctx.arc(ox, -s * 0.12 * chh, s * 0.58 * cw, Math.PI, 0);
+    ctx.quadraticCurveTo(ox + s * 0.6 * cw, s * 0.1 * chh, ox + s * 0.4 * cw, s * 0.13 * chh);
+    ctx.lineTo(ox - s * 0.4 * cw, s * 0.13 * chh);
+    ctx.quadraticCurveTo(ox - s * 0.6 * cw, s * 0.1 * chh, ox - s * 0.6 * cw, -s * 0.12 * chh);
     ctx.closePath(); ctx.fill(); ctx.stroke();
 
     // Bordo piu' chiaro sotto la cappella (l'imenio poroso del porcino,
@@ -3056,9 +3093,10 @@ function drawMushrooms(now){
     ctx.globalAlpha = 0.75;
     ctx.fillStyle = lightenHex(col, 0.55);
     ctx.beginPath();
-    ctx.ellipse(cx, cy + s * 0.12, s * 0.4, s * 0.05, 0, 0, Math.PI * 2);
+    ctx.ellipse(ox, s * 0.12 * chh, s * 0.4 * cw, s * 0.05, 0, 0, Math.PI * 2);
     ctx.fill();
     ctx.globalAlpha = 1;
+    ctx.restore();
   });
   ctx.restore();
 }
