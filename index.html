@@ -800,6 +800,22 @@ let myId = null, roomCode = null, myName = "";
 let maze = [], mazeW = 0, mazeH = 0;
 let joinMode = false;
 
+// ---- riconnessione automatica ----
+// Se la connessione cade DOPO essere gia' entrati in una stanza (abbiamo
+// gia' un myId/roomCode), si prova a riagganciarsi da soli invece di
+// scaricare subito il giocatore alla schermata di connessione: server e
+// client hanno entrambi una finestra di grazia per questo (vedi
+// RECONNECT_GRACE_SECONDS lato server). Se invece la connessione cade
+// PRIMA di essere mai entrati in una stanza (siamo ancora sulla
+// schermata di connessione), non c'e' nulla da riagganciare: si mostra
+// solo l'errore come prima.
+let lastIp = null, lastPort = null;
+let reconnecting = false;
+let reconnectAttempts = 0;
+let intentionalDisconnect = false;
+const RECONNECT_RETRY_MS = 1500;
+const RECONNECT_MAX_ATTEMPTS = 20; // ~30s di tentativi, coerente con la finestra di grazia lato server
+
 let currSnapshot = null, snapshotTime = 0;
 // Stato di animazione locale per ogni giocatore: { fromX, fromY, toX, toY, start, duration }
 // Permette di disegnare uno scivolamento fluido cella-per-cella basato sulla
@@ -1316,6 +1332,13 @@ document.getElementById("btnConnect").addEventListener("click", function(){
   }
   ensureAudio();
   requestFullscreenSafe();
+  // Connessione manuale esplicita: azzera qualunque stato di
+  // riconnessione automatica residuo di un tentativo precedente.
+  intentionalDisconnect = false;
+  reconnecting = false;
+  reconnectAttempts = 0;
+  myId = null; roomCode = null;
+  lastIp = ip; lastPort = port;
   connect(ip, port, function(){
     if (joinMode){
       const code = document.getElementById("inpCode").value.trim().toUpperCase();
@@ -1325,6 +1348,52 @@ document.getElementById("btnConnect").addEventListener("click", function(){
     }
   });
 });
+
+// ---- riconnessione automatica: banner persistente (a differenza del
+// #toast, che scompare da solo dopo 2.6s) mentre si riprova ad
+// riagganciarsi ad una stanza gia' raggiunta in precedenza. ----
+function setReconnectBanner(active, text){
+  let el = document.getElementById("reconnectBanner");
+  if (!active){
+    if (el) el.remove();
+    return;
+  }
+  if (!el){
+    el = document.createElement("div");
+    el.id = "reconnectBanner";
+    el.style.cssText = "position:fixed;top:0;left:0;right:0;z-index:9999;" +
+      "background:#3a0f0f;color:#ffcf7a;font:600 13px/1.4 monospace;" +
+      "text-align:center;padding:8px 12px;border-bottom:1px solid #ffcf7a55;" +
+      "box-shadow:0 2px 10px rgba(0,0,0,0.5);";
+    document.body.appendChild(el);
+  }
+  el.textContent = text;
+}
+
+function attemptReconnect(){
+  if (!myId || !roomCode || intentionalDisconnect){
+    reconnecting = false;
+    return;
+  }
+  if (reconnectAttempts >= RECONNECT_MAX_ATTEMPTS){
+    setReconnectBanner(false);
+    reconnecting = false;
+    myId = null; roomCode = null;
+    connectError.textContent = "Connessione persa: non e' stato possibile riagganciarsi in tempo.";
+    showScreen("connect");
+    return;
+  }
+  reconnecting = true;
+  reconnectAttempts++;
+  setReconnectBanner(true, "Connessione persa \u00b7 riconnessione in corso (tentativo " + reconnectAttempts + ")\u2026");
+  setTimeout(function(){
+    if (!reconnecting || intentionalDisconnect) return;
+    const savedId = myId, savedCode = roomCode;
+    connect(lastIp, lastPort, function(){
+      sendMsg({ type: "rejoin", code: savedCode, player_id: savedId });
+    });
+  }, RECONNECT_RETRY_MS);
+}
 
 function connect(ip, port, onOpen){
   let url;
@@ -1349,12 +1418,34 @@ function connect(ip, port, onOpen){
     connectError.textContent = "Impossibile creare la connessione.";
     return;
   }
-  ws.onopen = function(){ onOpen(); };
+  ws.onopen = function(){
+    // Una connessione e' appena andata a buon fine (prima volta o
+    // riconnessione): niente piu' banner "riconnessione in corso" e
+    // contatore azzerato, il prossimo eventuale drop riparte da zero
+    // tentativi.
+    setReconnectBanner(false);
+    reconnecting = false;
+    reconnectAttempts = 0;
+    onOpen();
+  };
   ws.onmessage = function(ev){ handleMessage(JSON.parse(ev.data)); };
   ws.onerror = function(){
-    connectError.textContent = "Errore di connessione al server.";
+    if (!(myId && roomCode && !intentionalDisconnect)){
+      connectError.textContent = "Errore di connessione al server.";
+    }
+    // Se eravamo gia' in una stanza, non si mostra l'errore secco: ci
+    // pensa onclose (che scatta subito dopo su un errore di connessione)
+    // ad avviare il retry automatico con il suo banner dedicato.
   };
   ws.onclose = function(){
+    if (myId && roomCode && !intentionalDisconnect){
+      // Eravamo gia' dentro una stanza: non e' un abbandono volontario,
+      // quindi si prova a riagganciarsi da soli invece di far sparire il
+      // giocatore dalla partita per un semplice blip di rete (vedi anche
+      // la finestra di grazia lato server, RECONNECT_GRACE_SECONDS).
+      attemptReconnect();
+      return;
+    }
     if (currentScreen !== "connect"){
       connectError.textContent = "Connessione persa con il server.";
       showScreen("connect");
@@ -1370,6 +1461,21 @@ function applyMapData(msg){
   powerPellets = new Set((msg.power_pellets || []).map(function(c){ return c[0] + "," + c[1]; }));
   computeWallColors();
   eatenPellets.clear();
+  if (Array.isArray(msg.pellets)){
+    // Il server manda i pallini normali ANCORA presenti (vedi
+    // map_payload): a inizio round coincide con "tutti", ma dopo un
+    // rejoin a partita in corso puo' essere un sottoinsieme. Si segnano
+    // come "gia' mangiati" tutte le celle pallino della mappa che NON
+    // sono in questo elenco, cosi' non ricompaiono per errore dopo una
+    // riconnessione.
+    const remaining = new Set(msg.pellets.map(function(c){ return c[0] + "," + c[1]; }));
+    for (let y = 0; y < mazeH; y++){
+      for (let x = 0; x < mazeW; x++){
+        if (maze[y][x] === "." && !remaining.has(x + "," + y)) eatenPellets.add(x + "," + y);
+      }
+    }
+  }
+  pelletsLayerDirty = true;
   beams = []; swirls = [];
   initThemeFx();  // punto 5: particelle atmosferiche a tema
   const mapEl = document.getElementById("hudMap");
@@ -1417,10 +1523,12 @@ function handleMessage(msg){
   switch (msg.type){
     case "room_created":
     case "joined":
+    case "rejoined":
       myId = msg.player_id;
       roomCode = msg.code;
       applyMapData(msg);
       document.getElementById("hudRoom").textContent = "stanza " + roomCode;
+      if (msg.type === "rejoined") showToast("Riconnesso!");
       break;
     case "error":
       if (currentScreen === "lobby") document.getElementById("lobbyError").textContent = msg.message;
@@ -1481,6 +1589,11 @@ function onLobbyState(msg){
       const t = document.createElement("span"); t.className="tag you"; t.textContent="TU"; li.appendChild(t);
     }
     if (p.host){ const t = document.createElement("span"); t.className="tag host"; t.textContent="HOST"; li.appendChild(t); }
+    if (p.connected === false){
+      const t = document.createElement("span"); t.className="tag alert";
+      t.textContent="RICONNESSIONE\u2026"; li.appendChild(t);
+      li.style.opacity = "0.55";
+    }
     const spacer = document.createElement("span"); spacer.className="spacer"; li.appendChild(spacer);
     const colTxt = document.createElement("span"); colTxt.style.fontSize="10px"; colTxt.style.color="var(--phosphor-dim)";
     colTxt.textContent = colors.length ? colors.join(" + ") : "nessun colore";
@@ -1631,8 +1744,12 @@ document.getElementById("btnLeaveLobby").addEventListener("click", leaveGame);
 document.getElementById("btnLeaveGame").addEventListener("click", leaveGame);
 
 function leaveGame(){
+  intentionalDisconnect = true;
+  reconnecting = false;
+  setReconnectBanner(false);
   if (ws) { try { ws.close(); } catch (e){} }
   ws = null;
+  myId = null; roomCode = null;
   roundActive = false;
   stopSiren();
   if (document.fullscreenElement){
@@ -2691,6 +2808,19 @@ function drawPlayers(players, now){
       ctx.globalAlpha = 1;
       ctx.fillStyle = baseColor;
       ctx.fillText(p.name, px, py - radius - 5);
+      ctx.restore();
+    }
+
+    // In attesa di riconnessione (vedi RECONNECT_GRACE_SECONDS lato
+    // server): il personaggio resta fermo sul posto, ma si segnala con
+    // un'etichetta sopra il nome invece di sembrare abbandonato a caso.
+    if (p.connected === false){
+      ctx.save();
+      ctx.font = "9px monospace";
+      ctx.textAlign = "center";
+      ctx.fillStyle = "rgba(255,140,60,0.9)";
+      ctx.globalAlpha = 0.6 + 0.4 * Math.abs(Math.sin(now / 260));
+      ctx.fillText("\u23f3 riconnessione\u2026", px, py - radius - 15);
       ctx.restore();
     }
   });
@@ -4648,7 +4778,12 @@ if (typeof ResizeObserver !== "undefined"){
 function onState(msg){
   const now = performance.now();
 
-  if (msg.phase === "countdown" && lastPhase !== "countdown"){
+  // roundActive (non piu' solo "countdown appena iniziato") copre anche
+  // il caso di un rejoin che arriva direttamente a partita gia' in corso
+  // (fase "playing"): senza questo la vecchia condizione basata solo su
+  // "countdown" non avrebbe mai fatto scattare l'ingresso nella schermata
+  // di gioco per chi si riconnette a metà round.
+  if ((msg.phase === "countdown" || msg.phase === "playing") && !roundActive){
     eatenPellets.clear();
     pelletsLayerDirty = true;
     explosions = [];

@@ -30,13 +30,30 @@ TICK_DT = 1.0 / TICK_HZ
 # e cresce col passare del round; per evitare che il gioco rallenti via via
 # che si sbloccano ed usano piu' gadget, lo si invia solo ogni N tick invece
 # che ad ogni tick. 2 = 30 volte al secondo, ancora fluidissimo per un gioco
-# a caselle come questo.
-STATE_BROADCAST_EVERY_N_TICKS = 2
+# a caselle come questo. Alzato da 2 a 4 (15/s invece di 30/s): lo stato
+# completo cresce col passare del round (torrette, mortai, arbusti,
+# spunzoni, mine...) e serializzarlo/spedirlo troppo spesso puo' occupare
+# l'event loop abbastanza a lungo da far scattare il timeout di keepalive
+# interno della libreria "websockets" su ALTRE connessioni (vedi anche
+# RECONNECT_GRACE_SECONDS qui sotto e ping_interval/ping_timeout in
+# websockets.serve, main.py): 15/s resta fluidissimo per un gioco a
+# caselle, ma dimezza il lavoro sincrono per tick.
+STATE_BROADCAST_EVERY_N_TICKS = 4
 
 COUNTDOWN_SECONDS = 15
 ROUND_SECONDS = 1200  # durata di un round: 20 minuti
 MAX_PLAYERS = 5
 MIN_PLAYERS = 1
+
+# Un giocatore la cui connessione cade (blip di rete, telefono che va in
+# background, passaggio WiFi/4G, timeout di ping interno) NON viene tolto
+# subito dalla stanza: resta "in attesa" per questa finestra di tempo,
+# durante la quale puo' riconnettersi e riprendere esattamente il suo
+# posto (stesso player_id, stesso personaggio, stessi punti/vite/gadget)
+# mandando un messaggio "rejoin". Solo se il tempo scade senza che si sia
+# ripresentato viene rimosso per davvero (vedi sweep_disconnected in
+# main.py). In LOBBY la stessa finestra vale anche per l'host.
+RECONNECT_GRACE_SECONDS = 25.0
 
 NORMAL_SPEED = 4.5          # celle al secondo
 ASSASSIN_SPEED_MULT = 1.1   # il super assassino (bonus 300 punti) e' 1.1x rispetto a 1.0 dei giocatori normali

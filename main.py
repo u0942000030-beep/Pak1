@@ -83,6 +83,7 @@ from common import (
     OCCULT_TESLA_HIDDEN_SECONDS, OCCULT_TESLA_TELEPORT_DISTANCE_CELLS,
     RTT_PING_INTERVAL_SECONDS, RTT_DEFAULT_SECONDS,
     REWIND_MAX_SECONDS, REWIND_HISTORY_SECONDS,
+    RECONNECT_GRACE_SECONDS,
 )
 import math
 import time
@@ -137,6 +138,13 @@ class Player:
         self.move_accum = 0.0
         self.alive = True
         self.connected = True
+        # Timestamp (time.monotonic) di quando la connessione e' caduta,
+        # None se connesso. Usato dal periodo di grazia per la
+        # riconnessione (vedi RECONNECT_GRACE_SECONDS in common.py e la
+        # gestione del messaggio "rejoin" in handle_client): un giocatore
+        # disconnesso NON viene tolto subito dalla stanza, resta in attesa
+        # per questa finestra di tempo prima di essere rimosso davvero.
+        self.disconnected_at = None
         # ---- sistema punti / bonus (azzerato ad ogni round) ----
         self.points = 0
         self.lives = 3                 # si parte con 3 vite; a 50 punti diventa 4, ecc.: un'eliminazione non ti fa uscire finche' hai vite, fa respawnare
@@ -345,6 +353,10 @@ class Player:
             "host": self.host, "x": round(fx, 4), "y": round(fy, 4),
             "direction": self.direction,
             "alive": self.alive,
+            # In attesa di riconnessione (vedi RECONNECT_GRACE_SECONDS):
+            # il client lo usa per mostrare un'icona/etichetta sul
+            # personaggio invece di farlo sembrare abbandonato a caso.
+            "connected": self.connected,
             # ---- nuovi campi per HUD/rendering ----
             "points": self.points, "lives": self.lives,
             "kills": self.kills,
@@ -585,6 +597,13 @@ class Room:
             "maze_name": self.maze_name, "theme": self.theme,
             "portals": [list(p) for p in self.portals],
             "power_pellets": [list(c) for c in self.power_pellets],
+            # Pallini normali ANCORA presenti (non ancora mangiati): a inizio
+            # round coincide con "tutte le celle '.' della mappa", ma dopo
+            # una riconnessione a partita in corso puo' essere un
+            # sottoinsieme. Il client lo usa per ricostruire esattamente
+            # quali pallini sono gia' stati mangiati (vedi applyMapData),
+            # invece di farli ricomparire per errore dopo un rejoin.
+            "pellets": [list(c) for c in self.pellets],
         }
 
     # ---------- lobby ----------
@@ -592,6 +611,36 @@ class Room:
     def add_player(self, player):
         player.host = (len(self.players) == 0)
         self.players[player.id] = player
+
+    async def _grace_expire(self, pid, stale_ws):
+        """Rimozione DEFINITIVA di un giocatore disconnesso, ma solo dopo
+        RECONNECT_GRACE_SECONDS senza che si sia ripresentato con un
+        "rejoin" (vedi handle_client). Se nel frattempo si e' riconnesso -
+        il suo player.ws non e' piu' stale_ws - o ha gia' lasciato la
+        stanza per un altro motivo, questa funzione non fa nulla: e' solo
+        un timer "pigro" schedulato una volta per ogni caduta di
+        connessione, non un ciclo di controllo."""
+        await asyncio.sleep(RECONNECT_GRACE_SECONDS)
+        player = self.players.get(pid)
+        if player is None or player.ws is not stale_ws or player.connected:
+            return
+        was_host = player.host
+        self.players.pop(pid, None)
+        if not self.players:
+            ROOMS.pop(self.code, None)
+            return
+        if was_host:
+            new_host = next(iter(self.players.values()))
+            new_host.host = True
+        if self.state == "LOBBY":
+            await self.broadcast_lobby()
+        else:
+            # A partita in corso il prossimo tick di run_round manda
+            # comunque uno snapshot aggiornato: non serve broadcast qui
+            # oltre a quello gia' schedulato, ma se il giocatore rimosso
+            # era l'ultimo vivo il round va richiuso subito (vedi
+            # check_win, chiamato ad ogni tick).
+            pass
 
     def taken_primary_colors(self):
         # Solo il colore PRIMARIO (corpo) resta univoco tra i giocatori, per
@@ -612,8 +661,19 @@ class Room:
                 dead.append(p.id)
         for pid in dead:
             p = self.players.get(pid)
-            if p:
+            if p and p.connected:
+                # Stessa finestra di grazia del percorso normale (vedi
+                # handle_client): la caduta e' stata notata qui, durante
+                # un invio, invece che nel loop di lettura di quel
+                # giocatore, ma il trattamento deve essere identico -
+                # altrimenti resterebbe "connesso=False" per sempre senza
+                # che nessuno lo rimuova mai davvero.
                 p.connected = False
+                p.disconnected_at = time.monotonic()
+                p.direction = None
+                p.next_direction = None
+                p.move_accum = 0.0
+                asyncio.ensure_future(self._grace_expire(pid, p.ws))
 
     async def broadcast_lobby(self):
         await self.broadcast({
@@ -623,6 +683,7 @@ class Room:
                 {
                     "id": p.id, "name": p.name, "colors": p.colors,
                     "character": p.character, "host": p.host,
+                    "connected": p.connected,
                 }
                 for p in self.players.values()
             ],
@@ -4746,6 +4807,47 @@ async def handle_client(ws):
                 }))
                 await room.broadcast_lobby()
 
+            elif mtype == "rejoin":
+                # Un client che aveva gia' una sessione attiva (aveva
+                # ricevuto un player_id in questa stessa stanza) prova a
+                # riprendere ESATTAMENTE il suo posto dopo una connessione
+                # caduta, invece di entrare come giocatore nuovo: stessi
+                # punti/vite/gadget/posizione, solo il websocket cambia.
+                # Funziona solo entro RECONNECT_GRACE_SECONDS dalla caduta
+                # (vedi Room._grace_expire): oltre quella finestra il
+                # giocatore e' gia' stato rimosso per davvero e non c'e'
+                # piu' nulla a cui riagganciarsi.
+                code = (msg.get("code") or "").upper().strip()
+                pid = msg.get("player_id") or ""
+                r = ROOMS.get(code)
+                if r is None:
+                    await send_error(ws, "Stanza non trovata: la partita potrebbe essere finita.")
+                    continue
+                existing = r.players.get(pid)
+                if existing is None:
+                    await send_error(ws, "Non e' piu' possibile rientrare: il posto e' scaduto.")
+                    continue
+                existing.ws = ws
+                existing.connected = True
+                existing.disconnected_at = None
+                room = r
+                player = existing
+                await ws.send(encode_text({
+                    "type": "rejoined", "code": room.code, "player_id": player.id,
+                    "state": room.state,
+                    **room.map_payload(),
+                }))
+                if room.state == "LOBBY":
+                    await room.broadcast_lobby()
+                else:
+                    # Partita gia' in corso: oltre alla mappa serve subito
+                    # anche un istantanea COMPLETA dello stato (posizioni,
+                    # torrette, mine, punteggi, timer...) per ricostruire
+                    # la partita da dove si era interrotta, non solo per
+                    # questo giocatore ma per tutti (cosi' vedono subito
+                    # che e' tornato "connesso").
+                    await room.broadcast(room.state_snapshot())
+
             elif mtype == "select_color":
                 if not room or not player:
                     continue
@@ -5010,16 +5112,31 @@ async def handle_client(ws):
         pass
     finally:
         if player and room:
-            player.connected = False
-            was_host = player.host
-            room.players.pop(player.id, None)
-            if not room.players:
-                ROOMS.pop(room.code, None)
-            else:
-                if was_host:
-                    new_host = next(iter(room.players.values()))
-                    new_host.host = True
-                await room.broadcast_lobby()
+            # Se nel frattempo il giocatore si e' gia' riconnesso con un
+            # nuovo websocket (vedi "rejoin"), room.players[player.id] non
+            # e' piu' QUESTO oggetto player, o comunque player.ws e' gia'
+            # stato sostituito: in tal caso questa e' solo la vecchia
+            # connessione che si chiude in ritardo, la sessione valida e'
+            # quella nuova e non va toccata.
+            current = room.players.get(player.id)
+            if current is player and player.ws is ws:
+                player.connected = False
+                player.disconnected_at = time.monotonic()
+                # Si ferma sul posto durante l'attesa, non continua a
+                # camminare da sola nell'ultima direzione premuta.
+                player.direction = None
+                player.next_direction = None
+                player.move_accum = 0.0
+                if room.state == "LOBBY":
+                    await room.broadcast_lobby()
+                elif room.state in ("COUNTDOWN", "PLAYING"):
+                    await room.broadcast(room.state_snapshot())
+                # Non lo si toglie subito dalla stanza: resta "in attesa"
+                # per RECONNECT_GRACE_SECONDS, cosi' un blip di rete, il
+                # telefono che va in background o un timeout di ping non
+                # lo fanno piu' sparire dalla partita. Viene rimosso per
+                # davvero solo se il tempo scade senza che si ripresenti.
+                asyncio.ensure_future(room._grace_expire(player.id, ws))
 
 
 async def health_check(connection, request):
@@ -5068,6 +5185,18 @@ async def main():
         # ottenuto: per un gioco in tempo reale conviene spendere quella CPU
         # per spedire prima, non per comprimere meglio.
         compression=None,
+        # Keepalive interno della libreria: di default manda un ping ogni
+        # 20s e chiude la connessione se non arriva il pong entro altri
+        # 20s. Con piu' stanze concorrenti sullo stesso processo (un solo
+        # event loop), un tick pesante (serializzazione dello stato di una
+        # partita gia' piena di torrette/mine/arbusti) puo' ritardare
+        # quel pong quel tanto che basta a far scattare una chiusura del
+        # tutto spuria, scambiata per un giocatore che "esce a caso".
+        # Alzarli riduce drasticamente i falsi positivi, al costo di
+        # accorgersi un po' piu' tardi di una connessione DAVVERO morta
+        # (comunque coperto dal periodo di grazia per la riconnessione).
+        ping_interval=25,
+        ping_timeout=45,
     ):
         print(f"Pac-Man Arena (WebSocket) in ascolto sulla porta {port}")
         await asyncio.Future()  # resta acceso per sempre
