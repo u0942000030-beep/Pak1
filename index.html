@@ -5343,6 +5343,10 @@ function drawMegaSucks(now){
 // ---- golem spaccapietra (bonus 3600 punti) ----
 // Lampi bianchi brevi quando il golem incassa un colpo (per id).
 let golemHitFlashes = {};
+// Direzione di marcia stimata per ciascun golem (per id), dedotta dallo
+// spostamento cella su cella, cosi' il macigno si orienta verso dove sta
+// andando invece di restare fisso su un lato.
+let golemFacing = {};
 
 function drawGolems(now){
   const list = (currSnapshot && currSnapshot.golems) || [];
@@ -5354,82 +5358,119 @@ function drawGolems(now){
     const cx = g.x * BASE_CELL + BASE_CELL / 2;
     const cy = g.y * BASE_CELL + BASE_CELL / 2;
     const S = BASE_CELL * 1.6;                 // il golem e' GROSSO: ~1.6 caselle
-    // Passo pesante: leggero dondolio su/giu' solo da sveglio.
-    const bob = g.awake ? Math.abs(Math.sin(now / 260)) * S * 0.05 : 0;
+
+    // Angolo di marcia: aggiornato solo quando si e' spostato abbastanza,
+    // cosi' resta stabile durante le micro-oscillazioni dell'interpolazione.
+    let fs = golemFacing[g.id];
+    if (!fs) fs = golemFacing[g.id] = { x: g.x, y: g.y, angle: 0 };
+    const ddx = g.x - fs.x, ddy = g.y - fs.y;
+    if (g.awake && (ddx * ddx + ddy * ddy) > 0.0004){
+      fs.angle = Math.atan2(ddy, ddx);
+    }
+    fs.x = g.x; fs.y = g.y;
+    const angle = fs.angle;
+
+    // Passo pesante a 4 zampe: due tempi di andatura diagonale (stile
+    // gorilla che cammina a quattro zampe), attivi solo da sveglio.
+    const walking = g.awake;
+    const stepA = walking ? Math.sin(now / 220) : 0;       // zampa ant-dx + post-sx
+    const stepB = walking ? Math.sin(now / 220 + Math.PI) : 0; // zampa ant-sx + post-dx
+    const bob = walking ? Math.abs(Math.sin(now / 220)) * S * 0.045 : 0;
     const by = cy - bob;
 
     const ROCK = "#3f4247", ROCK_LIGHT = "#5c6067", ROCK_EDGE = "#1d1f23";
     ctx.lineWidth = 1.4;
     ctx.strokeStyle = ROCK_EDGE;
 
-    // Ombra a terra.
+    // Ombra a terra (resta nello spazio del mondo, non ruota col corpo).
     ctx.globalAlpha = 0.3;
     ctx.fillStyle = "#000";
-    ctx.beginPath(); ctx.ellipse(cx, cy + S * 0.34, S * 0.36, S * 0.12, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(cx, cy + S * 0.34, S * 0.4, S * 0.14, 0, 0, Math.PI * 2); ctx.fill();
     ctx.globalAlpha = 1;
 
-    // Braccia: due macigni laterali che oscillano camminando.
-    const armSwing = g.awake ? Math.sin(now / 260) * S * 0.05 : 0;
+    // Da qui in poi disegniamo in coordinate LOCALI ruotate sulla
+    // direzione di marcia: +u = avanti, +v = fianco destro del golem.
+    ctx.save();
+    ctx.translate(cx, by);
+    ctx.rotate(angle);
+
+    // ---- 4 zampe (nocche a terra, stile gorilla) ----
+    // Ogni zampa e' un piccolo masso; le due diagonali (ant-dx/post-sx e
+    // ant-sx/post-dx) si alternano avanti/indietro durante il cammino.
     ctx.fillStyle = ROCK;
-    ctx.beginPath(); ctx.arc(cx - S * 0.34, by + S * 0.08 + armSwing, S * 0.14, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
-    ctx.beginPath(); ctx.arc(cx + S * 0.34, by + S * 0.08 - armSwing, S * 0.14, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    const legs = [
+      { u: 0.30, v: -0.30, ph: stepA },  // anteriore destra
+      { u: 0.30, v:  0.30, ph: stepB },  // anteriore sinistra
+      { u: -0.28, v: -0.30, ph: stepB }, // posteriore destra
+      { u: -0.28, v:  0.30, ph: stepA }, // posteriore sinistra
+    ];
+    legs.forEach(function(leg){
+      const lu = leg.u + leg.ph * S * 0.07;
+      const lift = Math.max(0, leg.ph) * S * 0.03;
+      ctx.beginPath();
+      ctx.arc(S * lu, S * leg.v - lift, S * 0.115, 0, Math.PI * 2);
+      ctx.fill(); ctx.stroke();
+    });
 
-    // Gambe: due massi tozzi.
-    ctx.beginPath(); ctx.arc(cx - S * 0.14, cy + S * 0.28, S * 0.11, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
-    ctx.beginPath(); ctx.arc(cx + S * 0.14, cy + S * 0.28, S * 0.11, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
-
-    // Corpo: macigno grande e arrotondato.
+    // Corpo: macigno allungato lungo la direzione di marcia, appoggiato
+    // in avanti sulle quattro zampe come un gorilla che cammina carponi.
     ctx.fillStyle = ROCK;
     ctx.beginPath();
-    if (ctx.roundRect) ctx.roundRect(cx - S * 0.28, by - S * 0.16, S * 0.56, S * 0.5, S * 0.16);
-    else ctx.rect(cx - S * 0.28, by - S * 0.16, S * 0.56, S * 0.5);
+    if (ctx.roundRect) ctx.roundRect(S * -0.34, S * -0.24, S * 0.66, S * 0.46, S * 0.16);
+    else ctx.rect(S * -0.34, S * -0.24, S * 0.66, S * 0.46);
     ctx.fill(); ctx.stroke();
 
     // Placche piu' chiare + crepe sul corpo.
     ctx.fillStyle = ROCK_LIGHT;
-    ctx.beginPath(); ctx.arc(cx - S * 0.1, by + S * 0.1, S * 0.09, 0, Math.PI * 2); ctx.fill();
-    ctx.beginPath(); ctx.arc(cx + S * 0.13, by + S * 0.2, S * 0.07, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(S * -0.08, S * -0.06, S * 0.09, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(S * 0.14, S * 0.02, S * 0.07, 0, Math.PI * 2); ctx.fill();
     ctx.strokeStyle = "#2b2d32";
     ctx.lineWidth = 1;
     ctx.beginPath();
-    ctx.moveTo(cx - S * 0.2, by + S * 0.02);
-    ctx.lineTo(cx - S * 0.08, by + S * 0.08);
-    ctx.lineTo(cx - S * 0.12, by + S * 0.18);
+    ctx.moveTo(S * -0.2, S * -0.14);
+    ctx.lineTo(S * -0.06, S * -0.08);
+    ctx.lineTo(S * -0.1, S * 0.02);
     ctx.stroke();
 
-    // Gemme sulla schiena/spalle nel colore del proprietario (triangoli).
+    // Gemme sulla schiena nel colore del proprietario (triangoli).
     ctx.fillStyle = col;
     ctx.strokeStyle = ROCK_EDGE;
-    [[-0.2, -0.2, 0.10], [0.05, -0.26, 0.12], [0.26, -0.18, 0.09]].forEach(function(gm){
-      const gx = cx + S * gm[0], gy = by + S * gm[1], gs = S * gm[2];
+    [[-0.1, -0.14, 0.10], [0.1, -0.16, 0.12], [0.26, -0.1, 0.09]].forEach(function(gm){
+      const gu = S * gm[0], gv = S * gm[1], gs = S * gm[2];
       ctx.beginPath();
-      ctx.moveTo(gx, gy - gs);
-      ctx.lineTo(gx + gs * 0.8, gy + gs * 0.5);
-      ctx.lineTo(gx - gs * 0.8, gy + gs * 0.5);
+      ctx.moveTo(gu, gv - gs);
+      ctx.lineTo(gu + gs * 0.8, gv + gs * 0.5);
+      ctx.lineTo(gu - gs * 0.8, gv + gs * 0.5);
       ctx.closePath(); ctx.fill(); ctx.stroke();
     });
 
-    // Testa: masso piu' piccolo sopra il corpo.
+    // Testa: masso piu' piccolo, sporgente in avanti (come un gorilla che
+    // guarda dritto nella direzione in cui cammina).
     ctx.lineWidth = 1.4;
     ctx.fillStyle = ROCK;
-    ctx.beginPath(); ctx.arc(cx, by - S * 0.26, S * 0.17, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    ctx.beginPath(); ctx.arc(S * 0.42, 0, S * 0.16, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
 
     if (g.awake){
-      // Occhi LUMINOSI nel colore del proprietario.
+      // Occhi LUMINOSI nel colore del proprietario, rivolti in avanti.
       ctx.fillStyle = col;
       ctx.shadowColor = col; ctx.shadowBlur = 6;
-      ctx.beginPath(); ctx.arc(cx - S * 0.065, by - S * 0.27, S * 0.035, 0, Math.PI * 2); ctx.fill();
-      ctx.beginPath(); ctx.arc(cx + S * 0.065, by - S * 0.27, S * 0.035, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(S * 0.47, S * -0.055, S * 0.032, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(S * 0.47, S * 0.055, S * 0.032, 0, Math.PI * 2); ctx.fill();
       ctx.shadowBlur = 0;
     } else {
-      // Addormentato: occhi chiusi (due lineette) + conto alla rovescia.
+      // Addormentato: occhi chiusi (due lineette).
       ctx.strokeStyle = col;
       ctx.lineWidth = 1.6;
       ctx.beginPath();
-      ctx.moveTo(cx - S * 0.1, by - S * 0.27); ctx.lineTo(cx - S * 0.03, by - S * 0.27);
-      ctx.moveTo(cx + S * 0.03, by - S * 0.27); ctx.lineTo(cx + S * 0.1, by - S * 0.27);
+      ctx.moveTo(S * 0.4, S * -0.08); ctx.lineTo(S * 0.47, S * -0.03);
+      ctx.moveTo(S * 0.4, S * 0.08); ctx.lineTo(S * 0.47, S * 0.03);
       ctx.stroke();
-      // "Zzz" fluttuante.
+    }
+
+    ctx.restore(); // fine coordinate locali ruotate: da qui si torna al mondo
+
+    if (!g.awake){
+      // "Zzz" fluttuante + conto alla rovescia, sempre dritti a schermo.
       ctx.fillStyle = "rgba(255,255,255,0.8)";
       ctx.font = "7px " + getComputedStyle(document.body).fontFamily;
       ctx.textAlign = "left";
@@ -5437,10 +5478,10 @@ function drawGolems(now){
       ctx.globalAlpha = 1 - zf;
       ctx.fillText("z", cx + S * 0.2, by - S * 0.4 - zf * 6);
       ctx.globalAlpha = 1;
-      // Secondi al risveglio, piccoli, sotto la testa.
+      // Secondi al risveglio, piccoli, sopra la testa.
       ctx.fillStyle = col;
       ctx.textAlign = "center";
-      ctx.fillText(Math.ceil(g.wake_left) + "s", cx, by + S * 0.03);
+      ctx.fillText(Math.ceil(g.wake_left) + "s", cx, by - S * 0.32);
     }
 
     // Lampo bianco per ~150ms quando incassa un colpo.

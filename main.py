@@ -4653,13 +4653,67 @@ class Room:
                 self.damage_golem(g, by, cause)
         return hits
 
+    def golem_target_cells(self, owner):
+        """Elenca le posizioni di TUTTI i gadget avversari ancora in vita
+        (stessi criteri di golem_eat, gadget per gadget), cosi' il golem
+        sveglio puo' puntare dritto al piu' vicino invece di vagare a
+        caso. Le Tesla occulte sottoterra e i cespugli/gadget dello
+        stesso proprietario restano esclusi, esattamente come nel pasto
+        vero e proprio."""
+        cells = []
+        for mn in self.mines:
+            if self.is_enemy_ids(mn["owner"], owner):
+                cells.append((mn["x"], mn["y"]))
+        for t in self.turrets:
+            if self.is_enemy_ids(t["owner"], owner):
+                cells.append((t["x"], t["y"]))
+        for mt in self.mortars:
+            if self.is_enemy_ids(mt["owner"], owner):
+                cells.append((mt["x"], mt["y"]))
+        for pet in self.pets:
+            if self.is_enemy_ids(pet["owner"], owner):
+                cells.append((pet["x"], pet["y"]))
+        for bomb in self.superbombs:
+            if self.is_enemy_ids(bomb["owner"], owner) and not bomb.get("destroyed"):
+                cells.append((bomb["x"], bomb["y"]))
+        for blob in self.blobs:
+            if self.is_enemy_ids(blob["owner"], owner):
+                cells.append((blob["x"], blob["y"]))
+        for w in self.spike_walls:
+            if self.is_enemy_ids(w["owner"], owner):
+                cells.append((w["x"], w["y"]))
+        for tesla in self.teslas:
+            if self.is_enemy_ids(tesla["owner"], owner) and tesla.get("occult_phase") != "hidden":
+                cells.append((tesla["x"], tesla["y"]))
+        for mush in self.mushrooms:
+            if self.is_enemy_ids(mush["owner"], owner):
+                cells.append((mush["x"], mush["y"]))
+        for bsh in self.bushes:
+            if bsh["owner"] == owner:
+                continue
+            cells.extend((c[0], c[1]) for c in bsh["cells"])
+        return cells
+
+    def nearest_golem_target(self, g):
+        """Cella del gadget avversario piu' vicino (distanza Manhattan,
+        una stima veloce: il vero percorso lo trova poi bfs_path) a cui il
+        golem sveglio deve dirigersi per andarlo a mangiare. None se non
+        c'e' piu' nessun gadget avversario sulla mappa."""
+        cells = self.golem_target_cells(g["owner"])
+        if not cells:
+            return None
+        gx, gy = g["x"], g["y"]
+        return min(cells, key=lambda c: abs(c[0] - gx) + abs(c[1] - gy))
+
     def golem_eat(self, g):
         """Il pasto del golem: divora ogni gadget AVVERSARIO entro
         GOLEM_EAT_RANGE_CELLS caselle (distanza a scacchi/Chebyshev) dalla
         sua posizione. I bomboloni vengono INGOIATI senza esplodere e i
         funghi atomici sbriciolati senza innescarli: il golem li mangia,
         non li attiva. Le Tesla occulte SOTTOTERRA in quel momento sono
-        irraggiungibili (come per tutte le altre armi)."""
+        irraggiungibili (come per tutte le altre armi). Ritorna il numero
+        di gadget divorati in questo tick (usato per far ripianificare
+        subito la caccia verso il prossimo bersaglio)."""
         gx, gy, owner = g["x"], g["y"], g["owner"]
         R = GOLEM_EAT_RANGE_CELLS
 
@@ -4777,17 +4831,21 @@ class Room:
                 "kind": "golem_eat", "id": g["id"],
                 "x": gx, "y": gy, "count": eaten,
             })
+        return eaten
 
     def update_golems(self):
         """Fa avanzare ogni golem spaccapietra di un tick:
           - da ADDORMENTATO: scala solo il conto alla rovescia del
             risveglio (30 secondi), poi manda l'evento "golem_wake";
             blocca comunque il passaggio (vedi _golem_block_fn);
-          - da SVEGLIO: vaga a caso per la mappa via bfs_path (mai
-            attraverso i muri, mai ADDOSSO a un giocatore vivo: se la
-            prossima cella e' occupata da qualcuno aspetta e ripianifica)
-            a GOLEM_SPEED celle al secondo, divorando ad ogni tick i
-            gadget avversari a portata (vedi golem_eat);
+          - da SVEGLIO: punta dritto (via bfs_path, mai attraverso i
+            muri, mai ADDOSSO a un giocatore vivo: se la prossima cella e'
+            occupata da qualcuno aspetta e ripianifica) verso il gadget
+            AVVERSARIO piu' vicino rimasto sulla mappa, uno alla volta;
+            appena lo raggiunge e lo divora (vedi golem_eat) ripianifica
+            subito verso il prossimo piu' vicino. Solo se non c'e' piu'
+            nessun gadget nemico torna a vagare a caso per la mappa a
+            GOLEM_SPEED celle al secondo;
           - danni ambientali: una vita AL SECONDO se si trova dentro una
             nuvola velenosa avversaria (mortaio/blob/fungo) o dentro un
             terremoto avversario della pozione."""
@@ -4804,10 +4862,18 @@ class Room:
                     })
                 continue
 
-            # ---- vagabondaggio ----
+            # ---- caccia al gadget avversario piu' vicino ----
+            # Finche' c'e' un gadget nemico sulla mappa il golem gli punta
+            # dritto contro (uno alla volta, sempre il piu' vicino); solo
+            # se non ce n'e' piu' nessuno torna a vagare a caso.
             if not g.get("wander_path"):
-                target = random.choice(self.free_cells)
-                path = bfs_path(self.maze, self.maze_w, self.maze_h, (g["x"], g["y"]), target)
+                hunt_target = self.nearest_golem_target(g)
+                path = None
+                if hunt_target is not None:
+                    path = bfs_path(self.maze, self.maze_w, self.maze_h, (g["x"], g["y"]), hunt_target)
+                if not path:
+                    target = random.choice(self.free_cells)
+                    path = bfs_path(self.maze, self.maze_w, self.maze_h, (g["x"], g["y"]), target)
                 g["wander_path"] = path or []
             g["move_accum"] = g.get("move_accum", 0.0) + GOLEM_SPEED * TICK_DT
             while g["move_accum"] >= 1.0 and g["wander_path"]:
@@ -4827,9 +4893,15 @@ class Room:
                 g["x"], g["y"] = nx, ny
 
             # ---- pasto ----
-            self.golem_eat(g)
+            eaten_now = self.golem_eat(g)
             if g not in self.golems:
                 continue  # (per sicurezza: il pasto non lo uccide mai, ma non si sa mai)
+            if eaten_now:
+                # Il bersaglio appena divorato non c'e' piu': ripianifica
+                # subito verso il prossimo gadget nemico piu' vicino,
+                # invece di continuare a seguire il vecchio percorso.
+                g["wander_path"] = []
+                g["move_accum"] = 0.0
 
             # ---- veleno avversario: una vita al secondo ----
             g["poison_cd"] = max(0.0, g.get("poison_cd", 0.0) - TICK_DT)

@@ -469,8 +469,8 @@ OCCULT_TESLA_TELEPORT_DISTANCE_CELLS = 10  # distanza (Manhattan) esatta a cui r
 #   2) SECONDA pressione: la boccetta viene LANCIATA verso quel punto,
 #      volando SOPRA i muri (come le bombe di mortaio, mai bloccata dal
 #      labirinto). L'effetto parte esattamente nel punto d'impatto:
-#      un TERREMOTO circolare (stesso raggio del bombolone,
-#      POTION_RADIUS_CELLS, distanza Manhattan) che resta attivo per
+#      un TERREMOTO circolare (raggio POTION_RADIUS_CELLS, distanza
+#      Manhattan) che resta attivo per
 #      POTION_EFFECT_SECONDS: il client disegna il cerchio del raggio
 #      d'azione a terra con crepe animate (terra che si spacca), nel COLORE
 #      del giocatore che l'ha lanciata. Per tutta la durata:
@@ -486,7 +486,7 @@ OCCULT_TESLA_TELEPORT_DISTANCE_CELLS = 10  # distanza (Manhattan) esatta a cui r
 # giocatore per round (vedi Player.potion_used).
 POTION_THRESHOLD = 3400
 POTION_THROW_RANGE_CELLS = 5     # distanza (caselle) del lancio, oltre i muri
-POTION_RADIUS_CELLS = SUPERBOMB_RADIUS_CELLS  # stesso raggio del bombolone
+POTION_RADIUS_CELLS = 5          # raggio del terremoto (caselle, distanza Manhattan)
 POTION_EFFECT_SECONDS = 5.0      # durata del terremoto a terra
 POTION_SLOW_MULT = 0.5           # rallentamento dei giocatori dentro il cerchio (-50%)
 
@@ -496,20 +496,23 @@ POTION_SLOW_MULT = 0.5           # rallentamento dei giocatori dentro il cerchio
 # roccioso di Clash of Clans: corpo grigio scuro con placche piu' chiare,
 # ma occhi e gemme sulla schiena nel COLORE di chi lo piazza), affamato di
 # oggetti. Piazzato nella cella corrente del giocatore, DORME per
-# GOLEM_WAKE_SECONDS (30 secondi); una volta sveglio vaga a caso per tutta
-# la mappa (via bfs_path, mai attraverso i muri) a GOLEM_SPEED celle al
-# secondo, MANGIANDO ogni genere di gadget AVVERSARIO che trova a portata
+# GOLEM_WAKE_SECONDS (30 secondi); una volta sveglio punta dritto (via
+# bfs_path, mai attraverso i muri) verso il gadget AVVERSARIO piu' vicino
+# rimasto sulla mappa, uno alla volta, a GOLEM_SPEED celle al secondo,
+# MANGIANDO ogni genere di gadget AVVERSARIO che trova a portata
 # (GOLEM_EAT_RANGE_CELLS, distanza a scacchi): mine, torrette/robot,
 # mortai, pet, bomboloni (li ingoia SENZA farli esplodere), blob, muri di
 # spunzoni, Tesla (tranne quelle occulte sottoterra), arbusti (potati) e
-# funghi atomici (senza innescarli). NON uccide i giocatori: li BLOCCA
-# come un muro, ostruendo il passaggio (solo il proprietario lo
-# attraversa). Ha una barra della vita sopra la testa: per ucciderlo
-# servono GOLEM_HP colpi in totale, con QUALSIASI arma (laser, missile,
-# fulmine di Tesla, esplosioni di bombolone/mongolfiera/fungo, impatto di
-# mortaio: una vita a colpo); il VELENO invece gli toglie una vita al
-# secondo finche' ci resta dentro (GOLEM_POISON_TICK_SECONDS), e lo stesso
-# vale per il terremoto della pozione.
+# funghi atomici (senza innescarli). Appena finisce un bersaglio si
+# rimette subito a caccia del prossimo piu' vicino; solo quando non resta
+# piu' nessun gadget nemico sulla mappa torna a vagare a caso. NON uccide
+# i giocatori: li BLOCCA come un muro, ostruendo il passaggio (solo il
+# proprietario lo attraversa). Ha una barra della vita sopra la testa: per
+# ucciderlo servono GOLEM_HP colpi in totale, con QUALSIASI arma (laser,
+# missile, fulmine di Tesla, esplosioni di bombolone/mongolfiera/fungo,
+# impatto di mortaio: una vita a colpo); il VELENO invece gli toglie una
+# vita al secondo finche' ci resta dentro (GOLEM_POISON_TICK_SECONDS), e
+# lo stesso vale per il terremoto della pozione.
 GOLEM_THRESHOLD = 3600
 GOLEM_HP = 15                    # colpi totali necessari per abbatterlo
 GOLEM_WAKE_SECONDS = 30.0        # dorme cosi' a lungo dopo il piazzamento
