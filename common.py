@@ -429,11 +429,12 @@ LIVES_EVERY_AMOUNT = 3
 # All'esplosione il client disegna il classico fungo atomico gassoso, nel
 # colore del proprietario, per MUSHROOM_CLOUD_SECONDS (2 secondi).
 MUSHROOM_THRESHOLD = 3000
-MUSHROOM_BLAST_RADIUS_CELLS = 8         # raggio di distruzione (caselle, Manhattan)
+MUSHROOM_BLAST_RADIUS_CELLS = 4         # raggio di distruzione (caselle, Manhattan)
 MUSHROOM_POISON_DURATION_SECONDS = 60.0 # l'area resta avvelenata per 1 minuto
 MUSHROOM_VISIBILITY_RANGE = 3           # visibile solo entro 3 caselle (Chebyshev); il proprietario lo vede sempre
 MUSHROOM_CLOUD_SECONDS = 2.0            # durata della nube a fungo (client)
 MUSHROOM_RESPAWN_INTERVAL_SECONDS = 60.0 # il fungo "originale" ne genera un altro a caso sulla mappa ogni minuto, finche' non viene fatto esplodere
+MUSHROOM_MAX_ACTIVE_PER_OWNER = 5        # tetto massimo di funghi (originale + generati) contemporaneamente vivi per proprietario
 
 # ---- bonus 3200 punti: Tesla occulta (tasto "1", DOPO il fungo atomico) ----
 # Nuovo, vero ultimo gradino della catena del tasto "1". A differenza di

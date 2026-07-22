@@ -3040,7 +3040,7 @@ function drawMushrooms(now){
     const owner = findPlayer(currSnapshot, m.owner);
     const col = (owner && COLOR_HEX[(owner.colors || [])[0]]) || "#ff5fd1";
     const shape = getMushroomShape(m.id);
-    const s = BASE_CELL * 0.8 * shape.sizeMult; // grosso fungo porcino, statico: dimensione fissa ma diversa per ogni esemplare
+    const s = BASE_CELL * 0.62 * shape.sizeMult; // grosso fungo porcino, statico e un po' piu' piccolo: dimensione fissa ma diversa per ogni esemplare
     const cw = shape.capWidthMult, chh = shape.capHeightMult, ox = shape.capOffsetX * s, bend = shape.stemBend;
 
     ctx.save();
@@ -3087,10 +3087,43 @@ function drawMushrooms(now){
     ctx.quadraticCurveTo(ox - s * 0.6 * cw, s * 0.1 * chh, ox - s * 0.6 * cw, -s * 0.12 * chh);
     ctx.closePath(); ctx.fill(); ctx.stroke();
 
+    // Piccolo teschio bianco sulla cappella (stesso disegno di
+    // bombolone/mongolfiera/muro di spunzoni, in scala): coerenza visiva
+    // fra tutti i gadget "letali" del gioco. Scala proporzionale al
+    // raggio della cappella, cosi' resta ben proporzionato anche con le
+    // variazioni di dimensione/forma fra un fungo e l'altro.
+    const capRadius = s * 0.58 * cw;
+    const sk = capRadius * 0.062;
+    const skx = ox, sky = -s * 0.22 * chh;
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = "#f2f2f0";
+    ctx.beginPath(); ctx.arc(skx, sky - 4 * sk, 6.2 * sk, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(skx - 4.6 * sk, sky - 2.5 * sk);
+    ctx.lineTo(skx - 4.2 * sk, sky + 2.5 * sk);
+    ctx.lineTo(skx + 4.2 * sk, sky + 2.5 * sk);
+    ctx.lineTo(skx + 4.6 * sk, sky - 2.5 * sk);
+    ctx.closePath(); ctx.fill();
+    ctx.fillStyle = "#1a1a1a";
+    ctx.beginPath(); ctx.arc(skx - 2.3 * sk, sky - 4.5 * sk, 1.5 * sk, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(skx + 2.3 * sk, sky - 4.5 * sk, 1.5 * sk, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(skx - 0.9 * sk, sky - 2.5 * sk); ctx.lineTo(skx, sky - 0.3 * sk); ctx.lineTo(skx + 0.9 * sk, sky - 2.5 * sk);
+    ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = "#1a1a1a";
+    ctx.lineWidth = Math.max(0.6, 1 * sk);
+    for (let i = -1; i <= 1; i++){
+      ctx.beginPath();
+      ctx.moveTo(skx + i * 1.6 * sk - 0.5 * sk, sky + 2.1 * sk);
+      ctx.lineTo(skx + i * 1.6 * sk + 0.5 * sk, sky + 3.4 * sk);
+      ctx.stroke();
+    }
+
     // Bordo piu' chiaro sotto la cappella (l'imenio poroso del porcino,
     // al posto delle classiche lamelle), sempre derivato dal colore del
-    // proprietario.
-    ctx.globalAlpha = 0.75;
+    // proprietario. Completamente opaco (niente trasparenza): il fungo
+    // deve leggersi a colpo d'occhio come un ostacolo solido.
+    ctx.globalAlpha = 1;
     ctx.fillStyle = lightenHex(col, 0.55);
     ctx.beginPath();
     ctx.ellipse(ox, s * 0.12 * chh, s * 0.4 * cw, s * 0.05, 0, 0, Math.PI * 2);

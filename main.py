@@ -78,7 +78,7 @@ from common import (
     LIVES_EVERY_POINTS, LIVES_EVERY_AMOUNT,
     MUSHROOM_THRESHOLD, MUSHROOM_BLAST_RADIUS_CELLS,
     MUSHROOM_POISON_DURATION_SECONDS, MUSHROOM_VISIBILITY_RANGE,
-    MUSHROOM_CLOUD_SECONDS, MUSHROOM_RESPAWN_INTERVAL_SECONDS,
+    MUSHROOM_CLOUD_SECONDS, MUSHROOM_RESPAWN_INTERVAL_SECONDS, MUSHROOM_MAX_ACTIVE_PER_OWNER,
     OCCULT_TESLA_THRESHOLD, OCCULT_TESLA_ATTACK_SECONDS,
     OCCULT_TESLA_HIDDEN_SECONDS, OCCULT_TESLA_TELEPORT_DISTANCE_CELLS,
     RTT_PING_INTERVAL_SECONDS, RTT_DEFAULT_SECONDS,
@@ -2991,10 +2991,10 @@ class Room:
           - distrugge ogni pet avversario nel raggio (vedi destroy_pet);
           - fa esplodere a sua volta (reazione a catena, con onda d'urto
             indipendente) ogni bombolone avversario ancora inesploso nel
-            raggio - NON lo disinnesca soltanto;
-          - fa sganciare a sua volta la propria bomba (reazione a catena,
-            con onda d'urto indipendente) a ogni altra mongolfiera
-            avversaria in volo nel raggio - NON la abbatte soltanto.
+            raggio - NON lo disinnesca soltanto.
+        Le altre mongolfiere avversarie NON vengono toccate: due
+        mongolfiere non possono mai distruggersi a vicenda, nemmeno se una
+        bomba esplode entro il raggio dell'altra.
         Il blob gelatinoso (bonus 1800 punti) e' IMMUNE alla bomba di
         mongolfiera, che lo sorvola senza alcun effetto - resta
         distruttibile solo dal bombolone avversario (vedi
@@ -3075,14 +3075,10 @@ class Room:
                 other["destroyed"] = True
                 self.explode_superbomb(other)
 
-        # Ogni altra mongolfiera avversaria in volo nel raggio non viene
-        # abbattuta in silenzio: sgancia a sua volta la propria bomba
-        # (reazione a catena), poi esce di scena.
-        for bal in list(self.balloons):
-            if (bal is not b and bal["owner"] != owner and not bal.get("destroyed")
-                    and abs(bal["x"] - ox) + abs(bal["y"] - oy) <= BALLOON_BOMB_RADIUS_CELLS):
-                bal["destroyed"] = True
-                self.explode_balloon_bomb(bal)
+        # Ogni altra mongolfiera avversaria in volo nel raggio NON viene
+        # toccata: due mongolfiere non possono mai distruggersi a vicenda
+        # (a differenza del bombolone, che le abbatte entrambe senza
+        # eccezioni: vedi explode_superbomb).
 
         # NOTA: il blob (bonus 1800 punti) e' volutamente escluso qui -
         # resta immune alla bomba di mongolfiera (vedi docstring sopra).
@@ -3965,9 +3961,14 @@ class Room:
         vedi try_place_mushroom): se non e' ancora stato calpestato, ogni
         MUSHROOM_RESPAWN_INTERVAL_SECONDS fa comparire un NUOVO fungo
         dello stesso proprietario in un punto casuale della mappa (non un
-        muro, non sopra un altro gadget). Il nuovo fungo NON e' a sua
-        volta un generatore: solo l'originale continua a riprodursi,
-        finche' qualcuno non lo fa esplodere."""
+        muro, non sopra un altro gadget) - MA SOLO SE il proprietario ha
+        ancora meno di MUSHROOM_MAX_ACTIVE_PER_OWNER funghi vivi in totale
+        (originale compreso): raggiunto il tetto, il generatore smette di
+        produrne altri finche' qualcuno non ne fa esplodere uno (il conto
+        scende sotto il tetto e la generazione riprende dal minuto
+        successivo). Il nuovo fungo NON e' a sua volta un generatore: solo
+        l'originale continua a riprodursi, finche' qualcuno non lo fa
+        esplodere."""
         if not self.mushrooms:
             return
         for m in list(self.mushrooms):
@@ -3977,6 +3978,9 @@ class Room:
             if m["spawn_left"] > 0:
                 continue
             m["spawn_left"] += MUSHROOM_RESPAWN_INTERVAL_SECONDS
+            owner_count = sum(1 for o in self.mushrooms if o["owner"] == m["owner"])
+            if owner_count >= MUSHROOM_MAX_ACTIVE_PER_OWNER:
+                continue  # tetto raggiunto: si ritentera' al prossimo minuto
             cell = self.pick_random_mushroom_cell()
             if cell is None:
                 continue
