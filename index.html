@@ -37,6 +37,51 @@
   }
 
   *{ box-sizing: border-box; }
+
+  /* ---------- bottone Pac-Man "2v2" (lobby, solo host) ---------- */
+  .pac2v2{
+    position: relative;
+    width: 54px; height: 54px;
+    padding: 0; border: none; cursor: pointer;
+    border-radius: 50%;
+    /* Corpo giallo di Pac-Man con la BOCCA aperta verso destra:
+       spicchio trasparente ritagliato dal cerchio via conic-gradient. */
+    background:
+      conic-gradient(from 35deg,
+        var(--marquee-yellow) 0deg 290deg,
+        rgba(0,0,0,0) 290deg 360deg);
+    box-shadow: 0 0 8px rgba(255,212,0,0.35);
+    transition: transform 0.1s, box-shadow 0.15s;
+    flex: 0 0 auto;
+  }
+  .pac2v2:active{ transform: scale(0.92); }
+  .pac2v2 .pacEye{
+    position: absolute; top: 10px; left: 22px;
+    width: 7px; height: 7px; border-radius: 50%;
+    background: #0a0a0a;
+  }
+  .pac2v2 .pacLabel{
+    position: absolute; left: 4px; top: 50%;
+    transform: translateY(-42%);
+    font-family: var(--mono); font-weight: bold; font-size: 15px;
+    color: #0a0a0a; letter-spacing: 0;
+    pointer-events: none;
+  }
+  /* Modalita' 2v2 ATTIVA: Pac-Man si accende di verde fosforo. */
+  .pac2v2.active{
+    background:
+      conic-gradient(from 35deg,
+        var(--phosphor) 0deg 290deg,
+        rgba(0,0,0,0) 290deg 360deg);
+    box-shadow: 0 0 12px var(--phosphor-faint), 0 0 20px var(--phosphor-faint);
+  }
+  .mode-hint{
+    font-size: 11px; color: var(--phosphor-dim);
+    align-self: center;
+  }
+  /* Etichette di squadra nella lista giocatori della lobby. */
+  .tag.team1{ background: #5b6bff; color: #fff; }
+  .tag.team2{ background: #ff4136; color: #fff; }
   html,body{ height:100%; }
   body{
     margin:0;
@@ -566,6 +611,13 @@
     <label>Scegli personaggio</label>
     <div class="char-grid" id="characterGrid"></div>
 
+    <div class="btn-row" id="modeRow" style="align-items:center; gap:10px;">
+      <button class="pac2v2 hidden" id="btn2v2" title="Attiva/disattiva la modalita' 2 contro 2">
+        <span class="pacEye"></span><span class="pacLabel">2v2</span>
+      </button>
+      <span class="mode-hint" id="modeHint">Modalit\u00e0: tutti contro tutti</span>
+    </div>
+
     <div class="btn-row">
       <button class="primary hidden" id="btnStart" style="flex:1">Avvia partita</button>
       <span id="waitHostMsg" class="hint hidden">In attesa che l'host avvii la partita&hellip;</span>
@@ -869,6 +921,9 @@ let skyBolts = [];
 let myColors = []; // fino a 2: [0]=primario (corpo), [1]=dettaglio (contorno/denti/occhio)
 let myCharacter = "classic";
 let lobbyPlayersCache = [];
+// Modalita' corrente della stanza ("ffa" o "2v2"), aggiornata da ogni
+// lobby_state: serve al bottone Pac-Man 2v2 e alle etichette di squadra.
+let currentLobbyMode = "ffa";
 
 // ---- stato dei nuovi elementi (portali, laser, teletrasporto, particelle) ----
 let portals = [];          // [[x,y],[x,y]] ricevuti dal server con la mappa
@@ -994,6 +1049,42 @@ function playChomp(){
 // immediato al tasto premuto, indipendentemente da quando il server riesce
 // davvero ad applicare la svolta (vedi coda next_direction lato server).
 function playTurn(){ tone(520, 0.035, "square", 0.05); }
+// Pozione terremoto (bonus 3400 punti): doppio bip di "mirino attivo"...
+function playPotionAim(){ tone(860, 0.06, "square", 0.10); tone(1160, 0.07, "square", 0.10, 0.08); }
+// ...fischio del lancio ad arco della boccetta...
+function playPotionThrow(){ sweep(760, 240, 0.28, "triangle", 0.13); }
+// ...e boato/rombo di terra che si spacca all'impatto (rumore + toni
+// bassissimi, come un vero terremoto in miniatura).
+// Attacco aereo (bonus 4000 punti): mirino attivo, passaggio del jet e
+// tappeto di bombe lungo la fila.
+function playAirstrikeAim(){ tone(980, 0.06, "square", 0.1); tone(740, 0.07, "square", 0.1, 0.08); }
+function playAirstrikeJet(){ sweep(120, 900, 1.1, "sawtooth", 0.12); noiseBurst(0.8, 0.08); }
+function playAirstrikeBoom(){ noiseBurst(0.16, 0.18); tone(75, 0.18, "sine", 0.14); }
+// Fungo madre magnetico (bonus 3800 punti): ronzio profondo alla
+// trasformazione e risucchio breve quando inghiotte qualcosa.
+function playMegaHum(){ sweep(50, 160, 0.7, "sine", 0.18); tone(80, 0.8, "sine", 0.12, 0.1); }
+function playMegaSuck(){ sweep(600, 90, 0.22, "sine", 0.11); }
+// Golem spaccapietra (bonus 3600 punti): tonfo di macigno al piazzamento...
+function playGolemThud(){ noiseBurst(0.25, 0.2); tone(70, 0.35, "sine", 0.22); }
+// ...ruggito roccioso del risveglio...
+function playGolemRoar(){ sweep(70, 180, 0.5, "sawtooth", 0.16); noiseBurst(0.4, 0.14); }
+// ...colpo secco di roccia quando viene ferito...
+function playGolemHit(){ noiseBurst(0.08, 0.16); tone(220, 0.07, "square", 0.10); }
+// ...sbriciolamento quando crolla...
+function playGolemCrumble(){
+  noiseBurst(0.6, 0.26);
+  tone(140, 0.2, "sawtooth", 0.14);
+  tone(95, 0.25, "sawtooth", 0.14, 0.15);
+  tone(60, 0.4, "sine", 0.18, 0.3);
+}
+// ...e morso pietroso quando divora un gadget.
+function playGolemChomp(){ tone(120, 0.08, "square", 0.13); tone(85, 0.1, "square", 0.13, 0.09); }
+function playQuakeRumble(){
+  noiseBurst(0.9, 0.28);
+  tone(62, 0.9, "sawtooth", 0.20);
+  tone(46, 1.2, "sine", 0.26, 0.08);
+  tone(38, 1.0, "sine", 0.18, 0.35);
+}
 function playEliminate(){
   tone(311, 0.18, "sawtooth", 0.16, 0.00);
   tone(277, 0.18, "sawtooth", 0.16, 0.16);
@@ -1589,6 +1680,14 @@ function onLobbyState(msg){
       const t = document.createElement("span"); t.className="tag you"; t.textContent="TU"; li.appendChild(t);
     }
     if (p.host){ const t = document.createElement("span"); t.className="tag host"; t.textContent="HOST"; li.appendChild(t); }
+    // Modalita' 2v2: etichetta di squadra accanto al nome (SQ.1 blu,
+    // SQ.2 rossa), coi colori gia' assegnati automaticamente dal server.
+    if (msg.mode === "2v2" && p.team){
+      const tt = document.createElement("span");
+      tt.className = "tag team" + p.team;
+      tt.textContent = "SQ." + p.team;
+      li.appendChild(tt);
+    }
     if (p.connected === false){
       const t = document.createElement("span"); t.className="tag alert";
       t.textContent="RICONNESSIONE\u2026"; li.appendChild(t);
@@ -1609,7 +1708,25 @@ function onLobbyState(msg){
   document.getElementById("btnStart").classList.toggle("hidden", !isHost);
   document.getElementById("waitHostMsg").classList.toggle("hidden", !!isHost);
   const allColored = msg.players.every(function(p){ return p.colors && p.colors.length; });
-  document.getElementById("btnStart").disabled = !(isHost && msg.players.length >= msg.min_players && allColored);
+
+  // ---- modalita' 2v2 ----
+  currentLobbyMode = msg.mode || "ffa";
+  const btn2v2 = document.getElementById("btn2v2");
+  btn2v2.classList.toggle("hidden", !isHost);
+  btn2v2.classList.toggle("active", currentLobbyMode === "2v2");
+  document.getElementById("modeHint").textContent =
+    currentLobbyMode === "2v2"
+      ? "Modalit\u00e0: 2v2 a squadre \u00b7 colori automatici \u00b7 servono 4 giocatori"
+      : "Modalit\u00e0: tutti contro tutti";
+  // In 2v2 i colori sono AUTOMATICI (squadra 1 blu+azzurro, squadra 2
+  // rosso+arancione): la griglia di scelta colore viene nascosta.
+  const colorGridEl = document.getElementById("colorGrid");
+  colorGridEl.classList.toggle("hidden", currentLobbyMode === "2v2");
+  const colorLabel = colorGridEl.previousElementSibling;
+  if (colorLabel && colorLabel.tagName === "LABEL") colorLabel.classList.toggle("hidden", currentLobbyMode === "2v2");
+
+  const enoughFor2v2 = currentLobbyMode !== "2v2" || msg.players.length === 4;
+  document.getElementById("btnStart").disabled = !(isHost && msg.players.length >= msg.min_players && allColored && enoughFor2v2);
 
   if (!roundActive){
     document.getElementById("lobbyError").textContent = "";
@@ -1730,6 +1847,10 @@ function drawCharacterPreview(pctx, charId){
   ctx = prevCtx;
 }
 
+document.getElementById("btn2v2").addEventListener("click", function(){
+  requestFullscreenSafe();
+  sendMsg({ type: "set_mode", mode: currentLobbyMode === "2v2" ? "ffa" : "2v2" });
+});
 document.getElementById("btnStart").addEventListener("click", function(){
   requestFullscreenSafe();
   sendMsg({ type: "start_game" });
@@ -2547,7 +2668,32 @@ function getRenderedMissilePos(mz, now){
 // secondo, blocco sui muri, avanzamento a celle intere. Chiamata ad ogni
 // frame dal render loop, cosi' il movimento resta visivamente fluido anche
 // tra un pacchetto di rete e l'altro.
-function stepSim(state, dt, speed, hasNextDirQueue){
+// Golem spaccapietra (bonus 3600 punti): le celle occupate dai golem
+// AVVERSARI del giocatore pid bloccano il passaggio come un muro (il
+// proprietario attraversa liberamente il proprio). Usata SOLO dalle
+// simulazioni dei giocatori (predizione locale + dead reckoning), mai da
+// pet/missili: replica esattamente _golem_block_fn del server.
+// Modalita' 2v2: due id appartengono alla stessa squadra? (in tutti
+// contro tutti nessuno ha squadra, quindi vale solo l'identita').
+function sameTeamIds(a, b){
+  if (a === b) return true;
+  const pa = findPlayer(currSnapshot, a);
+  const pb = findPlayer(currSnapshot, b);
+  return !!(pa && pb && pa.team && pa.team === pb.team);
+}
+
+function golemBlocksCell(pid, x, y){
+  const gs = (currSnapshot && currSnapshot.golems) || [];
+  for (let i = 0; i < gs.length; i++){
+    const g = gs[i];
+    // In 2v2 anche i COMPAGNI attraversano liberamente il golem (stessa
+    // regola di is_enemy_ids sul server: niente ostacoli tra alleati).
+    if (!sameTeamIds(g.owner, pid) && g.gx === x && g.gy === y) return true;
+  }
+  return false;
+}
+
+function stepSim(state, dt, speed, hasNextDirQueue, blockGolemsFor){
   if (dt <= 0) return;
   let remaining = dt;
   // Se il tab e' stato in background, dt puo' essere enorme: limitiamolo
@@ -2586,7 +2732,8 @@ function stepSim(state, dt, speed, hasNextDirQueue){
         state.nextDir = null;
       } else if (state.accum <= 1e-9){
         const v = DIR_VEC[state.nextDir];
-        if (!isWallCell(state.gridX + v[0], state.gridY + v[1])){
+        if (!isWallCell(state.gridX + v[0], state.gridY + v[1])
+            && !(blockGolemsFor != null && golemBlocksCell(blockGolemsFor, state.gridX + v[0], state.gridY + v[1]))){
           state.dir = state.nextDir;
           state.nextDir = null;
         }
@@ -2595,7 +2742,8 @@ function stepSim(state, dt, speed, hasNextDirQueue){
     if (!state.dir){ break; }
     const v = DIR_VEC[state.dir];
     const nx = state.gridX + v[0], ny = state.gridY + v[1];
-    if (isWallCell(nx, ny)){
+    if (isWallCell(nx, ny)
+        || (blockGolemsFor != null && golemBlocksCell(blockGolemsFor, nx, ny))){
       state.accum = 0;
       break;
     }
@@ -2622,8 +2770,14 @@ function stepSim(state, dt, speed, hasNextDirQueue){
 function stepLocalPrediction(dt, isAssassin){
   if (!predInited) return;
   let speed = NORMAL_SPEED * (isAssassin ? ASSASSIN_SPEED_MULT : 1);
+  // Pozione terremoto (bonus 3400 punti): dentro un cerchio di terremoto
+  // attivo la velocita' e' dimezzata anche nella predizione locale (stessa
+  // costante POTION_SLOW_MULT = 0.5 del server, vedi quake_slow_mult in
+  // main.py), altrimenti la riconciliazione tirerebbe indietro il
+  // personaggio a scatti per tutti i 5 secondi dell'effetto.
+  if (quakeSlowsCell(predGridX, predGridY)) speed *= 0.5;
   const state = { gridX: predGridX, gridY: predGridY, accum: predAccum, dir: predDir, nextDir: predNextDir };
-  stepSim(state, dt, speed, true);
+  stepSim(state, dt, speed, true, myId);
   predGridX = state.gridX; predGridY = state.gridY; predAccum = state.accum;
   predDir = state.dir; predNextDir = state.nextDir;
 }
@@ -2635,7 +2789,9 @@ function stepRemoteSim(p, dt){
   const s = remoteSim[p.id];
   if (!s || !p.alive) return;
   let speed = NORMAL_SPEED * (p.assassin ? ASSASSIN_SPEED_MULT : 1);
-  stepSim(s, dt, speed, false);
+  // Stesso rallentamento da terremoto della predizione locale (vedi sopra).
+  if (quakeSlowsCell(s.gridX, s.gridY)) speed *= 0.5;
+  stepSim(s, dt, speed, false, p.id);
 }
 
 // Il pet (bonus 900 punti) e' leggermente piu' veloce del proprietario, per
@@ -2694,8 +2850,15 @@ function drawPlayers(players, now){
     const chompSpeed = 8;
     const mouthDeg = 8 + 24 * Math.abs(Math.sin(now / 1000 * chompSpeed));
     const colors = p.colors || [];
-    const baseColor = COLOR_HEX[colors[0]] || "#fff";
-    const detailColor = colors[1] ? COLOR_HEX[colors[1]] : null;
+    let baseColor = COLOR_HEX[colors[0]] || "#fff";
+    let detailColor = colors[1] ? COLOR_HEX[colors[1]] : null;
+    // Attacco aereo (bonus 4000 punti): mentre seleziona la fila il
+    // giocatore e' immobile e TOTALMENTE NERO (con un filo di contorno
+    // scuro per non sparire del tutto sullo sfondo).
+    if (p.airstrike_aiming){
+      baseColor = "#0a0a0c";
+      detailColor = "#1c1c22";
+    }
     const radius = BASE_CELL * 0.42;
 
     ctx.save();
@@ -3027,6 +3190,9 @@ function drawMushrooms(now){
   const all = (currSnapshot && currSnapshot.mushrooms) || [];
   const me = findPlayer(currSnapshot, myId);
   const list = all.filter(function(m){
+    // Bonus 3800 punti: il fungo madre trasformato e' visibile a TUTTI,
+    // da qualsiasi distanza (niente piu' occultamento).
+    if (m.mega) return true;
     if (m.owner === myId) return true;
     if (!me) return false;
     const dist = Math.max(Math.abs(m.x - me.x), Math.abs(m.y - me.y));
@@ -3040,7 +3206,35 @@ function drawMushrooms(now){
     const owner = findPlayer(currSnapshot, m.owner);
     const col = (owner && COLOR_HEX[(owner.colors || [])[0]]) || "#ff5fd1";
     const shape = getMushroomShape(m.id);
-    const s = BASE_CELL * 0.62 * shape.sizeMult; // grosso fungo porcino, statico e un po' piu' piccolo: dimensione fissa ma diversa per ogni esemplare
+    // Bonus 3800 punti: il fungo madre trasformato e' ALTO come una Tesla
+    // (scala quasi doppia, gambo allungato) e sprigiona onde magnetiche.
+    const megaScale = m.mega ? 1.9 : 1;
+    const s = BASE_CELL * 0.62 * shape.sizeMult * megaScale; // grosso fungo porcino, statico e un po' piu' piccolo: dimensione fissa ma diversa per ogni esemplare
+
+    if (m.mega){
+      // Onde elettromagnetiche APPENA VISIBILI: tre anelli concentrici che
+      // si espandono in continuazione fino al raggio d'azione (3 caselle),
+      // nel colore del proprietario, ad alpha bassissima - piu' un
+      // pulviscolo che spiraleggia VERSO il fungo (effetto buco nero).
+      const maxR = BASE_CELL * 3.5;
+      for (let w = 0; w < 3; w++){
+        const f = ((now / 1600) + w / 3) % 1;
+        ctx.globalAlpha = 0.14 * (1 - f);
+        ctx.strokeStyle = col;
+        ctx.lineWidth = 1.2;
+        ctx.beginPath(); ctx.arc(cx, cy, maxR * f, 0, Math.PI * 2); ctx.stroke();
+      }
+      ctx.globalAlpha = 0.5;
+      ctx.fillStyle = col;
+      for (let d = 0; d < 8; d++){
+        const f = 1 - (((now / 1100) + d / 8) % 1);           // dall'esterno verso il centro
+        const a = d * 2.399 + now / 2600;                     // lenta rotazione a spirale
+        ctx.beginPath();
+        ctx.arc(cx + Math.cos(a) * maxR * f, cy + Math.sin(a) * maxR * f, 1.2, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+    }
     const cw = shape.capWidthMult, chh = shape.capHeightMult, ox = shape.capOffsetX * s, bend = shape.stemBend;
 
     ctx.save();
@@ -4364,7 +4558,9 @@ function drawPoisonZones(now){
     const rad = (typeof pz.radius === "number") ? pz.radius : 1;
     // Sfuma dolcemente negli ultimi istanti prima di svanire.
     const fade = Math.min(1, pz.left / 0.6);
-    const pulse = 0.75 + 0.25 * Math.sin(now / 220);
+    // Niente pulsazione: le nuvole velenose restano STATICHE a terra
+    // (solo la dissolvenza finale), su richiesta.
+    const pulse = 1;
 
     if (rad === 0){
       // Scia del blob vivo (bonus 2000 punti, radius 0): a differenza
@@ -4740,6 +4936,550 @@ function drawSkyBolts(now){
   });
 }
 
+// ---- pozione terremoto (bonus 3400 punti) ----
+// Boccette in volo (animazione one-shot dell'evento "potion_throw").
+let potionThrows = [];
+// Semi delle crepe, riciclati per id del terremoto: ogni cerchio ha il suo
+// disegno di crepe stabile (niente sfarfallio casuale ad ogni frame).
+let quakeCrackSeeds = {};
+
+// True se la cella (x, y) e' dentro ALMENO un terremoto attivo (distanza
+// Manhattan dal centro <= raggio): stessa regola di quake_slow_mult lato
+// server, usata per dimezzare la velocita' nelle simulazioni client.
+function quakeSlowsCell(x, y){
+  const qs = (currSnapshot && currSnapshot.quakes) || [];
+  for (let i = 0; i < qs.length; i++){
+    const q = qs[i];
+    if (Math.abs(x - q.x) + Math.abs(y - q.y) <= (q.radius || 0)) return true;
+  }
+  return false;
+}
+
+function quakeOwnerColor(ownerId){
+  const owner = findPlayer(currSnapshot, ownerId);
+  return (owner && COLOR_HEX[(owner.colors || [])[0]]) || "#9be7ff";
+}
+
+// Il cerchio del raggio d'azione a terra, con le crepe animate della terra
+// che si spacca, nel COLORE del proprietario della pozione. Dati dallo
+// stato (currSnapshot.quakes): x/y (centro), radius (caselle, Manhattan),
+// left/duration (secondi).
+function drawQuakes(now){
+  const list = (currSnapshot && currSnapshot.quakes) || [];
+  if (!list.length){ quakeCrackSeeds = {}; return; }
+  ctx.save();
+  list.forEach(function(q){
+    const col = quakeOwnerColor(q.owner);
+    const cx = q.x * BASE_CELL + BASE_CELL / 2;
+    const cy = q.y * BASE_CELL + BASE_CELL / 2;
+    const dur = q.duration || 5;
+    const progress = Math.max(0, Math.min(1, 1 - q.left / dur));
+    // Il cerchio "esplode" in apertura nel primo 15% della durata...
+    const grow = Math.min(1, progress / 0.15);
+    // ...e sfuma dolcemente negli ultimi istanti, come le nuvole velenose.
+    const fade = Math.min(1, q.left / 0.6);
+    const r = BASE_CELL * (0.5 + (q.radius || 0)) * grow;
+    const pulse = 0.85 + 0.15 * Math.sin(now / 90);
+
+    // Alone del raggio d'azione.
+    ctx.globalAlpha = 0.12 * fade;
+    ctx.fillStyle = col;
+    ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.fill();
+
+    // Anello del bordo, tratteggiato e "tremante".
+    ctx.globalAlpha = 0.55 * fade;
+    ctx.strokeStyle = col;
+    ctx.lineWidth = 1.6;
+    ctx.setLineDash([4, 5]);
+    ctx.beginPath(); ctx.arc(cx, cy, r * pulse, 0, Math.PI * 2); ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Crepe della terra che si spacca: polilinee frastagliate che si
+    // irradiano dal centro, con rametti laterali. Semi stabili per id.
+    if (!quakeCrackSeeds[q.id]){
+      const cracks = [];
+      const nC = 8;
+      for (let i = 0; i < nC; i++){
+        const baseA = (i / nC) * Math.PI * 2 + (Math.random() - 0.5) * 0.5;
+        const segs = [];
+        const nS = 6;
+        for (let sIdx = 0; sIdx <= nS; sIdx++){
+          segs.push({
+            f: sIdx / nS,
+            jA: (Math.random() - 0.5) * 0.45,   // deviazione angolare del punto
+            jR: (Math.random() - 0.5) * 0.08,   // deviazione radiale del punto
+          });
+        }
+        cracks.push({
+          a: baseA,
+          lenF: 0.55 + Math.random() * 0.45,     // frazione del raggio raggiunta
+          w: 1.2 + Math.random() * 1.4,
+          branchAt: 0.35 + Math.random() * 0.4,  // dove parte il rametto
+          branchA: (Math.random() < 0.5 ? 1 : -1) * (0.5 + Math.random() * 0.5),
+          segs: segs,
+        });
+      }
+      quakeCrackSeeds[q.id] = cracks;
+    }
+    const shake = Math.sin(now / 35 + q.x * 7) * 0.7; // tremolio fine delle crepe
+    ctx.globalAlpha = 0.85 * fade;
+    ctx.strokeStyle = col;
+    ctx.lineCap = "round";
+    quakeCrackSeeds[q.id].forEach(function(c, ci){
+      // Ogni crepa si ALLUNGA progressivamente in apertura (terra che si
+      // spacca), con un piccolo sfasamento tra una crepa e l'altra.
+      const reach = Math.min(1, Math.max(0, (grow - ci * 0.02) / 0.9)) * c.lenF;
+      if (reach <= 0.02) return;
+      const maxR = r * reach;
+      ctx.lineWidth = c.w;
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      let bx = cx, by = cy;
+      c.segs.forEach(function(s){
+        const rr = maxR * s.f * (1 + s.jR);
+        const aa = c.a + s.jA * s.f;
+        const px = cx + Math.cos(aa) * rr + shake * s.f;
+        const py = cy + Math.sin(aa) * rr + shake * s.f * 0.6;
+        ctx.lineTo(px, py);
+        if (Math.abs(s.f - c.branchAt) < 0.12){ bx = px; by = py; }
+      });
+      ctx.stroke();
+      // Rametto laterale della crepa.
+      ctx.lineWidth = Math.max(0.8, c.w * 0.6);
+      ctx.beginPath();
+      ctx.moveTo(bx, by);
+      const bl = maxR * 0.22;
+      ctx.lineTo(bx + Math.cos(c.a + c.branchA) * bl, by + Math.sin(c.a + c.branchA) * bl);
+      ctx.stroke();
+    });
+
+    // Zolle/detriti che saltellano dentro il cerchio.
+    ctx.globalAlpha = 0.6 * fade;
+    ctx.fillStyle = col;
+    for (let d = 0; d < 10; d++){
+      const da = d * 2.399 + q.y;                       // angolo "a girasole"
+      const dr = r * (0.15 + ((d * 37) % 60) / 100);
+      const hop = Math.abs(Math.sin(now / 140 + d)) * 3;
+      ctx.beginPath();
+      ctx.arc(cx + Math.cos(da) * dr, cy + Math.sin(da) * dr - hop, 1.3, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  });
+  // Semi dei terremoti ormai spenti: via, non servono piu'.
+  const aliveIds = {};
+  list.forEach(function(q){ aliveIds[q.id] = true; });
+  Object.keys(quakeCrackSeeds).forEach(function(id){ if (!aliveIds[id]) delete quakeCrackSeeds[id]; });
+  ctx.restore();
+}
+
+// La boccetta quadrata in volo: arco parabolico dal lanciatore al punto
+// d'impatto (sopra i muri, come le bombe di mortaio), poi boato + lampo.
+function drawPotionThrows(now){
+  if (!potionThrows.length) return;
+  ctx.save();
+  potionThrows = potionThrows.filter(function(t){
+    const f = (now - t.start) / t.dur;
+    if (f >= 1){
+      if (!t.landed){
+        t.landed = true;
+        playQuakeRumble();
+        explosions.push({ x: t.x1, y: t.y1, color: t.color, start: now });
+      }
+      return false;
+    }
+    const px = (t.x0 + (t.x1 - t.x0) * f) * BASE_CELL + BASE_CELL / 2;
+    const py = (t.y0 + (t.y1 - t.y0) * f) * BASE_CELL + BASE_CELL / 2;
+    const lift = Math.sin(Math.PI * f) * BASE_CELL * 2.2;  // arco sopra i muri
+    const s = BASE_CELL * 0.5;
+    ctx.translate(px, py - lift);
+    ctx.rotate(f * Math.PI * 3);   // la boccetta rotea in volo
+    // Ombra proiettata a terra (senza rotazione ne' quota).
+    ctx.save();
+    ctx.rotate(-f * Math.PI * 3);
+    ctx.translate(0, lift);
+    ctx.globalAlpha = 0.25;
+    ctx.fillStyle = "#000";
+    ctx.beginPath(); ctx.ellipse(0, 0, s * 0.45, s * 0.2, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+    // Corpo quadrato di vetro + liquido colorato + tappo di sughero.
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = "#dfe7ea";
+    ctx.strokeStyle = "#5b6b72";
+    ctx.lineWidth = 1;
+    ctx.fillRect(-s * 0.35, -s * 0.35, s * 0.7, s * 0.7);
+    ctx.strokeRect(-s * 0.35, -s * 0.35, s * 0.7, s * 0.7);
+    ctx.fillStyle = t.color;
+    ctx.globalAlpha = 0.9;
+    ctx.fillRect(-s * 0.28, -s * 0.08, s * 0.56, s * 0.36);
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = "#8a5a2b";
+    ctx.fillRect(-s * 0.12, -s * 0.55, s * 0.24, s * 0.2);
+    ctx.setTransform(canvasScale, 0, 0, canvasScale, 0, 0);
+    return true;
+  });
+  ctx.restore();
+}
+
+// Il mirino della pozione (fase di mira): un bersaglio pulsante, stile
+// spunzoni dal pavimento, nel proprio colore, disegnato a
+// POTION_THROW_RANGE_CELLS (5) caselle davanti a se' nella direzione in
+// cui si sta guardando - la STESSA formula usata dal server per il punto
+// d'impatto (vedi potion_target_cell in main.py), cosi' quel che si vede
+// e' esattamente dove cadra' la pozione.
+const POTION_THROW_RANGE_CELLS = 5;
+function drawPotionReticle(now){
+  const me = findPlayer(currSnapshot, myId);
+  if (!me || !me.alive || !me.potion || me.potion_used || !me.potion_aiming) return;
+  // Direzione di mira: quella autorevole del server (facing, aggiornata ad
+  // ogni stato), con la predizione locale come ripiego per la reattivita'.
+  const dir = (predInited && predDir) ? predDir : (me.facing || "right");
+  const v = DIR_VEC[dir] || [1, 0];
+  const gx = predInited ? predGridX : Math.round(me.x);
+  const gy = predInited ? predGridY : Math.round(me.y);
+  const tx = Math.max(0, Math.min(mazeW - 1, gx + v[0] * POTION_THROW_RANGE_CELLS));
+  const ty = Math.max(0, Math.min(mazeH - 1, gy + v[1] * POTION_THROW_RANGE_CELLS));
+  const col = COLOR_HEX[(me.colors || [])[0]] || "#9be7ff";
+  const cx = tx * BASE_CELL + BASE_CELL / 2;
+  const cy = ty * BASE_CELL + BASE_CELL / 2;
+  const px = gx * BASE_CELL + BASE_CELL / 2;
+  const py = gy * BASE_CELL + BASE_CELL / 2;
+  // Il mirino e' volutamente STATICO (niente pulsazione ne' rotazione):
+  // deve solo indicare con precisione dove cadra' la pozione.
+  ctx.save();
+  // Traiettoria tratteggiata dal giocatore al bersaglio (sorvola i muri).
+  ctx.globalAlpha = 0.35;
+  ctx.strokeStyle = col;
+  ctx.lineWidth = 1.2;
+  ctx.setLineDash([2, 5]);
+  ctx.beginPath(); ctx.moveTo(px, py); ctx.lineTo(cx, cy); ctx.stroke();
+  ctx.setLineDash([]);
+
+  // Anello esterno rotante.
+  ctx.globalAlpha = 0.9;
+  ctx.strokeStyle = col;
+  ctx.lineWidth = 1.6;
+  ctx.setLineDash([5, 4]);
+  ctx.beginPath(); ctx.arc(cx, cy, BASE_CELL * 0.85, 0, Math.PI * 2); ctx.stroke();
+  ctx.setLineDash([]);
+
+  // Quattro spunzoni triangolari che puntano verso il centro (stile
+  // trappola territoriale), pulsanti.
+  ctx.fillStyle = col;
+  for (let i = 0; i < 4; i++){
+    const a = i * Math.PI / 2 + Math.PI / 4;
+    const d0 = BASE_CELL * 0.8;
+    const tipX = cx + Math.cos(a) * (d0 - BASE_CELL * 0.45);
+    const tipY = cy + Math.sin(a) * (d0 - BASE_CELL * 0.45);
+    const baX = cx + Math.cos(a) * d0;
+    const baY = cy + Math.sin(a) * d0;
+    const orto = a + Math.PI / 2;
+    ctx.beginPath();
+    ctx.moveTo(tipX, tipY);
+    ctx.lineTo(baX + Math.cos(orto) * 3, baY + Math.sin(orto) * 3);
+    ctx.lineTo(baX - Math.cos(orto) * 3, baY - Math.sin(orto) * 3);
+    ctx.closePath(); ctx.fill();
+  }
+  // Croce centrale.
+  ctx.lineWidth = 1.6;
+  ctx.beginPath();
+  ctx.moveTo(cx - 4, cy); ctx.lineTo(cx + 4, cy);
+  ctx.moveTo(cx, cy - 4); ctx.lineTo(cx, cy + 4);
+  ctx.stroke();
+  ctx.restore();
+}
+
+// ---- attacco aereo (bonus 4000 punti) ----
+// Mirino: mentre si mira, il muro perimetrale SINISTRO della fila scelta
+// si illumina nel proprio colore (statico, niente pulsazioni), con una
+// fascia appena visibile lungo tutta la fila che verra' bombardata.
+function drawAirstrikeReticle(now){
+  const me = findPlayer(currSnapshot, myId);
+  if (!me || !me.alive || !me.airstrike_aiming) return;
+  const row = Math.max(1, Math.min(mazeH - 2, me.airstrike_row || 0));
+  const col = COLOR_HEX[(me.colors || [])[0]] || "#9be7ff";
+  ctx.save();
+  // Fascia della fila (appena visibile).
+  ctx.globalAlpha = 0.10;
+  ctx.fillStyle = col;
+  ctx.fillRect(0, row * BASE_CELL, mazeW * BASE_CELL, BASE_CELL);
+  // Il MURO-mirino: blocco perimetrale sinistro evidenziato.
+  ctx.globalAlpha = 0.95;
+  ctx.fillStyle = col;
+  ctx.fillRect(0, row * BASE_CELL, BASE_CELL, BASE_CELL);
+  ctx.strokeStyle = "#fff";
+  ctx.lineWidth = 1.4;
+  ctx.strokeRect(1, row * BASE_CELL + 1, BASE_CELL - 2, BASE_CELL - 2);
+  // Freccina che punta verso destra, sulla direzione dell'attacco.
+  ctx.fillStyle = "#fff";
+  const ay = row * BASE_CELL + BASE_CELL / 2;
+  ctx.beginPath();
+  ctx.moveTo(BASE_CELL * 1.15, ay - 3);
+  ctx.lineTo(BASE_CELL * 1.5, ay);
+  ctx.lineTo(BASE_CELL * 1.15, ay + 3);
+  ctx.closePath(); ctx.fill();
+  ctx.restore();
+}
+
+// L'aereo in volo: fusoliera nel colore del proprietario col teschio
+// della mongolfiera, scia di bombe che cadono e tappeto di esplosioni
+// sulle celle appena sorvolate.
+let lastAirstrikeBoomAt = 0;
+function drawAirstrikes(now){
+  const list = (currSnapshot && currSnapshot.airstrikes) || [];
+  if (!list.length) return;
+  // Boati a raffica (lato client, senza eventi dedicati) finche' c'e'
+  // almeno un aereo in volo dentro la mappa.
+  if (now - lastAirstrikeBoomAt > 180){
+    lastAirstrikeBoomAt = now;
+    const anyInside = list.some(function(a){ return a.x > 0 && a.x < mazeW; });
+    if (anyInside) playAirstrikeBoom();
+  }
+  ctx.save();
+  list.forEach(function(a){
+    const owner = findPlayer(currSnapshot, a.owner);
+    const col = (owner && COLOR_HEX[(owner.colors || [])[0]]) || "#9be7ff";
+    const px = a.x * BASE_CELL + BASE_CELL / 2;
+    const py = a.y * BASE_CELL + BASE_CELL / 2;
+    const S = BASE_CELL * 1.5;
+    const alt = BASE_CELL * 0.9;       // l'aereo vola "sopra" la fila
+    const jy = py - alt + Math.sin(now / 140) * 1.5;
+
+    // Tappeto di esplosioni sulle 4 celle appena sorvolate.
+    for (let k = 0; k < 4; k++){
+      const exX = Math.floor(a.x) - k;
+      if (exX < 0 || exX >= mazeW) continue;
+      const f = (k + ((now / 90) % 1)) / 4;
+      ctx.globalAlpha = 0.55 * (1 - f);
+      ctx.fillStyle = k % 2 ? "#ffb347" : "#ff5e3a";
+      const ex = exX * BASE_CELL + BASE_CELL / 2;
+      ctx.beginPath(); ctx.arc(ex, py, BASE_CELL * (0.25 + f * 0.45), 0, Math.PI * 2); ctx.fill();
+      ctx.globalAlpha = 0.35 * (1 - f);
+      ctx.fillStyle = "#777";
+      ctx.beginPath(); ctx.arc(ex, py - BASE_CELL * 0.3 * f, BASE_CELL * 0.2, 0, Math.PI * 2); ctx.fill();
+    }
+
+    // Bombe in caduta sotto l'aereo.
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = "#14161a";
+    for (let b = 0; b < 2; b++){
+      const bf = ((now / 260) + b * 0.5) % 1;
+      const bx = px - BASE_CELL * (0.3 + b * 0.35);
+      const by = jy + alt * bf;
+      ctx.beginPath(); ctx.ellipse(bx, by, 2.2, 3.4, 0, 0, Math.PI * 2); ctx.fill();
+    }
+
+    // Fusoliera.
+    ctx.fillStyle = col;
+    ctx.strokeStyle = darkenHex(col, 0.35);
+    ctx.lineWidth = 1.4;
+    ctx.beginPath();
+    ctx.ellipse(px, jy, S * 0.32, S * 0.11, 0, 0, Math.PI * 2);
+    ctx.fill(); ctx.stroke();
+    // Muso a punta (vola verso destra).
+    ctx.beginPath();
+    ctx.moveTo(px + S * 0.3, jy - S * 0.05);
+    ctx.lineTo(px + S * 0.44, jy);
+    ctx.lineTo(px + S * 0.3, jy + S * 0.05);
+    ctx.closePath(); ctx.fill();
+    // Ala e coda.
+    ctx.beginPath();
+    ctx.moveTo(px, jy);
+    ctx.lineTo(px - S * 0.12, jy + S * 0.2);
+    ctx.lineTo(px + S * 0.04, jy + S * 0.07);
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(px - S * 0.26, jy - S * 0.02);
+    ctx.lineTo(px - S * 0.36, jy - S * 0.2);
+    ctx.lineTo(px - S * 0.18, jy - S * 0.06);
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+
+    // Teschio bianco della mongolfiera dipinto sulla fusoliera.
+    ctx.fillStyle = "#fff";
+    ctx.beginPath(); ctx.arc(px + S * 0.05, jy, S * 0.075, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "#111";
+    ctx.beginPath(); ctx.arc(px + S * 0.025, jy - S * 0.018, S * 0.02, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(px + S * 0.078, jy - S * 0.018, S * 0.02, 0, Math.PI * 2); ctx.fill();
+    ctx.fillRect(px + S * 0.02, jy + S * 0.03, S * 0.062, S * 0.016);
+
+    // Scia di condensa dietro la coda.
+    ctx.globalAlpha = 0.25;
+    ctx.strokeStyle = "#dfe7ea";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(px - S * 0.34, jy);
+    ctx.lineTo(px - S * 0.9, jy);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  });
+  ctx.restore();
+}
+
+// ---- fungo madre magnetico (bonus 3800 punti) ----
+// Scie di risucchio: un oggetto inghiottito vola in linea retta dal punto
+// in cui si trovava fin dentro il fungo, rimpicciolendosi.
+let megaSucks = [];
+function drawMegaSucks(now){
+  if (!megaSucks.length) return;
+  ctx.save();
+  megaSucks = megaSucks.filter(function(t){
+    const f = (now - t.start) / t.dur;
+    if (f >= 1) return false;
+    const px = (t.x0 + (t.x1 - t.x0) * f) * BASE_CELL + BASE_CELL / 2;
+    const py = (t.y0 + (t.y1 - t.y0) * f) * BASE_CELL + BASE_CELL / 2;
+    ctx.globalAlpha = 0.8 * (1 - f);
+    ctx.fillStyle = "#e8e8ff";
+    ctx.beginPath(); ctx.arc(px, py, 3.5 * (1 - f * 0.7), 0, Math.PI * 2); ctx.fill();
+    // codina della scia
+    ctx.strokeStyle = "#e8e8ff";
+    ctx.lineWidth = 1;
+    const bx = (t.x0 + (t.x1 - t.x0) * Math.max(0, f - 0.15)) * BASE_CELL + BASE_CELL / 2;
+    const by = (t.y0 + (t.y1 - t.y0) * Math.max(0, f - 0.15)) * BASE_CELL + BASE_CELL / 2;
+    ctx.beginPath(); ctx.moveTo(bx, by); ctx.lineTo(px, py); ctx.stroke();
+    return true;
+  });
+  ctx.restore();
+}
+
+// ---- golem spaccapietra (bonus 3600 punti) ----
+// Lampi bianchi brevi quando il golem incassa un colpo (per id).
+let golemHitFlashes = {};
+
+function drawGolems(now){
+  const list = (currSnapshot && currSnapshot.golems) || [];
+  if (!list.length) return;
+  ctx.save();
+  list.forEach(function(g){
+    const owner = findPlayer(currSnapshot, g.owner);
+    const col = (owner && COLOR_HEX[(owner.colors || [])[0]]) || "#9be7ff";
+    const cx = g.x * BASE_CELL + BASE_CELL / 2;
+    const cy = g.y * BASE_CELL + BASE_CELL / 2;
+    const S = BASE_CELL * 1.6;                 // il golem e' GROSSO: ~1.6 caselle
+    // Passo pesante: leggero dondolio su/giu' solo da sveglio.
+    const bob = g.awake ? Math.abs(Math.sin(now / 260)) * S * 0.05 : 0;
+    const by = cy - bob;
+
+    const ROCK = "#3f4247", ROCK_LIGHT = "#5c6067", ROCK_EDGE = "#1d1f23";
+    ctx.lineWidth = 1.4;
+    ctx.strokeStyle = ROCK_EDGE;
+
+    // Ombra a terra.
+    ctx.globalAlpha = 0.3;
+    ctx.fillStyle = "#000";
+    ctx.beginPath(); ctx.ellipse(cx, cy + S * 0.34, S * 0.36, S * 0.12, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = 1;
+
+    // Braccia: due macigni laterali che oscillano camminando.
+    const armSwing = g.awake ? Math.sin(now / 260) * S * 0.05 : 0;
+    ctx.fillStyle = ROCK;
+    ctx.beginPath(); ctx.arc(cx - S * 0.34, by + S * 0.08 + armSwing, S * 0.14, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    ctx.beginPath(); ctx.arc(cx + S * 0.34, by + S * 0.08 - armSwing, S * 0.14, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+
+    // Gambe: due massi tozzi.
+    ctx.beginPath(); ctx.arc(cx - S * 0.14, cy + S * 0.28, S * 0.11, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    ctx.beginPath(); ctx.arc(cx + S * 0.14, cy + S * 0.28, S * 0.11, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+
+    // Corpo: macigno grande e arrotondato.
+    ctx.fillStyle = ROCK;
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(cx - S * 0.28, by - S * 0.16, S * 0.56, S * 0.5, S * 0.16);
+    else ctx.rect(cx - S * 0.28, by - S * 0.16, S * 0.56, S * 0.5);
+    ctx.fill(); ctx.stroke();
+
+    // Placche piu' chiare + crepe sul corpo.
+    ctx.fillStyle = ROCK_LIGHT;
+    ctx.beginPath(); ctx.arc(cx - S * 0.1, by + S * 0.1, S * 0.09, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(cx + S * 0.13, by + S * 0.2, S * 0.07, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = "#2b2d32";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(cx - S * 0.2, by + S * 0.02);
+    ctx.lineTo(cx - S * 0.08, by + S * 0.08);
+    ctx.lineTo(cx - S * 0.12, by + S * 0.18);
+    ctx.stroke();
+
+    // Gemme sulla schiena/spalle nel colore del proprietario (triangoli).
+    ctx.fillStyle = col;
+    ctx.strokeStyle = ROCK_EDGE;
+    [[-0.2, -0.2, 0.10], [0.05, -0.26, 0.12], [0.26, -0.18, 0.09]].forEach(function(gm){
+      const gx = cx + S * gm[0], gy = by + S * gm[1], gs = S * gm[2];
+      ctx.beginPath();
+      ctx.moveTo(gx, gy - gs);
+      ctx.lineTo(gx + gs * 0.8, gy + gs * 0.5);
+      ctx.lineTo(gx - gs * 0.8, gy + gs * 0.5);
+      ctx.closePath(); ctx.fill(); ctx.stroke();
+    });
+
+    // Testa: masso piu' piccolo sopra il corpo.
+    ctx.lineWidth = 1.4;
+    ctx.fillStyle = ROCK;
+    ctx.beginPath(); ctx.arc(cx, by - S * 0.26, S * 0.17, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+
+    if (g.awake){
+      // Occhi LUMINOSI nel colore del proprietario.
+      ctx.fillStyle = col;
+      ctx.shadowColor = col; ctx.shadowBlur = 6;
+      ctx.beginPath(); ctx.arc(cx - S * 0.065, by - S * 0.27, S * 0.035, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(cx + S * 0.065, by - S * 0.27, S * 0.035, 0, Math.PI * 2); ctx.fill();
+      ctx.shadowBlur = 0;
+    } else {
+      // Addormentato: occhi chiusi (due lineette) + conto alla rovescia.
+      ctx.strokeStyle = col;
+      ctx.lineWidth = 1.6;
+      ctx.beginPath();
+      ctx.moveTo(cx - S * 0.1, by - S * 0.27); ctx.lineTo(cx - S * 0.03, by - S * 0.27);
+      ctx.moveTo(cx + S * 0.03, by - S * 0.27); ctx.lineTo(cx + S * 0.1, by - S * 0.27);
+      ctx.stroke();
+      // "Zzz" fluttuante.
+      ctx.fillStyle = "rgba(255,255,255,0.8)";
+      ctx.font = "7px " + getComputedStyle(document.body).fontFamily;
+      ctx.textAlign = "left";
+      const zf = (now / 900) % 1;
+      ctx.globalAlpha = 1 - zf;
+      ctx.fillText("z", cx + S * 0.2, by - S * 0.4 - zf * 6);
+      ctx.globalAlpha = 1;
+      // Secondi al risveglio, piccoli, sotto la testa.
+      ctx.fillStyle = col;
+      ctx.textAlign = "center";
+      ctx.fillText(Math.ceil(g.wake_left) + "s", cx, by + S * 0.03);
+    }
+
+    // Lampo bianco per ~150ms quando incassa un colpo.
+    const fl = golemHitFlashes[g.id];
+    if (fl && now - fl < 150){
+      ctx.globalAlpha = 0.55 * (1 - (now - fl) / 150);
+      ctx.fillStyle = "#fff";
+      ctx.beginPath(); ctx.arc(cx, by, S * 0.42, 0, Math.PI * 2); ctx.fill();
+      ctx.globalAlpha = 1;
+    } else if (fl){
+      delete golemHitFlashes[g.id];
+    }
+
+    // ---- barra della vita sopra la testa ----
+    const bw = S * 0.8, bh = 4;
+    const bx = cx - bw / 2, byBar = by - S * 0.52;
+    const frac = Math.max(0, Math.min(1, g.hp / (g.max_hp || 15)));
+    ctx.fillStyle = "rgba(0,0,0,0.75)";
+    ctx.fillRect(bx - 1, byBar - 1, bw + 2, bh + 2);
+    // Colore vita: verde -> giallo -> rosso.
+    ctx.fillStyle = frac > 0.5 ? "#4dff6a" : (frac > 0.25 ? "#ffd400" : "#ff4d5e");
+    ctx.fillRect(bx, byBar, bw * frac, bh);
+    // Tacche dei 15 colpi.
+    ctx.strokeStyle = "rgba(0,0,0,0.6)";
+    ctx.lineWidth = 1;
+    const maxHp = g.max_hp || 15;
+    for (let i = 1; i < maxHp; i++){
+      const tx = bx + (bw * i) / maxHp;
+      ctx.beginPath(); ctx.moveTo(tx, byBar); ctx.lineTo(tx, byBar + bh); ctx.stroke();
+    }
+    // Numero vita corrente, minuscolo, a destra della barra.
+    ctx.fillStyle = "#fff";
+    ctx.font = "6px " + getComputedStyle(document.body).fontFamily;
+    ctx.textAlign = "left";
+    ctx.fillText(g.hp + "/" + maxHp, bx + bw + 3, byBar + bh);
+  });
+  ctx.restore();
+}
+
 function renderLoop(now){
   requestAnimationFrame(renderLoop);
   if (currentScreen !== "game" || !ctx || !currSnapshot) return;
@@ -4747,7 +5487,7 @@ function renderLoop(now){
   const dt = lastFrameTs != null ? Math.max(0, (now - lastFrameTs) / 1000) : 0;
   lastFrameTs = now;
   const me0 = findPlayer(currSnapshot, myId);
-  if (me0 && me0.alive && roundActive){
+  if (me0 && me0.alive && roundActive && !me0.airstrike_aiming){
     stepLocalPrediction(dt, !!me0.assassin);
   }
   if (roundActive){
@@ -4769,6 +5509,7 @@ function renderLoop(now){
   drawMines(now);
   drawMushrooms(now);
   drawPoisonZones(now);
+  drawQuakes(now);
   drawTurrets(now);
   drawPets(now);
   drawMortars(now);
@@ -4778,8 +5519,12 @@ function renderLoop(now){
   drawTeslas(now);
   drawBalloons(now);
   drawBlobs(now);
+  drawGolems(now);
+  drawMegaSucks(now);
+  drawAirstrikes(now);
   drawMissiles(now);
   drawBombs(now);
+  drawPotionThrows(now);
   drawLaserProjectiles(now);
   drawSparks(now);
   drawTeslaBolts(now);
@@ -4791,6 +5536,20 @@ function renderLoop(now){
   drawNukeClouds(now);
   drawSkyBolts(now);
   drawSwirls(now);
+  drawPotionReticle(now);
+  drawAirstrikeReticle(now);
+
+  // Scossa dello schermo mentre c'e' ALMENO un terremoto attivo: un
+  // tremolio di 1-2px via CSS sul canvas (non tocca le trasformazioni
+  // interne del contesto, quindi non puo' rompere il rendering).
+  const anyQuake = (currSnapshot.quakes || []).length > 0;
+  if (anyQuake){
+    const jx = (Math.random() - 0.5) * 3;
+    const jy = (Math.random() - 0.5) * 3;
+    canvas.style.transform = "translate(" + jx.toFixed(1) + "px," + jy.toFixed(1) + "px)";
+  } else if (canvas.style.transform){
+    canvas.style.transform = "";
+  }
 }
 requestAnimationFrame(renderLoop);
 
@@ -5265,6 +6024,10 @@ function onGameEvent(msg){
         bush:         ["ARBUSTO SPINOSO SBLOCCATO!", "premi 1 (a fine catena) per piantarlo \u00b7 uccide al contatto e cresce di una casella al minuto, SOLO negli spazi liberi (mai dentro i muri) \u00b7 lo distruggono solo bombolone, mongolfiera e scudo"],
         mushroom:     ["FUNGO ATOMICO SBLOCCATO!", "premi 1 (a fine catena) per piazzarlo \u00b7 nascosto come una mina (visibile solo da 3 caselle) \u00b7 se calpestato distrugge TUTTO in un raggio di 8 caselle"],
         occult_tesla: ["TESLA OCCULTA SBLOCCATA!", "premi 1 (a fine catena) per risvegliare la tua Tesla \u00b7 sprofonda sottoterra e riemerge altrove a 10 caselle di distanza, alternando 8 secondi di attacco a 1 secondo nascosta"],
+        potion: ["POZIONE TERREMOTO SBLOCCATA!", "premi 1 (a fine catena) per mirare \u00b7 ripremi 1 per lanciarla a 5 caselle, anche oltre i muri \u00b7 terremoto raggio 8 caselle per 5 secondi: rallenta i giocatori del 50% e distrugge OGNI struttura nemica nel cerchio"],
+        golem: ["GOLEM SPACCAPIETRA SBLOCCATO!", "premi 1 (a fine catena) per piazzarlo \u00b7 dorme 30 secondi, poi vaga divorando ogni gadget avversario \u00b7 15 colpi per abbatterlo (il veleno: 1 vita al secondo) \u00b7 non uccide i giocatori ma li blocca come un muro"],
+        mega_mushroom: ["FUNGO MADRE MAGNETICO SBLOCCATO!", "premi 1 (a fine catena) per trasformare il fungo madre, se e' ancora vivo \u00b7 diventa alto come una Tesla e visibile a tutti \u00b7 onde magnetiche a 3 caselle: attirano nemici e gadget come un buco nero, uccidendo al contatto"],
+        airstrike: ["ATTACCO AEREO SBLOCCATO!", "premi 1 (a fine catena) per mirare: resti immobile e nero, frecce su/giu' per scegliere la fila (mirino sul muro a sinistra) \u00b7 ripremi 1: un aereo col teschio percorre TUTTA la fila bombardando ogni cosa nemica"],
       };
       const lb = labels[msg.bonus] || ["BONUS!", ""];
       const txt = lb[0] + (lb[1] ? " \u00b7 " + lb[1] : "");
@@ -5531,6 +6294,96 @@ function onGameEvent(msg){
       noiseBurst(0.2, 0.16);
       tone(220, 0.16, "sawtooth", 0.14);
       tone(1600, 0.05, "square", 0.1, 0.03);
+      break;
+    }
+    case "airstrike_aim": {
+      if (msg.player === myId){
+        playAirstrikeAim();
+        showToast("Mirino aereo attivo: frecce SU/GI\u00d9 per scegliere la fila (muro evidenziato a sinistra), ripremi 1 per scatenare l'attacco!");
+      }
+      break;
+    }
+    case "airstrike_launch": {
+      playAirstrikeJet();
+      const asOwner = findPlayer(currSnapshot, msg.player);
+      if (msg.player === myId) showToast("ATTACCO AEREO in arrivo sulla fila scelta!");
+      else showToast("ATTACCO AEREO di " + (asOwner ? asOwner.name : "un giocatore") + " in arrivo!");
+      break;
+    }
+    case "mega_mushroom_activate": {
+      playMegaHum();
+      const mmOwner = findPlayer(currSnapshot, msg.player);
+      if (msg.player === myId) showToast("Fungo madre TRASFORMATO! Ora attira e divora tutto cio' che e' nemico entro 3 caselle, come un buco nero.");
+      else showToast("Il fungo madre di " + (mmOwner ? mmOwner.name : "un giocatore") + " si e' trasformato in un BUCO NERO magnetico!");
+      break;
+    }
+    case "mega_swallow": {
+      // Un oggetto nemico viene risucchiato dentro il fungo: scia animata
+      // dal punto di origine al fungo (vedi drawMegaSucks) + suono.
+      playMegaSuck();
+      megaSucks.push({ x0: msg.x, y0: msg.y, x1: msg.tx, y1: msg.ty, start: now, dur: 320 });
+      break;
+    }
+    case "golem_place": {
+      playGolemThud();
+      if (msg.player === myId) showToast("Golem piazzato! Dorme per " + Math.round(msg.wake || 30) + " secondi, poi si sveglia affamato di gadget nemici.");
+      else {
+        const who = findPlayer(currSnapshot, msg.player);
+        showToast((who ? who.name : "Un giocatore") + " ha piazzato un golem spaccapietra!");
+      }
+      break;
+    }
+    case "golem_wake": {
+      playGolemRoar();
+      const who2 = findPlayer(currSnapshot, msg.player);
+      showToast("Il golem di " + (who2 ? who2.name : "un giocatore") + " si e' SVEGLIATO: divora ogni gadget che trova!");
+      break;
+    }
+    case "golem_hit": {
+      playGolemHit();
+      golemHitFlashes[msg.id] = now;
+      // Scheggette di roccia sul punto colpito.
+      explosions.push({ x: msg.x, y: msg.y, color: "#8b8f98", start: now, small: true });
+      break;
+    }
+    case "golem_destroyed": {
+      playGolemCrumble();
+      const gOwner = findPlayer(currSnapshot, msg.owner);
+      const gCol = (gOwner && COLOR_HEX[(gOwner.colors || [])[0]]) || "#8b8f98";
+      explosions.push({ x: msg.x, y: msg.y, color: "#8b8f98", start: now });
+      explosions.push({ x: msg.x, y: msg.y, color: gCol, start: now + 80 });
+      delete golemHitFlashes[msg.id];
+      showToast("Un golem spaccapietra e' stato abbattuto (15 colpi incassati)!");
+      break;
+    }
+    case "golem_eat": {
+      playGolemChomp();
+      break;
+    }
+    case "potion_aim": {
+      // Pozione terremoto (bonus 3400 punti), prima pressione: mirino
+      // attivo. Il mirino vero e proprio viene disegnato ad ogni frame da
+      // drawPotionReticle leggendo potion_aiming dallo stato; qui solo
+      // riscontro sonoro + istruzioni per chi sta mirando.
+      if (msg.player === myId){
+        playPotionAim();
+        showToast("Mirino attivo: muoviti per puntare, ripremi 1 per lanciare la pozione (5 caselle, anche oltre i muri)");
+      }
+      break;
+    }
+    case "potion_throw": {
+      // Seconda pressione: la boccetta parte ad arco dal lanciatore verso
+      // il punto d'impatto (sopra i muri). Il cerchio del terremoto vero e
+      // proprio arriva dallo stato (currSnapshot.quakes, vedi drawQuakes):
+      // qui si anima solo il volo della boccetta + suoni.
+      const thrower = findPlayer(currSnapshot, msg.player);
+      const col = (thrower && COLOR_HEX[(thrower.colors || [])[0]]) || "#9be7ff";
+      potionThrows.push({
+        x0: msg.x0, y0: msg.y0, x1: msg.x, y1: msg.y,
+        start: now, dur: 450, color: col, landed: false,
+      });
+      playPotionThrow();
+      if (msg.player === myId) showToast("Pozione lanciata! Terremoto in corso: 5 secondi di crepe, rallentamento e demolizione totale nel cerchio.");
       break;
     }
     case "tesla_occult_activate": {
@@ -6015,6 +6868,19 @@ function mineChainStep(p){
   // gia' piazzata (se ancora in piedi). Resta comunque l'icona attiva
   // finche' non e' stata usata (occult_tesla_used), come tutti gli altri.
   if (p.occult_tesla && !p.occult_tesla_used) return "occult_tesla";
+  // Nuovissimo, VERO ultimo gradino (bonus 3400 punti): la pozione
+  // terremoto. Due fasi (mira + lancio) sotto la stessa icona, come la
+  // trappola territoriale: resta il gradino attivo finche' non e' stata
+  // LANCIATA (potion_used), non solo finche' non si e' iniziato a mirare.
+  if (p.potion && !p.potion_used) return "potion";
+  // Nuovissimo, VERO ultimo gradino (bonus 3600 punti): il golem
+  // spaccapietra, affamato di gadget avversari.
+  if (p.golem && !p.golem_placed) return "golem";
+  // Nuovissimo, VERO ultimo gradino (bonus 3800 punti): la trasformazione
+  // del fungo madre in buco nero magnetico.
+  if (p.mega_mushroom && !p.mega_mushroom_used) return "mega_mushroom";
+  // Nuovissimo, VERO ultimo gradino (bonus 4000 punti): l'attacco aereo.
+  if (p.airstrike && !p.airstrike_used) return "airstrike";
   return null;
 }
 const GADGET_RAIL_KEYS = [
@@ -6307,6 +7173,138 @@ function renderGadgetIcon(icx, key, color){
     icx.lineTo(cx + res * 0.28, cy + res * 0.08);
     icx.lineTo(cx - res * 0.28, cy + res * 0.08);
     icx.closePath(); icx.fill(); icx.stroke();
+  } else if (key === "potion"){
+    // Pozione terremoto (bonus 3400 punti): boccetta di pozione QUADRATA
+    // nel colore del proprietario, con tappo di sughero, coerente con la
+    // versione grande animata da drawPotionThrows.
+    const bw = res * 0.44, bh = res * 0.44;
+    const bx = cx - bw / 2, by = cy - bh / 2 + res * 0.08;
+    // tappo di sughero
+    icx.fillStyle = "#8a5a2b";
+    icx.strokeStyle = "#5c3a15";
+    icx.lineWidth = res * 0.02;
+    icx.fillRect(cx - res * 0.08, by - res * 0.16, res * 0.16, res * 0.14);
+    icx.strokeRect(cx - res * 0.08, by - res * 0.16, res * 0.16, res * 0.14);
+    // collo
+    icx.fillStyle = "#cfd6da";
+    icx.fillRect(cx - res * 0.10, by - res * 0.04, res * 0.20, res * 0.06);
+    // corpo quadrato: vetro chiaro col liquido del colore del giocatore
+    icx.fillStyle = "#dfe7ea";
+    icx.strokeStyle = darkenHex(color, 0.35);
+    icx.lineWidth = res * 0.03;
+    icx.beginPath();
+    if (icx.roundRect) icx.roundRect(bx, by, bw, bh, res * 0.05);
+    else icx.rect(bx, by, bw, bh);
+    icx.fill(); icx.stroke();
+    // liquido (riempie i 2/3 inferiori)
+    icx.fillStyle = color;
+    icx.globalAlpha = 0.9;
+    icx.fillRect(bx + res * 0.03, by + bh * 0.34, bw - res * 0.06, bh * 0.62);
+    icx.globalAlpha = 1;
+    // riflesso del vetro
+    icx.strokeStyle = "rgba(255,255,255,0.75)";
+    icx.lineWidth = res * 0.03;
+    icx.beginPath();
+    icx.moveTo(bx + bw * 0.2, by + bh * 0.18);
+    icx.lineTo(bx + bw * 0.2, by + bh * 0.75);
+    icx.stroke();
+  } else if (key === "airstrike"){
+    // Attacco aereo (bonus 4000 punti): mini aereo a fusoliera nel colore
+    // del proprietario, visto di lato, con teschietto bianco.
+    icx.fillStyle = color;
+    icx.strokeStyle = darkenHex(color, 0.35);
+    icx.lineWidth = res * 0.025;
+    // fusoliera
+    icx.beginPath();
+    icx.ellipse(cx, cy, res * 0.3, res * 0.11, 0, 0, Math.PI * 2);
+    icx.fill(); icx.stroke();
+    // muso
+    icx.beginPath();
+    icx.moveTo(cx + res * 0.28, cy - res * 0.05);
+    icx.lineTo(cx + res * 0.4, cy);
+    icx.lineTo(cx + res * 0.28, cy + res * 0.05);
+    icx.closePath(); icx.fill();
+    // ala e coda
+    icx.beginPath();
+    icx.moveTo(cx - res * 0.02, cy);
+    icx.lineTo(cx - res * 0.14, cy + res * 0.18);
+    icx.lineTo(cx + 0, cy + res * 0.06);
+    icx.closePath(); icx.fill(); icx.stroke();
+    icx.beginPath();
+    icx.moveTo(cx - res * 0.26, cy - res * 0.03);
+    icx.lineTo(cx - res * 0.34, cy - res * 0.18);
+    icx.lineTo(cx - res * 0.2, cy - res * 0.05);
+    icx.closePath(); icx.fill(); icx.stroke();
+    // teschietto sulla fusoliera
+    icx.fillStyle = "#fff";
+    icx.beginPath(); icx.arc(cx + res * 0.05, cy, res * 0.07, 0, Math.PI * 2); icx.fill();
+    icx.fillStyle = "#111";
+    icx.beginPath(); icx.arc(cx + res * 0.025, cy - res * 0.015, res * 0.017, 0, Math.PI * 2); icx.fill();
+    icx.beginPath(); icx.arc(cx + res * 0.075, cy - res * 0.015, res * 0.017, 0, Math.PI * 2); icx.fill();
+    icx.fillRect(cx + res * 0.02, cy + res * 0.03, res * 0.06, res * 0.015);
+  } else if (key === "mega_mushroom"){
+    // Fungo madre magnetico (bonus 3800 punti): mini fungo ALTO (gambo
+    // allungato) circondato da due archi d'onda appena visibili, cappella
+    // nel colore del proprietario.
+    icx.strokeStyle = color;
+    icx.lineWidth = res * 0.025;
+    icx.globalAlpha = 0.45;
+    icx.beginPath(); icx.arc(cx, cy, res * 0.34, -0.6, 0.6); icx.stroke();
+    icx.beginPath(); icx.arc(cx, cy, res * 0.34, Math.PI - 0.6, Math.PI + 0.6); icx.stroke();
+    icx.globalAlpha = 1;
+    // gambo alto
+    icx.fillStyle = "#efe2c8";
+    icx.strokeStyle = "#8a7a56";
+    icx.lineWidth = res * 0.02;
+    icx.beginPath();
+    icx.moveTo(cx - res * 0.07, cy - res * 0.12);
+    icx.lineTo(cx - res * 0.1, cy + res * 0.34);
+    icx.quadraticCurveTo(cx, cy + res * 0.4, cx + res * 0.1, cy + res * 0.34);
+    icx.lineTo(cx + res * 0.07, cy - res * 0.12);
+    icx.closePath(); icx.fill(); icx.stroke();
+    // cappella nel colore del proprietario
+    icx.fillStyle = color;
+    icx.strokeStyle = darkenHex(color, 0.35);
+    icx.lineWidth = res * 0.03;
+    icx.beginPath();
+    icx.arc(cx, cy - res * 0.16, res * 0.24, Math.PI, 0);
+    icx.lineTo(cx + res * 0.24, cy - res * 0.08);
+    icx.lineTo(cx - res * 0.24, cy - res * 0.08);
+    icx.closePath(); icx.fill(); icx.stroke();
+  } else if (key === "golem"){
+    // Golem spaccapietra (bonus 3600 punti): mini golem roccioso stile
+    // Clash of Clans - corpo grigio scuro a macigni, occhi e gemma nel
+    // colore del proprietario.
+    const ROCK = "#3f4247", ROCK_LIGHT = "#5c6067", ROCK_EDGE = "#23252a";
+    icx.strokeStyle = ROCK_EDGE;
+    icx.lineWidth = res * 0.02;
+    // braccia (macigni laterali)
+    icx.fillStyle = ROCK;
+    icx.beginPath(); icx.arc(cx - res * 0.28, cy + res * 0.10, res * 0.13, 0, Math.PI * 2); icx.fill(); icx.stroke();
+    icx.beginPath(); icx.arc(cx + res * 0.28, cy + res * 0.10, res * 0.13, 0, Math.PI * 2); icx.fill(); icx.stroke();
+    // corpo (macigno grande)
+    icx.fillStyle = ROCK;
+    icx.beginPath();
+    if (icx.roundRect) icx.roundRect(cx - res * 0.24, cy - res * 0.14, res * 0.48, res * 0.5, res * 0.12);
+    else icx.rect(cx - res * 0.24, cy - res * 0.14, res * 0.48, res * 0.5);
+    icx.fill(); icx.stroke();
+    // placca chiara sul petto
+    icx.fillStyle = ROCK_LIGHT;
+    icx.beginPath(); icx.arc(cx, cy + res * 0.12, res * 0.13, 0, Math.PI * 2); icx.fill();
+    // gemma sulla spalla nel colore del proprietario
+    icx.fillStyle = color;
+    icx.beginPath();
+    icx.moveTo(cx + res * 0.16, cy - res * 0.16);
+    icx.lineTo(cx + res * 0.24, cy - res * 0.04);
+    icx.lineTo(cx + res * 0.08, cy - res * 0.04);
+    icx.closePath(); icx.fill();
+    // testa
+    icx.fillStyle = ROCK;
+    icx.beginPath(); icx.arc(cx, cy - res * 0.24, res * 0.15, 0, Math.PI * 2); icx.fill(); icx.stroke();
+    // occhi luminosi nel colore del proprietario
+    icx.fillStyle = color;
+    icx.beginPath(); icx.arc(cx - res * 0.06, cy - res * 0.25, res * 0.035, 0, Math.PI * 2); icx.fill();
+    icx.beginPath(); icx.arc(cx + res * 0.06, cy - res * 0.25, res * 0.035, 0, Math.PI * 2); icx.fill();
   } else if (key === "occult_tesla"){
     // Tesla occulta (bonus 3200 punti): stessa mini Tesla dell'icona
     // "tesla", ma con una botola di legno socchiusa alla base al posto
@@ -6481,8 +7479,15 @@ function onRoundEnd(msg){
   const overlay = document.getElementById("endOverlay");
   const title = document.getElementById("endTitle");
   const winners = document.getElementById("endWinners");
-  if (msg.reason === "last_survivor") title.textContent = "ULTIMO SOPRAVVISSUTO!";
-  else if (msg.reason === "time_up") title.textContent = "TEMPO SCADUTO";
+  if (msg.reason === "team_win"){
+    // Modalita' 2v2: vince la SQUADRA al completo, non il singolo.
+    const winTeam = (msg.teams && msg.winners.length) ? msg.teams[msg.winners[0]] : null;
+    title.textContent = winTeam ? ("VITTORIA SQUADRA " + winTeam + "!") : "VITTORIA DI SQUADRA!";
+  }
+  else if (msg.reason === "last_survivor") title.textContent = "ULTIMO SOPRAVVISSUTO!";
+  else if (msg.reason === "time_up"){
+    title.textContent = (msg.mode === "2v2") ? "TEMPO SCADUTO \u00b7 VINCE LA SQUADRA COI PI\u00d9 PUNTI" : "TEMPO SCADUTO";
+  }
   else title.textContent = "FINE ROUND";
 
   winners.innerHTML = "";
@@ -6533,6 +7538,14 @@ const KEY_TO_DIR = {
 let lastRequestedDir = null;
 
 function requestDir(dir){
+  // Attacco aereo (bonus 4000 punti): mentre si mira il personaggio e'
+  // immobile - le frecce spostano il MIRINO (il server reinterpreta i
+  // messaggi "move"), quindi qui non si tocca la predizione locale.
+  const meAim = findPlayer(currSnapshot, myId);
+  if (meAim && meAim.airstrike_aiming){
+    sendMsg({ type: "move", direction: dir });
+    return;
+  }
   // NIENTE piu' finestra di tempismo (TURN_WINDOW): come nel Pac-Man
   // originale OGNI pressione viene accettata e messa in coda. Le
   // inversioni di marcia scattano subito, le svolte perpendicolari
@@ -6704,6 +7717,15 @@ function mineMortarChainPending(me){
   if (me.bush && !me.bush_placed) return true;
   if (me.mushroom && !me.mushroom_placed) return true;
   if (me.occult_tesla && !me.occult_tesla_used) return true;
+  // Pozione terremoto (bonus 3400 punti): due pressioni (mira + lancio)
+  // sotto lo stesso gradino, esaurito solo dopo il lancio (potion_used).
+  if (me.potion && !me.potion_used) return true;
+  // Golem spaccapietra (bonus 3600 punti): piazzabile una volta a fine catena.
+  if (me.golem && !me.golem_placed) return true;
+  // Fungo madre magnetico (bonus 3800 punti): trasformazione una-tantum.
+  if (me.mega_mushroom && !me.mega_mushroom_used) return true;
+  // Attacco aereo (bonus 4000 punti): mirino + lancio, esaurito col lancio.
+  if (me.airstrike && !me.airstrike_used) return true;
   return false;
 }
 

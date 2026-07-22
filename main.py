@@ -81,6 +81,13 @@ from common import (
     MUSHROOM_CLOUD_SECONDS, MUSHROOM_RESPAWN_INTERVAL_SECONDS, MUSHROOM_MAX_ACTIVE_PER_OWNER,
     OCCULT_TESLA_THRESHOLD, OCCULT_TESLA_ATTACK_SECONDS,
     OCCULT_TESLA_HIDDEN_SECONDS, OCCULT_TESLA_TELEPORT_DISTANCE_CELLS,
+    POTION_THRESHOLD, POTION_THROW_RANGE_CELLS, POTION_RADIUS_CELLS,
+    POTION_EFFECT_SECONDS, POTION_SLOW_MULT,
+    GOLEM_THRESHOLD, GOLEM_HP, GOLEM_WAKE_SECONDS, GOLEM_SPEED,
+    GOLEM_EAT_RANGE_CELLS, GOLEM_POISON_TICK_SECONDS,
+    MEGA_MUSHROOM_THRESHOLD, MEGA_MUSHROOM_RANGE_CELLS,
+    MEGA_MUSHROOM_KILL_RANGE, MEGA_MUSHROOM_GOLEM_TICK_SECONDS,
+    AIRSTRIKE_THRESHOLD, AIRSTRIKE_SPEED,
     RTT_PING_INTERVAL_SECONDS, RTT_DEFAULT_SECONDS,
     REWIND_MAX_SECONDS, REWIND_HISTORY_SECONDS,
     RECONNECT_GRACE_SECONDS,
@@ -326,6 +333,41 @@ class Player:
         self.has_occult_tesla = False   # bonus sbloccato (una volta per round)
         self.occult_tesla_used = False  # True dopo l'attivazione: il tasto "1" (a fine catena) e' utilizzabile una sola volta
 
+        # ---- bonus 3400 punti: pozione terremoto (tasto "1", DOPO la Tesla occulta) ----
+        # Nuovo, vero ultimo gradino della catena del tasto "1": boccetta
+        # quadrata lanciabile in due tempi (mira -> lancio), vedi
+        # try_use_potion. Il terremoto vero e proprio (cerchio a terra)
+        # vive come dict dentro self.quakes della Room, non qui.
+        self.has_potion = False      # bonus sbloccato (una volta per round)
+        self.potion_aiming = False   # True dopo la 1a pressione: mirino attivo, in attesa del lancio
+        self.potion_used = False     # True dopo il lancio: tasto "1" (a fine catena) esaurito per sempre
+
+        # ---- bonus 3600 punti: golem spaccapietra (tasto "1", DOPO la pozione) ----
+        # Il golem vero e proprio (posizione, vita, sonno/veglia) vive come
+        # dict dentro self.golems della Room, non qui.
+        self.has_golem = False     # bonus sbloccato (una volta per round)
+        self.golem_placed = False  # True dopo il piazzamento: il tasto "1" (a fine catena) e' utilizzabile una sola volta
+
+        # ---- bonus 3800 punti: fungo madre magnetico (tasto "1", DOPO il golem) ----
+        # Non piazza nulla: potenzia il fungo atomico MADRE (generatore,
+        # bonus 3000 punti) gia' piazzato, se ancora vivo (vedi
+        # try_activate_mega_mushroom).
+        self.has_mega_mushroom = False    # bonus sbloccato (una volta per round)
+        self.mega_mushroom_used = False   # True dopo la trasformazione: tasto "1" (a fine catena) esaurito
+
+        # ---- bonus 4000 punti: attacco aereo (tasto "1", DOPO il fungo madre) ----
+        self.has_airstrike = False      # bonus sbloccato (una volta per round)
+        self.airstrike_aiming = False   # True dopo la 1a pressione: immobile, nero, mirino attivo
+        self.airstrike_row = 0          # fila attualmente selezionata dal mirino (indice y)
+        self.airstrike_used = False     # True dopo il lancio: tasto "1" (a fine catena) esaurito
+
+        # ---- modalita' 2v2 a squadre ----
+        # 1 o 2 quando la stanza e' in modalita' "2v2" (vedi Room.mode e
+        # assign_teams), None in tutti-contro-tutti. Decide colori
+        # automatici, bersagli leciti (niente fuoco amico, vedi
+        # is_enemy_ids) e condizione di vittoria (vedi check_win).
+        self.team = None
+
         # next_lives_milestone: campo storico del bonus vite ricorrente
         # ogni LIVES_EVERY_POINTS punti, ora RIMOSSO su richiesta (restava
         # solo extra_life/extra_life_3 alle soglie fisse di
@@ -413,6 +455,23 @@ class Player:
             "mushroom_placed": self.mushroom_placed,
             "occult_tesla": self.has_occult_tesla,
             "occult_tesla_used": self.occult_tesla_used,
+            "potion": self.has_potion,
+            "potion_aiming": self.potion_aiming,
+            "potion_used": self.potion_used,
+            "golem": self.has_golem,
+            "golem_placed": self.golem_placed,
+            "mega_mushroom": self.has_mega_mushroom,
+            "mega_mushroom_used": self.mega_mushroom_used,
+            "airstrike": self.has_airstrike,
+            "airstrike_aiming": self.airstrike_aiming,
+            "airstrike_row": self.airstrike_row,
+            "airstrike_used": self.airstrike_used,
+            "team": self.team,
+            # Direzione in cui il personaggio sta GUARDANDO (ultima
+            # direzione di movimento): serve al client per disegnare il
+            # mirino della pozione terremoto esattamente dove il server
+            # calcolera' il punto d'impatto (vedi potion_target_cell).
+            "facing": self.facing,
         }
 
 
@@ -421,6 +480,11 @@ class Room:
         self.code = code
         self.players: dict[str, Player] = {}
         self.state = "LOBBY"  # LOBBY, COUNTDOWN, PLAYING, ENDED
+        # Modalita' della stanza: "ffa" (tutti contro tutti, default) o
+        # "2v2" (due squadre da due, vedi assign_teams/is_enemy_ids/
+        # check_win). Selezionabile dall'host in lobby col messaggio
+        # "set_mode"; resta impostata anche tra un round e l'altro.
+        self.mode = "ffa"
         self.countdown_left = 0.0
         self.timer_left = 0.0
         self.loop_task = None
@@ -498,6 +562,17 @@ class Room:
         # mine in attesa di essere calpestati (vedi update_mushrooms).
         # Azzerati ad ogni nuovo round.
         self.mushrooms = []
+        # Terremoti attivi della pozione (bonus 3400 punti): cerchi a terra
+        # che rallentano i giocatori e distruggono ogni struttura/gadget al
+        # loro interno finche' non scadono (vedi update_quakes).
+        self.quakes = []
+        # Golem spaccapietra piazzati (bonus 3600 punti): dormono 30
+        # secondi, poi vagano divorando i gadget avversari e bloccando i
+        # giocatori come muri (vedi update_golems).
+        self.golems = []
+        # Attacchi aerei in corso (bonus 4000 punti): aerei che
+        # attraversano una fila bombardando (vedi update_airstrikes).
+        self.airstrikes = []
         # Mappa corrente della stanza: viene ripescata a caso tra le 10
         # disponibili a OGNI inizio round (vedi run_round), cosi' ogni
         # partita puo' capitare su una mappa diversa per forma/colore/misura.
@@ -676,6 +751,12 @@ class Room:
                 asyncio.ensure_future(self._grace_expire(pid, p.ws))
 
     async def broadcast_lobby(self):
+        # In modalita' 2v2 le squadre (e i loro colori automatici) vengono
+        # ricalcolate ad ogni cambiamento della lobby (ingressi/uscite),
+        # cosi' restano sempre coerenti con l'ordine dei presenti. Mai a
+        # round in corso: solo in LOBBY.
+        if self.mode == "2v2" and self.state == "LOBBY":
+            self.assign_teams()
         await self.broadcast({
             "type": "lobby_state",
             "code": self.code,
@@ -684,12 +765,59 @@ class Room:
                     "id": p.id, "name": p.name, "colors": p.colors,
                     "character": p.character, "host": p.host,
                     "connected": p.connected,
+                    "team": p.team,
                 }
                 for p in self.players.values()
             ],
             "min_players": MIN_PLAYERS,
             "max_players": MAX_PLAYERS,
+            "mode": self.mode,
         })
+
+    def assign_teams(self):
+        """Modalita' 2v2: assegna squadre e colori AUTOMATICI in base
+        all'ordine di ingresso in stanza - i primi due formano la SQUADRA 1
+        (blu notte + azzurro chiaro), gli altri due la SQUADRA 2 (rosso +
+        arancione). I giocatori non scelgono piu' il colore a mano: e' il
+        colore a dire a colpo d'occhio chi sta con chi."""
+        team_colors = {
+            1: [["blu_notte"], ["azzurro"]],
+            2: [["rosso"], ["arancione"]],
+        }
+        for i, p in enumerate(self.players.values()):
+            team = 1 if i < 2 else 2
+            slot = i if i < 2 else i - 2
+            p.team = team
+            p.colors = list(team_colors[team][min(slot, 1)])
+
+    def is_enemy_ids(self, a, b):
+        """Vero se i giocatori con id 'a' e 'b' sono NEMICI tra loro:
+        sempre, tranne quando sono lo stesso giocatore oppure (in modalita'
+        2v2) compagni della stessa squadra. E' il cuore del "niente fuoco
+        amico": OGNI arma e OGNI gadget del gioco decide chi puo' colpire
+        passando da qui, quindi in 2v2 i compagni non possono ferirsi ne'
+        distruggersi nulla a vicenda - e attraversano liberamente muri di
+        spunzoni e golem l'uno dell'altro."""
+        if a == b:
+            return False
+        if self.mode == "2v2":
+            pa = self.players.get(a)
+            pb = self.players.get(b)
+            if pa is not None and pb is not None and pa.team and pa.team == pb.team:
+                return False
+        return True
+
+    def hostile_exclude(self, pid):
+        """Insieme di id da ESCLUDERE come bersagli per le armi a
+        puntamento automatico di pid (laser, missile, torretta, mortaio,
+        pet, trappola): solo pid stesso in tutti-contro-tutti, l'INTERA
+        sua squadra in 2v2."""
+        if self.mode != "2v2":
+            return {pid}
+        p = self.players.get(pid)
+        if p is None or not p.team:
+            return {pid}
+        return {q.id for q in self.players.values() if q.team == p.team} | {pid}
 
     # ---------- round setup ----------
 
@@ -859,6 +987,17 @@ class Room:
             p.mushroom_placed = False
             p.has_occult_tesla = False
             p.occult_tesla_used = False
+            p.has_potion = False
+            p.potion_aiming = False
+            p.potion_used = False
+            p.has_golem = False
+            p.golem_placed = False
+            p.has_mega_mushroom = False
+            p.mega_mushroom_used = False
+            p.has_airstrike = False
+            p.airstrike_aiming = False
+            p.airstrike_row = 0
+            p.airstrike_used = False
             p.next_lives_milestone = LIVES_EVERY_POINTS
             p.kills = 0
         self.lasers = []
@@ -874,6 +1013,17 @@ class Room:
         self.teslas = []
         self.bushes = []
         self.mushrooms = []
+        # Terremoti attivi della pozione (bonus 3400 punti): cerchi a terra
+        # che rallentano i giocatori e distruggono ogni struttura/gadget al
+        # loro interno finche' non scadono (vedi update_quakes).
+        self.quakes = []
+        # Golem spaccapietra piazzati (bonus 3600 punti): dormono 30
+        # secondi, poi vagano divorando i gadget avversari e bloccando i
+        # giocatori come muri (vedi update_golems).
+        self.golems = []
+        # Attacchi aerei in corso (bonus 4000 punti): aerei che
+        # attraversano una fila bombardando (vedi update_airstrikes).
+        self.airstrikes = []
         self.bombs = []
         self.poison_zones = []  # nuvole velenose lasciate a terra dagli impatti del mortaio
 
@@ -924,6 +1074,14 @@ class Room:
         for p in self.players.values():
             if not p.alive:
                 continue
+
+            # Attacco aereo (bonus 4000 punti): mentre seleziona la fila il
+            # giocatore e' inchiodato sul posto - qualsiasi input di
+            # movimento residuo viene azzerato ad ogni tick.
+            if p.airstrike_aiming:
+                p.direction = None
+                p.next_direction = None
+                p.move_accum = 0.0
 
             # Timer personali dei bonus/protezioni: scorrono qui, una volta
             # per tick, cosi' restano sincronizzati con la fisica.
@@ -997,10 +1155,17 @@ class Room:
                 # Il super assassino (300 punti) e' piu' veloce dei
                 # giocatori normali (stesso moltiplicatore 1.0 -> 1.1).
                 speed *= ASSASSIN_SPEED_MULT
+            # Pozione terremoto (bonus 3400 punti): chi si trova dentro un
+            # cerchio di terremoto attivo e' rallentato del 50% (vedi
+            # quake_slow_mult). Applicato QUI, nel calcolo della velocita'
+            # vera, cosi' vale per tutta la fisica (client e riavvolgimento
+            # replicano la stessa regola).
+            speed *= self.quake_slow_mult(p)
             (p.x, p.y, p.move_accum, p.direction, p.next_direction,
              facing) = self._advance_state(
                 p.x, p.y, p.move_accum, p.direction, p.next_direction,
                 TICK_DT, speed,
+                extra_wall=self._golem_block_fn(p.id),
             )
             if facing is not None:
                 p.facing = facing
@@ -1021,7 +1186,7 @@ class Room:
             self.try_portal(p)
         return prev_positions
 
-    def _advance_state(self, x, y, accum, direction, next_direction, dt, speed):
+    def _advance_state(self, x, y, accum, direction, next_direction, dt, speed, extra_wall=None):
         """Avanza UNA sola entita' (posizione+direzione) di dt secondi,
         applicando le stesse regole "vero Pac-Man" di sempre:
          1. Inversione di marcia (direzione opposta): applicata SUBITO,
@@ -1058,8 +1223,13 @@ class Room:
                     next_direction = None
                 elif accum <= 1e-9:
                     ndx, ndy = DIRECTIONS[next_direction]
-                    if not is_wall(self.maze, self.maze_w, self.maze_h,
-                                   x + ndx, y + ndy):
+                    # extra_wall: ostacoli DINAMICI oltre al labirinto
+                    # statico - oggi i golem spaccapietra avversari, che
+                    # bloccano il passaggio come un muro (vedi
+                    # _golem_block_fn).
+                    if not (is_wall(self.maze, self.maze_w, self.maze_h,
+                                    x + ndx, y + ndy)
+                            or (extra_wall is not None and extra_wall(x + ndx, y + ndy))):
                         direction = next_direction
                         next_direction = None
                     # se e' muro: la coda resta in memoria (regola 3)
@@ -1068,7 +1238,8 @@ class Room:
             facing = direction
             dx, dy = DIRECTIONS[direction]
             nx, ny = x + dx, y + dy
-            if is_wall(self.maze, self.maze_w, self.maze_h, nx, ny):
+            if (is_wall(self.maze, self.maze_w, self.maze_h, nx, ny)
+                    or (extra_wall is not None and extra_wall(nx, ny))):
                 accum = 0.0
                 break
             step = min(remaining, (1.0 - accum) / speed)
@@ -1150,8 +1321,13 @@ class Room:
         snap_t, sx, sy, saccum, sdir = snapshot
         replay_dt = now - snap_t
         speed = NORMAL_SPEED * (ASSASSIN_SPEED_MULT if p.is_assassin else 1.0)
+        # Stessa regola del movimento normale: dentro un terremoto attivo
+        # la velocita' e' dimezzata anche nel riavvolgimento, altrimenti il
+        # replay divergerebbe dalla fisica vera.
+        speed *= self.quake_slow_mult(p)
         nx, ny, naccum, ndir, nnext, facing = self._advance_state(
             sx, sy, saccum, sdir, requested_dir, replay_dt, speed,
+            extra_wall=self._golem_block_fn(p.id),
         )
 
         # Rete di sicurezza: se nel frattempo e' successo qualcosa che
@@ -1604,6 +1780,75 @@ class Room:
                 "bonus": "occult_tesla", "points": OCCULT_TESLA_THRESHOLD,
             })
 
+        # Bonus 3400 punti: sblocca la pozione terremoto, ma NON la usa
+        # subito. Si usa a comando RIUSANDO ancora il tasto "1" (vedi
+        # try_use_potion: prima pressione = mira, seconda = lancio), UNA
+        # SOLA VOLTA per giocatore per round, ma solo DOPO aver esaurito
+        # tutta la catena precedente del tasto "1" (Tesla occulta
+        # compresa): finche' la catena non e' esaurita, il tasto "1" resta
+        # dedicato a quella (vedi il dispatch del messaggio "place_mortar").
+        if (
+            p.alive
+            and p.points >= POTION_THRESHOLD
+            and POTION_THRESHOLD not in p.claimed
+        ):
+            p.claimed.add(POTION_THRESHOLD)
+            p.has_potion = True
+            self.push_event({
+                "kind": "bonus", "player": p.id,
+                "bonus": "potion", "points": POTION_THRESHOLD,
+            })
+
+        # Bonus 3600 punti: sblocca il golem spaccapietra, ma NON lo piazza
+        # subito. Si piazza a comando RIUSANDO ancora il tasto "1" (vedi
+        # try_place_golem), UNA SOLA VOLTA per giocatore per round, ma solo
+        # DOPO aver esaurito tutta la catena precedente del tasto "1"
+        # (pozione terremoto compresa).
+        if (
+            p.alive
+            and p.points >= GOLEM_THRESHOLD
+            and GOLEM_THRESHOLD not in p.claimed
+        ):
+            p.claimed.add(GOLEM_THRESHOLD)
+            p.has_golem = True
+            self.push_event({
+                "kind": "bonus", "player": p.id,
+                "bonus": "golem", "points": GOLEM_THRESHOLD,
+            })
+
+        # Bonus 3800 punti: sblocca la trasformazione del fungo madre, ma
+        # NON la attiva subito. Si attiva a comando RIUSANDO ancora il
+        # tasto "1" (vedi try_activate_mega_mushroom), UNA SOLA VOLTA per
+        # round, solo DOPO aver esaurito tutta la catena precedente (golem
+        # compreso) e SOLO SE il fungo madre e' ancora vivo.
+        if (
+            p.alive
+            and p.points >= MEGA_MUSHROOM_THRESHOLD
+            and MEGA_MUSHROOM_THRESHOLD not in p.claimed
+        ):
+            p.claimed.add(MEGA_MUSHROOM_THRESHOLD)
+            p.has_mega_mushroom = True
+            self.push_event({
+                "kind": "bonus", "player": p.id,
+                "bonus": "mega_mushroom", "points": MEGA_MUSHROOM_THRESHOLD,
+            })
+
+        # Bonus 4000 punti: sblocca l'attacco aereo, ma NON lo lancia
+        # subito. Si usa a comando RIUSANDO ancora il tasto "1" (vedi
+        # try_use_airstrike: prima pressione = mirino, seconda = attacco),
+        # UNA SOLA VOLTA per round, solo a catena esaurita.
+        if (
+            p.alive
+            and p.points >= AIRSTRIKE_THRESHOLD
+            and AIRSTRIKE_THRESHOLD not in p.claimed
+        ):
+            p.claimed.add(AIRSTRIKE_THRESHOLD)
+            p.has_airstrike = True
+            self.push_event({
+                "kind": "bonus", "player": p.id,
+                "bonus": "airstrike", "points": AIRSTRIKE_THRESHOLD,
+            })
+
     def try_portal(self, p):
         """Se il giocatore e' su un portale (e non e' appena arrivato da un
         teletrasporto), lo sposta al portale opposto mantenendo la direzione.
@@ -1686,6 +1931,13 @@ class Room:
         CONSERVA tutti i suoi punti, nessuno le viene piu' sottratto -
         un'eliminazione fa guadagnare il killer ma non penalizza piu' chi
         viene ucciso."""
+        # Modalita' 2v2: NIENTE fuoco amico, mai. Qualsiasi arma o gadget
+        # il cui colpo dovesse arrivare fin qui contro un COMPAGNO di
+        # squadra viene annullato in blocco: e' la rete di sicurezza
+        # centrale, oltre ai controlli gia' fatti a monte da ogni arma
+        # (vedi is_enemy_ids).
+        if shooter_id is not None and shooter_id != victim.id and not self.is_enemy_ids(victim.id, shooter_id):
+            return
         self.last_kill = {"cause": cause, "by": shooter_id}
         killer_player = self.players.get(shooter_id) if shooter_id else None
         stolen = 0
@@ -1796,7 +2048,7 @@ class Room:
         for p in list(self.players.values()):
             if not p.alive or not p.has_laser or p.is_assassin or p.trapped_left > 0:
                 continue
-            nearest = self.nearest_alive(p.x, p.y, {p.id})
+            nearest = self.nearest_alive(p.x, p.y, self.hostile_exclude(p.id))
             in_range = (
                 nearest is not None
                 and abs(nearest.x - p.x) + abs(nearest.y - p.y) <= LASER_RANGE_CELLS
@@ -1891,7 +2143,7 @@ class Room:
                     lz["bounce_left"] -= 1
                 victims = [
                     q for q in self.players.values()
-                    if q.alive and q.id != lz["owner"] and q.x == nx and q.y == ny
+                    if q.alive and self.is_enemy_ids(q.id, lz["owner"]) and q.x == nx and q.y == ny
                     and q.ghost_left <= 0 and q.prot_left <= 0
                 ]
                 if victims:
@@ -1920,11 +2172,23 @@ class Room:
                 # trova sulla sua strada, cosi' come un giocatore.
                 pet_victims = [
                     pet for pet in self.pets
-                    if pet["owner"] != lz["owner"] and pet["x"] == nx and pet["y"] == ny
+                    if self.is_enemy_ids(pet["owner"], lz["owner"]) and pet["x"] == nx and pet["y"] == ny
                 ]
                 if pet_victims:
                     for pet in pet_victims:
                         self.destroy_pet(pet, "laser", lz["owner"])
+                    destroyed = True
+                    break
+                # Bonus 3600 punti: il golem spaccapietra incassa il colpo
+                # laser NEMICO (una vita) e lo ferma col suo corpo di
+                # pietra, come un muro.
+                golem_victims = [
+                    g for g in self.golems
+                    if self.is_enemy_ids(g["owner"], lz["owner"]) and g["x"] == nx and g["y"] == ny
+                ]
+                if golem_victims:
+                    for g in golem_victims:
+                        self.damage_golem(g, lz["owner"], "laser")
                     destroyed = True
                     break
                 # Bonus 1800 punti: il blob gelatinoso e' immune al laser
@@ -2012,13 +2276,13 @@ class Room:
         for m in self.mines:
             victims = [
                 q for q in self.players.values()
-                if q.alive and not q.is_assassin and not q.armor_active and q.id != m["owner"]
+                if q.alive and not q.is_assassin and not q.armor_active and self.is_enemy_ids(q.id, m["owner"])
                 and q.ghost_left <= 0 and q.prot_left <= 0
                 and q.x == m["x"] and q.y == m["y"]
             ]
             pet_victims = [
                 pet for pet in self.pets
-                if pet["owner"] != m["owner"] and pet["x"] == m["x"] and pet["y"] == m["y"]
+                if self.is_enemy_ids(pet["owner"], m["owner"]) and pet["x"] == m["x"] and pet["y"] == m["y"]
             ]
             if victims or pet_victims:
                 for v in victims:
@@ -2186,7 +2450,7 @@ class Room:
         player.lightning_used = True
         candidates = [
             q for q in self.players.values()
-            if q.alive and q.id != player.id
+            if q.alive and self.is_enemy_ids(q.id, player.id)
             and q.ghost_left <= 0 and q.prot_left <= 0
         ]
         # NERF: il fulmine ora ha solo 1 possibilita' su 3 di colpire
@@ -2225,7 +2489,7 @@ class Room:
             return
         # Un ninja e' invisibile: il missile non puo' agganciarlo nemmeno al
         # lancio (vedi anche move_missiles per il riaggancio in volo).
-        target = self.nearest_alive_non_ninja(player.x, player.y, {player.id})
+        target = self.nearest_alive_non_ninja(player.x, player.y, self.hostile_exclude(player.id))
         if target is None:
             return
         player.missiles_left -= 1
@@ -2278,7 +2542,7 @@ class Room:
             # piu' vicino, esattamente come quando il bersaglio originale
             # muore prima dell'impatto.
             if target is None or not target.alive or target.is_assassin:
-                target = self.nearest_alive_non_ninja(mz["x"], mz["y"], {mz["owner"]})
+                target = self.nearest_alive_non_ninja(mz["x"], mz["y"], self.hostile_exclude(mz["owner"]))
                 if target is None:
                     destroyed = True
                 else:
@@ -2348,7 +2612,7 @@ class Room:
                         q for q in self.players.values()
                         if q.alive and not q.is_assassin
                         and q.ghost_left <= 0 and q.prot_left <= 0
-                        and q.id != mz["owner"] and q.x == nx and q.y == ny
+                        and self.is_enemy_ids(q.id, mz["owner"]) and q.x == nx and q.y == ny
                     ]
                     if victims:
                         armored = [v for v in victims if v.armor_active]
@@ -2370,11 +2634,22 @@ class Room:
                     # pet nemico che trova sulla sua strada.
                     pet_victims = [
                         pet for pet in self.pets
-                        if pet["owner"] != mz["owner"] and pet["x"] == nx and pet["y"] == ny
+                        if self.is_enemy_ids(pet["owner"], mz["owner"]) and pet["x"] == nx and pet["y"] == ny
                     ]
                     if pet_victims:
                         for pet in pet_victims:
                             self.destroy_pet(pet, "missile", mz["owner"])
+                        destroyed = True
+                    # Bonus 3600 punti: il golem spaccapietra incassa
+                    # anche il missile guidato NEMICO (una vita) e lo fa
+                    # detonare sul suo corpo di pietra.
+                    golem_victims = [
+                        g for g in self.golems
+                        if self.is_enemy_ids(g["owner"], mz["owner"]) and g["x"] == nx and g["y"] == ny
+                    ]
+                    if golem_victims:
+                        for g in golem_victims:
+                            self.damage_golem(g, mz["owner"], "missile")
                         destroyed = True
                     # Bonus 1800 punti: il blob gelatinoso e' immune al
                     # missile guidato (sia amico che avversario) - l'UNICO
@@ -2433,7 +2708,7 @@ class Room:
         if player.trap_uses_left <= 0:
             return
 
-        target = self.nearest_alive(player.x, player.y, {player.id})
+        target = self.nearest_alive(player.x, player.y, self.hostile_exclude(player.id))
         if target is None:
             return
         player.trap_uses_left -= 1
@@ -2515,7 +2790,7 @@ class Room:
         NORMAL_SPEED * ROBOT_SPEED_MULT. Se al momento non c'e' nessun
         nemico vivo, resta ferma sull'ultimo percorso residuo invece di
         vagare senza meta."""
-        target = self.nearest_alive(t["x"], t["y"], {t["owner"]})
+        target = self.nearest_alive(t["x"], t["y"], self.hostile_exclude(t["owner"]))
         t["wander_cd"] = t.get("wander_cd", 0.0) - TICK_DT
         if target is not None and (t["wander_cd"] <= 0 or not t.get("wander_path")):
             t["wander_cd"] = ROBOT_WANDER_RETARGET_SECONDS
@@ -2573,7 +2848,7 @@ class Room:
             # caselle, distanza Manhattan), gli punta contro la canna. La
             # mira (t["aim"]) finisce nello snapshot cosi' il client la
             # disegna che ruota verso il bersaglio in tempo reale.
-            target = self.nearest_alive(t["x"], t["y"], {t["owner"]})
+            target = self.nearest_alive(t["x"], t["y"], self.hostile_exclude(t["owner"]))
             in_range = (
                 target is not None
                 and abs(target.x - t["x"]) + abs(target.y - t["y"]) <= TURRET_RANGE_CELLS
@@ -2750,7 +3025,7 @@ class Room:
 
         victims = [
             p for p in self.players.values()
-            if p.alive and p.id != owner
+            if p.alive and self.is_enemy_ids(p.id, owner)
             and p.ghost_left <= 0 and p.prot_left <= 0
             and abs(p.x - ox) + abs(p.y - oy) <= SUPERBOMB_RADIUS_CELLS
         ]
@@ -2771,7 +3046,7 @@ class Room:
         if self.mines:
             remaining_mines = []
             for m in self.mines:
-                if m["owner"] != owner and abs(m["x"] - ox) + abs(m["y"] - oy) <= SUPERBOMB_RADIUS_CELLS:
+                if self.is_enemy_ids(m["owner"], owner) and abs(m["x"] - ox) + abs(m["y"] - oy) <= SUPERBOMB_RADIUS_CELLS:
                     self.push_event({
                         "kind": "mine_destroyed", "id": m["id"],
                         "x": m["x"], "y": m["y"], "by": owner, "cause": "superbomb",
@@ -2783,7 +3058,7 @@ class Room:
         if self.turrets:
             remaining_turrets = []
             for t in self.turrets:
-                if t["owner"] != owner and abs(t["x"] - ox) + abs(t["y"] - oy) <= SUPERBOMB_RADIUS_CELLS:
+                if self.is_enemy_ids(t["owner"], owner) and abs(t["x"] - ox) + abs(t["y"] - oy) <= SUPERBOMB_RADIUS_CELLS:
                     self.push_event({
                         "kind": "turret_destroyed", "id": t["id"],
                         "x": t["x"], "y": t["y"], "by": owner, "cause": "superbomb",
@@ -2796,7 +3071,7 @@ class Room:
         if self.mortars:
             remaining_mortars = []
             for mt in self.mortars:
-                if mt["owner"] != owner and abs(mt["x"] - ox) + abs(mt["y"] - oy) <= SUPERBOMB_RADIUS_CELLS:
+                if self.is_enemy_ids(mt["owner"], owner) and abs(mt["x"] - ox) + abs(mt["y"] - oy) <= SUPERBOMB_RADIUS_CELLS:
                     self.push_event({
                         "kind": "mortar_destroyed", "id": mt["id"],
                         "x": mt["x"], "y": mt["y"], "by": owner, "cause": "superbomb",
@@ -2806,7 +3081,7 @@ class Room:
             self.mortars = remaining_mortars
 
         for pet in list(self.pets):
-            if pet["owner"] != owner and abs(pet["x"] - ox) + abs(pet["y"] - oy) <= SUPERBOMB_RADIUS_CELLS:
+            if self.is_enemy_ids(pet["owner"], owner) and abs(pet["x"] - ox) + abs(pet["y"] - oy) <= SUPERBOMB_RADIUS_CELLS:
                 self.destroy_pet(pet, "superbomb", owner)
 
         # Ogni Tesla laser avversaria nel raggio viene distrutta: e' l'UNICA
@@ -2819,7 +3094,7 @@ class Room:
                 # (occult_phase == "hidden") e' irraggiungibile, come le
                 # altre armi che non possono colpirla in quella fase.
                 if (
-                    tesla["owner"] != owner
+                    self.is_enemy_ids(tesla["owner"], owner)
                     and tesla.get("occult_phase") != "hidden"
                     and abs(tesla["x"] - ox) + abs(tesla["y"] - oy) <= SUPERBOMB_RADIUS_CELLS
                 ):
@@ -2839,7 +3114,7 @@ class Room:
         # indietro tra due bomboloni che si trovano entrambi nel raggio
         # l'uno dell'altro.
         for other in list(self.superbombs):
-            if (other is not bomb and other["owner"] != owner and not other.get("destroyed")
+            if (other is not bomb and self.is_enemy_ids(other["owner"], owner) and not other.get("destroyed")
                     and abs(other["x"] - ox) + abs(other["y"] - oy) <= SUPERBOMB_RADIUS_CELLS):
                 other["destroyed"] = True
                 self.explode_superbomb(other)
@@ -2849,7 +3124,7 @@ class Room:
         # d'urto indipendente) esattamente come se il suo timer fosse
         # scaduto in quell'istante, poi esce di scena.
         for bal in list(self.balloons):
-            if (bal["owner"] != owner and not bal.get("destroyed")
+            if (self.is_enemy_ids(bal["owner"], owner) and not bal.get("destroyed")
                     and abs(bal["x"] - ox) + abs(bal["y"] - oy) <= SUPERBOMB_RADIUS_CELLS):
                 bal["destroyed"] = True
                 self.explode_balloon_bomb(bal)
@@ -2859,11 +3134,15 @@ class Room:
         # nemmeno il blob (vedi destroy_blob).
         blob_victims = [
             blob for blob in self.blobs
-            if blob["owner"] != owner
+            if self.is_enemy_ids(blob["owner"], owner)
             and abs(blob["x"] - ox) + abs(blob["y"] - oy) <= SUPERBOMB_RADIUS_CELLS
         ]
         for blob in blob_victims:
             self.destroy_blob(blob, "superbomb", owner)
+
+        # Bonus 3600 punti: l'onda d'urto colpisce (una vita) anche ogni
+        # golem spaccapietra avversario nel raggio.
+        self.damage_golems_in_radius(ox, oy, SUPERBOMB_RADIUS_CELLS, owner, "superbomb")
 
     # ---- bonus 1600 punti: mongolfiera vagante (tasto "1", DOPO il bombolone) ----
 
@@ -3009,12 +3288,16 @@ class Room:
 
         victims = [
             p for p in self.players.values()
-            if p.alive and p.id != owner
+            if p.alive and self.is_enemy_ids(p.id, owner)
             and p.ghost_left <= 0 and p.prot_left <= 0
             and abs(p.x - ox) + abs(p.y - oy) <= BALLOON_BOMB_RADIUS_CELLS
         ]
         for victim in victims:
             self.kill_player(victim, "balloon", shooter_id=owner)
+
+        # Bonus 3600 punti: la bomba colpisce (una vita) anche ogni golem
+        # spaccapietra avversario nel raggio.
+        self.damage_golems_in_radius(ox, oy, BALLOON_BOMB_RADIUS_CELLS, owner, "balloon")
 
         # Arbusti spinosi avversari (bonus 2800 punti): anche la bomba di
         # mongolfiera li pota, con lo stesso raggio d'urto dell'esplosione.
@@ -3028,7 +3311,7 @@ class Room:
         if self.mines:
             remaining_mines = []
             for m in self.mines:
-                if m["owner"] != owner and abs(m["x"] - ox) + abs(m["y"] - oy) <= BALLOON_BOMB_RADIUS_CELLS:
+                if self.is_enemy_ids(m["owner"], owner) and abs(m["x"] - ox) + abs(m["y"] - oy) <= BALLOON_BOMB_RADIUS_CELLS:
                     self.push_event({
                         "kind": "mine_destroyed", "id": m["id"],
                         "x": m["x"], "y": m["y"], "by": owner, "cause": "balloon",
@@ -3040,7 +3323,7 @@ class Room:
         if self.turrets:
             remaining_turrets = []
             for t in self.turrets:
-                if t["owner"] != owner and abs(t["x"] - ox) + abs(t["y"] - oy) <= BALLOON_BOMB_RADIUS_CELLS:
+                if self.is_enemy_ids(t["owner"], owner) and abs(t["x"] - ox) + abs(t["y"] - oy) <= BALLOON_BOMB_RADIUS_CELLS:
                     self.push_event({
                         "kind": "turret_destroyed", "id": t["id"],
                         "x": t["x"], "y": t["y"], "by": owner, "cause": "balloon",
@@ -3053,7 +3336,7 @@ class Room:
         if self.mortars:
             remaining_mortars = []
             for mt in self.mortars:
-                if mt["owner"] != owner and abs(mt["x"] - ox) + abs(mt["y"] - oy) <= BALLOON_BOMB_RADIUS_CELLS:
+                if self.is_enemy_ids(mt["owner"], owner) and abs(mt["x"] - ox) + abs(mt["y"] - oy) <= BALLOON_BOMB_RADIUS_CELLS:
                     self.push_event({
                         "kind": "mortar_destroyed", "id": mt["id"],
                         "x": mt["x"], "y": mt["y"], "by": owner, "cause": "balloon",
@@ -3063,14 +3346,14 @@ class Room:
             self.mortars = remaining_mortars
 
         for pet in list(self.pets):
-            if pet["owner"] != owner and abs(pet["x"] - ox) + abs(pet["y"] - oy) <= BALLOON_BOMB_RADIUS_CELLS:
+            if self.is_enemy_ids(pet["owner"], owner) and abs(pet["x"] - ox) + abs(pet["y"] - oy) <= BALLOON_BOMB_RADIUS_CELLS:
                 self.destroy_pet(pet, "balloon", owner)
 
         # Ogni bombolone avversario ancora inesploso nel raggio NON viene
         # "annullato": esplode a sua volta (reazione a catena), con la
         # propria onda d'urto indipendente.
         for other in list(self.superbombs):
-            if (other["owner"] != owner and not other.get("destroyed")
+            if (self.is_enemy_ids(other["owner"], owner) and not other.get("destroyed")
                     and abs(other["x"] - ox) + abs(other["y"] - oy) <= BALLOON_BOMB_RADIUS_CELLS):
                 other["destroyed"] = True
                 self.explode_superbomb(other)
@@ -3166,14 +3449,14 @@ class Room:
         for b in self.blobs:
             victims = [
                 q for q in self.players.values()
-                if q.alive and not q.is_assassin and not q.armor_active and q.id != b["owner"]
+                if q.alive and not q.is_assassin and not q.armor_active and self.is_enemy_ids(q.id, b["owner"])
                 and q.ghost_left <= 0 and q.prot_left <= 0
                 and abs(q.x - b["x"]) <= BLOB_EAT_RANGE_CELLS
                 and abs(q.y - b["y"]) <= BLOB_EAT_RANGE_CELLS
             ]
             pet_victims = [
                 pet for pet in self.pets
-                if pet["owner"] != b["owner"]
+                if self.is_enemy_ids(pet["owner"], b["owner"])
                 and abs(pet["x"] - b["x"]) <= BLOB_EAT_RANGE_CELLS
                 and abs(pet["y"] - b["y"]) <= BLOB_EAT_RANGE_CELLS
             ]
@@ -3339,7 +3622,7 @@ class Room:
         gadget attraversano liberamente i propri muri, quindi per loro
         questa funzione ritorna sempre None."""
         for w in self.spike_walls:
-            if w["x"] == x and w["y"] == y and w["owner"] != owner_id:
+            if w["x"] == x and w["y"] == y and self.is_enemy_ids(w["owner"], owner_id):
                 return w
         return None
 
@@ -3369,7 +3652,7 @@ class Room:
             # (stessa formula di to_public), cosi' il contatto scatta
             # appena si tocca la superficie del muro.
             for q in self.players.values():
-                if not q.alive or q.id == owner or q.prot_left > 0:
+                if not q.alive or not self.is_enemy_ids(q.id, owner) or q.prot_left > 0:
                     continue
                 dx, dy = DIRECTIONS.get(q.direction, (0, 0)) if q.direction else (0, 0)
                 fx = q.x + dx * q.move_accum
@@ -3377,12 +3660,12 @@ class Room:
                 if abs(fx - wx) < SPIKE_WALL_HIT_RANGE and abs(fy - wy) < SPIKE_WALL_HIT_RANGE:
                     self.kill_player(q, "spike_wall", shooter_id=owner)
             # Pet avversari che toccano il muro: distrutti.
-            for pet in [pt for pt in self.pets if pt["owner"] != owner
+            for pet in [pt for pt in self.pets if self.is_enemy_ids(pt["owner"], owner)
                         and pt["x"] == wx and pt["y"] == wy]:
                 self.destroy_pet(pet, "spike_wall", owner)
             # Torrette/navicelle avversarie sulla cella del muro (una
             # navicella mobile puo' finirci sopra camminando): distrutte.
-            doomed_turrets = [t for t in self.turrets if t["owner"] != owner
+            doomed_turrets = [t for t in self.turrets if self.is_enemy_ids(t["owner"], owner)
                               and t["x"] == wx and t["y"] == wy]
             for t in doomed_turrets:
                 self.turrets.remove(t)
@@ -3536,7 +3819,7 @@ class Room:
 
         victims = [
             p for p in self.players.values()
-            if p.alive and p.id != owner
+            if p.alive and self.is_enemy_ids(p.id, owner)
             and p.ghost_left <= 0 and p.prot_left <= 0
             and abs(p.x - ox) + abs(p.y - oy) <= TESLA_RANGE_CELLS
         ]
@@ -3547,7 +3830,7 @@ class Room:
         if self.mines:
             remaining_mines = []
             for m in self.mines:
-                if m["owner"] != owner and abs(m["x"] - ox) + abs(m["y"] - oy) <= TESLA_RANGE_CELLS:
+                if self.is_enemy_ids(m["owner"], owner) and abs(m["x"] - ox) + abs(m["y"] - oy) <= TESLA_RANGE_CELLS:
                     hits.append([m["x"], m["y"]])
                     self.push_event({
                         "kind": "mine_destroyed", "id": m["id"],
@@ -3560,7 +3843,7 @@ class Room:
         if self.turrets:
             remaining_turrets = []
             for tt in self.turrets:
-                if tt["owner"] != owner and abs(tt["x"] - ox) + abs(tt["y"] - oy) <= TESLA_RANGE_CELLS:
+                if self.is_enemy_ids(tt["owner"], owner) and abs(tt["x"] - ox) + abs(tt["y"] - oy) <= TESLA_RANGE_CELLS:
                     hits.append([tt["x"], tt["y"]])
                     self.push_event({
                         "kind": "turret_destroyed", "id": tt["id"],
@@ -3574,7 +3857,7 @@ class Room:
         if self.mortars:
             remaining_mortars = []
             for mt in self.mortars:
-                if mt["owner"] != owner and abs(mt["x"] - ox) + abs(mt["y"] - oy) <= TESLA_RANGE_CELLS:
+                if self.is_enemy_ids(mt["owner"], owner) and abs(mt["x"] - ox) + abs(mt["y"] - oy) <= TESLA_RANGE_CELLS:
                     hits.append([mt["x"], mt["y"]])
                     self.push_event({
                         "kind": "mortar_destroyed", "id": mt["id"],
@@ -3585,7 +3868,7 @@ class Room:
             self.mortars = remaining_mortars
 
         for pet in list(self.pets):
-            if pet["owner"] != owner and abs(pet["x"] - ox) + abs(pet["y"] - oy) <= TESLA_RANGE_CELLS:
+            if self.is_enemy_ids(pet["owner"], owner) and abs(pet["x"] - ox) + abs(pet["y"] - oy) <= TESLA_RANGE_CELLS:
                 hits.append([pet["x"], pet["y"]])
                 self.destroy_pet(pet, "tesla", owner)
 
@@ -3596,7 +3879,7 @@ class Room:
         # arma capace di distruggerla (vedi explode_superbomb).
 
         for bal in list(self.balloons):
-            if (bal["owner"] != owner and not bal.get("destroyed")
+            if (self.is_enemy_ids(bal["owner"], owner) and not bal.get("destroyed")
                     and abs(bal["x"] - ox) + abs(bal["y"] - oy) <= TESLA_RANGE_CELLS):
                 hits.append([bal["x"], bal["y"]])
                 bal["destroyed"] = True
@@ -3604,7 +3887,7 @@ class Room:
 
         blob_victims = [
             blob for blob in self.blobs
-            if blob["owner"] != owner
+            if self.is_enemy_ids(blob["owner"], owner)
             and abs(blob["x"] - ox) + abs(blob["y"] - oy) <= TESLA_RANGE_CELLS
         ]
         for blob in blob_victims:
@@ -3614,7 +3897,7 @@ class Room:
         if self.spike_walls:
             remaining_walls = []
             for w in self.spike_walls:
-                if w["owner"] != owner and abs(w["x"] - ox) + abs(w["y"] - oy) <= TESLA_RANGE_CELLS:
+                if self.is_enemy_ids(w["owner"], owner) and abs(w["x"] - ox) + abs(w["y"] - oy) <= TESLA_RANGE_CELLS:
                     hits.append([w["x"], w["y"]])
                     self.push_event({
                         "kind": "spike_wall_expired", "id": w["id"],
@@ -3623,6 +3906,10 @@ class Room:
                 else:
                     remaining_walls.append(w)
             self.spike_walls = remaining_walls
+
+        # Bonus 3600 punti: il fulmine colpisce (una vita) anche ogni
+        # golem spaccapietra avversario nel raggio.
+        hits.extend(self.damage_golems_in_radius(ox, oy, TESLA_RANGE_CELLS, owner, "tesla"))
 
         if hits:
             self.push_event({
@@ -3714,7 +4001,7 @@ class Room:
         tiles = list(player.territory_tiles)
         hits = []
         for q in self.players.values():
-            if (q.alive and q.id != player.id and q.ghost_left <= 0 and q.prot_left <= 0
+            if (q.alive and self.is_enemy_ids(q.id, player.id) and q.ghost_left <= 0 and q.prot_left <= 0
                     and (q.x, q.y) in player.territory_tiles):
                 hits.append(q.id)
                 self.kill_player(q, "territory_trap", shooter_id=player.id)
@@ -3866,7 +4153,7 @@ class Room:
             # Giocatori avversari all'impatto (posizione frazionaria
             # reale, come per il muro di spunzoni).
             for q in self.players.values():
-                if not q.alive or q.id == owner or q.prot_left > 0 or q.ghost_left > 0:
+                if not q.alive or not self.is_enemy_ids(q.id, owner) or q.prot_left > 0 or q.ghost_left > 0:
                     continue
                 dx, dy = DIRECTIONS.get(q.direction, (0, 0)) if q.direction else (0, 0)
                 fx = q.x + dx * q.move_accum
@@ -3881,11 +4168,11 @@ class Room:
                 else:
                     self.kill_player(q, "bush", shooter_id=owner)
             # Pet avversari su una casella dell'arbusto: distrutti.
-            for pet in [pt for pt in self.pets if pt["owner"] != owner
+            for pet in [pt for pt in self.pets if self.is_enemy_ids(pt["owner"], owner)
                         and (pt["x"], pt["y"]) in cells]:
                 self.destroy_pet(pet, "bush", owner)
             # Torrette/navicelle avversarie su una casella dell'arbusto.
-            doomed_turrets = [t for t in self.turrets if t["owner"] != owner
+            doomed_turrets = [t for t in self.turrets if self.is_enemy_ids(t["owner"], owner)
                               and (t["x"], t["y"]) in cells]
             for t in doomed_turrets:
                 self.turrets.remove(t)
@@ -3938,7 +4225,14 @@ class Room:
         })
 
     def mushroom_public(self, m):
-        return {"id": m["id"], "x": m["x"], "y": m["y"], "owner": m["owner"]}
+        return {
+            "id": m["id"], "x": m["x"], "y": m["y"], "owner": m["owner"],
+            # Bonus 3800 punti: se True il fungo madre e' TRASFORMATO -
+            # alto come una Tesla, visibile a TUTTI (il client non lo
+            # nasconde piu' a distanza) e circondato dalle onde
+            # elettromagnetiche del buco nero (vedi drawMushrooms).
+            "mega": m.get("mega", False),
+        }
 
     def pick_random_mushroom_cell(self):
         """Sceglie una cella di pavimento CASUALE su TUTTA la mappa, libera
@@ -3972,7 +4266,9 @@ class Room:
         if not self.mushrooms:
             return
         for m in list(self.mushrooms):
-            if not m.get("spawner"):
+            # Bonus 3800 punti: da trasformato, il fungo madre e' un'arma
+            # a tempo pieno e SMETTE di generare altri funghi.
+            if not m.get("spawner") or m.get("mega"):
                 continue
             m["spawn_left"] = m.get("spawn_left", MUSHROOM_RESPAWN_INTERVAL_SECONDS) - TICK_DT
             if m["spawn_left"] > 0:
@@ -4031,6 +4327,961 @@ class Room:
             "x": tesla["x"], "y": tesla["y"],
         })
 
+    # ---- bonus 3400 punti: pozione terremoto (tasto "1", DOPO la Tesla occulta) ----
+
+    def try_use_potion(self, player):
+        """Tasto '1', RIUSATO come VERO ultimo gradino della catena: viene
+        chiamato dal dispatch del messaggio "place_mortar" solo quando
+        TUTTA la catena precedente e' esaurita (Tesla occulta compresa, o
+        divenuta per sempre impossibile). Funziona in DUE tempi:
+          1) prima pressione: entra in modalita' MIRA (potion_aiming): il
+             client disegna un mirino a POTION_THROW_RANGE_CELLS caselle
+             davanti al giocatore, nella direzione in cui guarda;
+          2) seconda pressione: la boccetta viene LANCIATA verso quel punto
+             (volando SOPRA i muri, come le bombe di mortaio) e il
+             terremoto parte esattamente li' (vedi update_quakes):
+             cerchio di raggio POTION_RADIUS_CELLS per POTION_EFFECT_SECONDS
+             che rallenta i giocatori del 50% e DISTRUGGE ogni struttura/
+             gadget al suo interno - proprio tutte, anche quelle del
+             proprietario (vedi quake_destroy).
+
+        Se il giocatore e' intrappolato dalla trappola di un avversario,
+        NON puo' usare alcun bonus finche' non torna libero di muoversi."""
+        if not player.alive or player.trapped_left > 0 or not player.has_potion or player.potion_used or player.is_assassin or player.armor_active:
+            return
+        if not player.potion_aiming:
+            # Prima pressione: si entra in modalita' mira. Il mirino vero e
+            # proprio lo disegna il client leggendo potion_aiming + facing
+            # dallo stato pubblico (vedi drawPotionReticle in index.html).
+            player.potion_aiming = True
+            self.push_event({"kind": "potion_aim", "player": player.id})
+            return
+        # Seconda pressione: LANCIO. Il punto d'impatto e' calcolato dal
+        # server (autorita') con la stessa formula usata dal client per il
+        # mirino: cella corrente + facing * POTION_THROW_RANGE_CELLS,
+        # bloccato dentro i bordi della mappa. Puo' cadere anche SU un muro:
+        # la boccetta vola sopra il labirinto e l'effetto e' ad area.
+        tx, ty = self.potion_target_cell(player)
+        player.potion_aiming = False
+        player.potion_used = True
+        quake = {
+            "id": uuid.uuid4().hex[:8],
+            "x": tx, "y": ty,
+            "owner": player.id,
+            "left": POTION_EFFECT_SECONDS,
+        }
+        self.quakes.append(quake)
+        self.push_event({
+            "kind": "potion_throw", "player": player.id,
+            "x0": player.x, "y0": player.y,
+            "x": tx, "y": ty,
+            "radius": POTION_RADIUS_CELLS,
+            "duration": POTION_EFFECT_SECONDS,
+        })
+        # Prima scossa: le strutture gia' dentro il cerchio crollano subito
+        # all'impatto (poi update_quakes continua a demolire, tick dopo
+        # tick, anche cio' che dovesse ENTRARE nel cerchio in seguito:
+        # robot, pet, mongolfiere e blob vaganti).
+        self.quake_destroy(tx, ty, player.id)
+
+    def potion_target_cell(self, player):
+        """Punto d'impatto del lancio: POTION_THROW_RANGE_CELLS caselle
+        davanti al giocatore, nella direzione in cui sta guardando
+        (facing), bloccato dentro i bordi della mappa. I muri NON fermano
+        il lancio: la boccetta vola sopra il labirinto."""
+        dx, dy = DIRECTIONS.get(player.facing or "right", (1, 0))
+        tx = max(0, min(self.maze_w - 1, player.x + dx * POTION_THROW_RANGE_CELLS))
+        ty = max(0, min(self.maze_h - 1, player.y + dy * POTION_THROW_RANGE_CELLS))
+        return tx, ty
+
+    def quake_slow_mult(self, p):
+        """Moltiplicatore di velocita' del giocatore p: POTION_SLOW_MULT
+        (-50%) se si trova dentro ALMENO un terremoto attivo (distanza
+        Manhattan dal centro <= POTION_RADIUS_CELLS), altrimenti 1.0. Il
+        terremoto scuote la terra per TUTTI, proprietario compreso."""
+        if not self.quakes:
+            return 1.0
+        for q in self.quakes:
+            if abs(p.x - q["x"]) + abs(p.y - q["y"]) <= POTION_RADIUS_CELLS:
+                return POTION_SLOW_MULT
+        return 1.0
+
+    def quake_destroy(self, ox, oy, by):
+        """La demolizione del terremoto: DISTRUGGE ogni struttura/gadget
+        AVVERSARIO entro POTION_RADIUS_CELLS caselle (distanza Manhattan)
+        dal centro - le truppe del proprietario della pozione restano
+        ILLESE, esattamente come per bombolone/Tesla/fungo atomico:
+        mine, torrette/robot, mortai, pet, bomboloni
+        (esplosione a catena), mongolfiere (sgancio a catena), blob, muri
+        di spunzoni, Tesla (tranne quelle occulte sottoterra in quel
+        momento: irraggiungibili), arbusti (potati nel raggio) e funghi
+        atomici (sbriciolati SENZA esplodere: il terremoto li distrugge,
+        non li innesca). I giocatori NON vengono uccisi: vengono solo
+        rallentati (vedi quake_slow_mult)."""
+        R = POTION_RADIUS_CELLS
+
+        if self.mines:
+            remaining_mines = []
+            for mn in self.mines:
+                if self.is_enemy_ids(mn["owner"], by) and abs(mn["x"] - ox) + abs(mn["y"] - oy) <= R:
+                    self.push_event({
+                        "kind": "mine_destroyed", "id": mn["id"],
+                        "x": mn["x"], "y": mn["y"], "by": by, "cause": "quake",
+                    })
+                else:
+                    remaining_mines.append(mn)
+            self.mines = remaining_mines
+
+        if self.turrets:
+            remaining_turrets = []
+            for t in self.turrets:
+                if self.is_enemy_ids(t["owner"], by) and abs(t["x"] - ox) + abs(t["y"] - oy) <= R:
+                    self.push_event({
+                        "kind": "turret_destroyed", "id": t["id"],
+                        "x": t["x"], "y": t["y"], "by": by, "cause": "quake",
+                        "evolved": t.get("evolved", False),
+                    })
+                else:
+                    remaining_turrets.append(t)
+            self.turrets = remaining_turrets
+
+        if self.mortars:
+            remaining_mortars = []
+            for mt in self.mortars:
+                if self.is_enemy_ids(mt["owner"], by) and abs(mt["x"] - ox) + abs(mt["y"] - oy) <= R:
+                    self.push_event({
+                        "kind": "mortar_destroyed", "id": mt["id"],
+                        "x": mt["x"], "y": mt["y"], "by": by, "cause": "quake",
+                    })
+                else:
+                    remaining_mortars.append(mt)
+            self.mortars = remaining_mortars
+
+        for pet in list(self.pets):
+            if self.is_enemy_ids(pet["owner"], by) and abs(pet["x"] - ox) + abs(pet["y"] - oy) <= R:
+                self.destroy_pet(pet, "quake", by)
+
+        # Bomboloni AVVERSARI inesplosi: il terremoto li fa esplodere a
+        # catena (quelli del lanciatore restano innescati e illesi).
+        for bomb in list(self.superbombs):
+            if (self.is_enemy_ids(bomb["owner"], by) and not bomb.get("destroyed")
+                    and abs(bomb["x"] - ox) + abs(bomb["y"] - oy) <= R):
+                bomb["destroyed"] = True
+                self.explode_superbomb(bomb)
+
+        # Mongolfiere in volo: sgancio a catena.
+        for bal in list(self.balloons):
+            if (self.is_enemy_ids(bal["owner"], by) and not bal.get("destroyed")
+                    and abs(bal["x"] - ox) + abs(bal["y"] - oy) <= R):
+                bal["destroyed"] = True
+                self.explode_balloon_bomb(bal)
+
+        for blob in list(self.blobs):
+            if self.is_enemy_ids(blob["owner"], by) and abs(blob["x"] - ox) + abs(blob["y"] - oy) <= R:
+                self.destroy_blob(blob, "quake", by)
+
+        if self.spike_walls:
+            remaining_walls = []
+            for w in self.spike_walls:
+                if self.is_enemy_ids(w["owner"], by) and abs(w["x"] - ox) + abs(w["y"] - oy) <= R:
+                    self.push_event({
+                        "kind": "spike_wall_expired", "id": w["id"],
+                        "x": w["x"], "y": w["y"],
+                    })
+                else:
+                    remaining_walls.append(w)
+            self.spike_walls = remaining_walls
+
+        # Tesla: distrutte anch'esse (tranne quelle occulte SOTTOTERRA in
+        # quel momento: mentre sono nella fase "hidden" sono
+        # irraggiungibili, come per bombolone e fungo atomico).
+        if self.teslas:
+            remaining_teslas = []
+            for tesla in self.teslas:
+                if (
+                    self.is_enemy_ids(tesla["owner"], by)
+                    and tesla.get("occult_phase") != "hidden"
+                    and abs(tesla["x"] - ox) + abs(tesla["y"] - oy) <= R
+                ):
+                    self.push_event({
+                        "kind": "tesla_destroyed", "id": tesla["id"],
+                        "x": tesla["x"], "y": tesla["y"], "by": by, "cause": "quake",
+                    })
+                else:
+                    remaining_teslas.append(tesla)
+            self.teslas = remaining_teslas
+
+        # Arbusti spinosi AVVERSARI: potate tutte le celle nel raggio
+        # (quelli del proprietario della pozione restano intatti).
+        for bsh in list(self.bushes):
+            if bsh["owner"] == by:
+                continue
+            hit = [c for c in bsh["cells"]
+                   if abs(c[0] - ox) + abs(c[1] - oy) <= R]
+            if hit:
+                self.prune_bush_cells(bsh, hit, by, "quake")
+
+        # Funghi atomici: sbriciolati SENZA esplodere (il terremoto li
+        # distrugge, non li innesca: niente boato a catena).
+        for mush in list(self.mushrooms):
+            if self.is_enemy_ids(mush["owner"], by) and abs(mush["x"] - ox) + abs(mush["y"] - oy) <= R:
+                self.mushrooms.remove(mush)
+                self.push_event({
+                    "kind": "mushroom_destroyed", "id": mush["id"],
+                    "x": mush["x"], "y": mush["y"], "by": by, "cause": "quake",
+                })
+
+    def update_quakes(self):
+        """Fa avanzare i terremoti attivi: scala il tempo residuo, rimuove
+        quelli scaduti e, ad OGNI tick, ripete la demolizione nel raggio
+        (cosi' anche cio' che ENTRA nel cerchio dopo l'impatto - robot,
+        pet, mongolfiere, blob vaganti, arbusti che crescono - viene
+        distrutto). Il rallentamento dei giocatori NON vive qui: viene
+        applicato direttamente nel calcolo della velocita' di movimento
+        (vedi quake_slow_mult)."""
+        if not self.quakes:
+            return
+        for q in list(self.quakes):
+            q["left"] -= TICK_DT
+            if q["left"] <= 0:
+                self.quakes.remove(q)
+                continue
+            self.quake_destroy(q["x"], q["y"], q["owner"])
+
+    # ---- bonus 3600 punti: golem spaccapietra (tasto "1", DOPO la pozione terremoto) ----
+
+    def _golem_block_fn(self, pid):
+        """Predicato "extra_wall" per _advance_state: le celle occupate dai
+        golem AVVERSARI del giocatore pid bloccano il passaggio come un
+        muro vero (il proprietario e' l'unico ad attraversare il proprio
+        golem liberamente). Ritorna None quando non c'e' nulla da bloccare,
+        cosi' il percorso caldo del movimento non paga alcun costo."""
+        if not self.golems:
+            return None
+        cells = {(g["x"], g["y"]) for g in self.golems if self.is_enemy_ids(g["owner"], pid)}
+        if not cells:
+            return None
+        return lambda x, y: (x, y) in cells
+
+    def try_place_golem(self, player):
+        """Tasto '1', RIUSATO come VERO ultimo gradino della catena: viene
+        chiamato dal dispatch del messaggio "place_mortar" solo quando
+        TUTTA la catena precedente e' esaurita (pozione terremoto
+        compresa). Piazza, UNA SOLA VOLTA per round, il golem spaccapietra
+        nella cella corrente del giocatore: dorme per GOLEM_WAKE_SECONDS,
+        poi si sveglia e inizia a vagare divorando ogni gadget avversario
+        (vedi update_golems). Blocca i giocatori come un muro fin dal
+        piazzamento, anche mentre dorme (e' comunque un macigno).
+
+        Se il giocatore e' intrappolato dalla trappola di un avversario,
+        NON puo' usare alcun bonus finche' non torna libero di muoversi."""
+        if not player.alive or player.trapped_left > 0 or not player.has_golem or player.golem_placed or player.is_assassin or player.armor_active:
+            return
+        player.golem_placed = True
+        golem = {
+            "id": uuid.uuid4().hex[:8],
+            "x": player.x, "y": player.y,
+            "owner": player.id,
+            "hp": GOLEM_HP,
+            "awake": False,
+            "wake_left": GOLEM_WAKE_SECONDS,
+            "wander_path": [],
+            "move_accum": 0.0,
+            "poison_cd": 0.0,   # cadenza del danno da veleno (1 vita/sec)
+            "quake_cd": 0.0,    # cadenza del danno da terremoto (1 vita/sec)
+        }
+        self.golems.append(golem)
+        self.push_event({
+            "kind": "golem_place", "id": golem["id"], "player": player.id,
+            "x": golem["x"], "y": golem["y"], "wake": GOLEM_WAKE_SECONDS,
+        })
+
+    def golem_public(self, g):
+        """Posizione "continua" del golem per il client: interpolazione
+        verso la prossima cella del percorso in base a move_accum (come per
+        i giocatori), cosi' il macigno scivola fluido invece di saltare di
+        cella in cella. gx/gy restano la cella-griglia autoritativa, usata
+        dal client per replicare il blocco del passaggio in predizione."""
+        fx, fy = float(g["x"]), float(g["y"])
+        if g["awake"] and g.get("wander_path"):
+            nx, ny = g["wander_path"][0]
+            a = min(0.999, max(0.0, g.get("move_accum", 0.0)))
+            fx = g["x"] + (nx - g["x"]) * a
+            fy = g["y"] + (ny - g["y"]) * a
+        return {
+            "id": g["id"], "x": round(fx, 4), "y": round(fy, 4),
+            "gx": g["x"], "gy": g["y"],
+            "owner": g["owner"], "hp": g["hp"], "max_hp": GOLEM_HP,
+            "awake": g["awake"],
+            "wake_left": round(max(g["wake_left"], 0), 1),
+        }
+
+    def damage_golem(self, g, by, cause):
+        """Un colpo (una vita) al golem, con QUALSIASI arma. Ritorna True
+        se il colpo lo ha abbattuto (e rimosso dalla mappa). In 2v2 i
+        compagni di squadra non possono fargli alcun danno."""
+        if by is not None and not self.is_enemy_ids(g["owner"], by):
+            return False
+        if g not in self.golems:
+            return True
+        g["hp"] -= 1
+        self.push_event({
+            "kind": "golem_hit", "id": g["id"],
+            "x": g["x"], "y": g["y"], "hp": g["hp"], "max_hp": GOLEM_HP,
+            "by": by, "cause": cause,
+        })
+        if g["hp"] <= 0:
+            self.golems.remove(g)
+            self.push_event({
+                "kind": "golem_destroyed", "id": g["id"],
+                "x": g["x"], "y": g["y"], "owner": g["owner"],
+                "by": by, "cause": cause,
+            })
+            return True
+        return False
+
+    def damage_golems_in_radius(self, ox, oy, radius, by, cause):
+        """Colpisce (una vita ciascuno) ogni golem AVVERSARIO di 'by' entro
+        'radius' caselle (distanza Manhattan) da (ox, oy): usata dalle armi
+        ad area (bombolone, bomba di mongolfiera, fungo atomico, fulmine di
+        Tesla, impatto del mortaio). Ritorna le coordinate dei golem
+        colpiti (per gli effetti del client, es. i fulmini della Tesla)."""
+        hits = []
+        for g in list(self.golems):
+            if self.is_enemy_ids(g["owner"], by) and abs(g["x"] - ox) + abs(g["y"] - oy) <= radius:
+                hits.append([g["x"], g["y"]])
+                self.damage_golem(g, by, cause)
+        return hits
+
+    def golem_eat(self, g):
+        """Il pasto del golem: divora ogni gadget AVVERSARIO entro
+        GOLEM_EAT_RANGE_CELLS caselle (distanza a scacchi/Chebyshev) dalla
+        sua posizione. I bomboloni vengono INGOIATI senza esplodere e i
+        funghi atomici sbriciolati senza innescarli: il golem li mangia,
+        non li attiva. Le Tesla occulte SOTTOTERRA in quel momento sono
+        irraggiungibili (come per tutte le altre armi)."""
+        gx, gy, owner = g["x"], g["y"], g["owner"]
+        R = GOLEM_EAT_RANGE_CELLS
+
+        def near(x, y):
+            return max(abs(x - gx), abs(y - gy)) <= R
+
+        eaten = 0
+
+        if self.mines:
+            remaining = []
+            for mn in self.mines:
+                if self.is_enemy_ids(mn["owner"], owner) and near(mn["x"], mn["y"]):
+                    eaten += 1
+                    self.push_event({
+                        "kind": "mine_destroyed", "id": mn["id"],
+                        "x": mn["x"], "y": mn["y"], "by": owner, "cause": "golem",
+                    })
+                else:
+                    remaining.append(mn)
+            self.mines = remaining
+
+        if self.turrets:
+            remaining = []
+            for t in self.turrets:
+                if self.is_enemy_ids(t["owner"], owner) and near(t["x"], t["y"]):
+                    eaten += 1
+                    self.push_event({
+                        "kind": "turret_destroyed", "id": t["id"],
+                        "x": t["x"], "y": t["y"], "by": owner, "cause": "golem",
+                        "evolved": t.get("evolved", False),
+                    })
+                else:
+                    remaining.append(t)
+            self.turrets = remaining
+
+        if self.mortars:
+            remaining = []
+            for mt in self.mortars:
+                if self.is_enemy_ids(mt["owner"], owner) and near(mt["x"], mt["y"]):
+                    eaten += 1
+                    self.push_event({
+                        "kind": "mortar_destroyed", "id": mt["id"],
+                        "x": mt["x"], "y": mt["y"], "by": owner, "cause": "golem",
+                    })
+                else:
+                    remaining.append(mt)
+            self.mortars = remaining
+
+        for pet in list(self.pets):
+            if self.is_enemy_ids(pet["owner"], owner) and near(pet["x"], pet["y"]):
+                eaten += 1
+                self.destroy_pet(pet, "golem", owner)
+
+        # Bomboloni avversari: INGOIATI, senza esplosione ne' onda d'urto.
+        for bomb in list(self.superbombs):
+            if self.is_enemy_ids(bomb["owner"], owner) and not bomb.get("destroyed") and near(bomb["x"], bomb["y"]):
+                eaten += 1
+                bomb["destroyed"] = True
+                self.superbombs.remove(bomb)
+
+        for blob in list(self.blobs):
+            if self.is_enemy_ids(blob["owner"], owner) and near(blob["x"], blob["y"]):
+                eaten += 1
+                self.destroy_blob(blob, "golem", owner)
+
+        if self.spike_walls:
+            remaining = []
+            for w in self.spike_walls:
+                if self.is_enemy_ids(w["owner"], owner) and near(w["x"], w["y"]):
+                    eaten += 1
+                    self.push_event({
+                        "kind": "spike_wall_expired", "id": w["id"],
+                        "x": w["x"], "y": w["y"],
+                    })
+                else:
+                    remaining.append(w)
+            self.spike_walls = remaining
+
+        if self.teslas:
+            remaining = []
+            for tesla in self.teslas:
+                if (
+                    self.is_enemy_ids(tesla["owner"], owner)
+                    and tesla.get("occult_phase") != "hidden"
+                    and near(tesla["x"], tesla["y"])
+                ):
+                    eaten += 1
+                    self.push_event({
+                        "kind": "tesla_destroyed", "id": tesla["id"],
+                        "x": tesla["x"], "y": tesla["y"], "by": owner, "cause": "golem",
+                    })
+                else:
+                    remaining.append(tesla)
+            self.teslas = remaining
+
+        for mush in list(self.mushrooms):
+            if self.is_enemy_ids(mush["owner"], owner) and near(mush["x"], mush["y"]):
+                eaten += 1
+                self.mushrooms.remove(mush)
+                self.push_event({
+                    "kind": "mushroom_destroyed", "id": mush["id"],
+                    "x": mush["x"], "y": mush["y"], "by": owner, "cause": "golem",
+                })
+
+        for bsh in list(self.bushes):
+            if bsh["owner"] == owner:
+                continue
+            hit = [c for c in bsh["cells"] if near(c[0], c[1])]
+            if hit:
+                eaten += len(hit)
+                self.prune_bush_cells(bsh, hit, owner, "golem")
+
+        if eaten:
+            self.push_event({
+                "kind": "golem_eat", "id": g["id"],
+                "x": gx, "y": gy, "count": eaten,
+            })
+
+    def update_golems(self):
+        """Fa avanzare ogni golem spaccapietra di un tick:
+          - da ADDORMENTATO: scala solo il conto alla rovescia del
+            risveglio (30 secondi), poi manda l'evento "golem_wake";
+            blocca comunque il passaggio (vedi _golem_block_fn);
+          - da SVEGLIO: vaga a caso per la mappa via bfs_path (mai
+            attraverso i muri, mai ADDOSSO a un giocatore vivo: se la
+            prossima cella e' occupata da qualcuno aspetta e ripianifica)
+            a GOLEM_SPEED celle al secondo, divorando ad ogni tick i
+            gadget avversari a portata (vedi golem_eat);
+          - danni ambientali: una vita AL SECONDO se si trova dentro una
+            nuvola velenosa avversaria (mortaio/blob/fungo) o dentro un
+            terremoto avversario della pozione."""
+        if not self.golems:
+            return
+        for g in list(self.golems):
+            if not g["awake"]:
+                g["wake_left"] -= TICK_DT
+                if g["wake_left"] <= 0:
+                    g["awake"] = True
+                    self.push_event({
+                        "kind": "golem_wake", "id": g["id"],
+                        "x": g["x"], "y": g["y"], "player": g["owner"],
+                    })
+                continue
+
+            # ---- vagabondaggio ----
+            if not g.get("wander_path"):
+                target = random.choice(self.free_cells)
+                path = bfs_path(self.maze, self.maze_w, self.maze_h, (g["x"], g["y"]), target)
+                g["wander_path"] = path or []
+            g["move_accum"] = g.get("move_accum", 0.0) + GOLEM_SPEED * TICK_DT
+            while g["move_accum"] >= 1.0 and g["wander_path"]:
+                nx, ny = g["wander_path"][0]
+                blocked_by_player = any(
+                    q.alive and q.x == nx and q.y == ny
+                    for q in self.players.values()
+                )
+                if blocked_by_player:
+                    # Blocca i giocatori come un muro, ma non gli cammina
+                    # addosso: aspetta (e al prossimo giro ripianifica).
+                    g["wander_path"] = []
+                    g["move_accum"] = 0.0
+                    break
+                g["move_accum"] -= 1.0
+                g["wander_path"].pop(0)
+                g["x"], g["y"] = nx, ny
+
+            # ---- pasto ----
+            self.golem_eat(g)
+            if g not in self.golems:
+                continue  # (per sicurezza: il pasto non lo uccide mai, ma non si sa mai)
+
+            # ---- veleno avversario: una vita al secondo ----
+            g["poison_cd"] = max(0.0, g.get("poison_cd", 0.0) - TICK_DT)
+            in_poison = any(
+                self.is_enemy_ids(pz["owner"], g["owner"])
+                and abs(g["x"] - pz["x"]) + abs(g["y"] - pz["y"]) <= pz.get("radius", POISON_RADIUS_CELLS)
+                for pz in self.poison_zones
+            )
+            if in_poison and g["poison_cd"] <= 0:
+                g["poison_cd"] = GOLEM_POISON_TICK_SECONDS
+                if self.damage_golem(g, None, "poison"):
+                    continue
+
+            # ---- terremoto avversario (pozione): come il veleno ----
+            g["quake_cd"] = max(0.0, g.get("quake_cd", 0.0) - TICK_DT)
+            in_quake = any(
+                self.is_enemy_ids(q2["owner"], g["owner"])
+                and abs(g["x"] - q2["x"]) + abs(g["y"] - q2["y"]) <= POTION_RADIUS_CELLS
+                for q2 in self.quakes
+            )
+            if in_quake and g["quake_cd"] <= 0:
+                g["quake_cd"] = GOLEM_POISON_TICK_SECONDS
+                if self.damage_golem(g, None, "quake"):
+                    continue
+
+    # ---- bonus 3800 punti: fungo madre magnetico (tasto "1", DOPO il golem) ----
+
+    def try_activate_mega_mushroom(self, player):
+        """Tasto '1', RIUSATO come VERO ultimo gradino della catena: viene
+        chiamato dal dispatch del messaggio "place_mortar" solo quando
+        TUTTA la catena precedente e' esaurita (golem compreso). Come la
+        Tesla occulta, NON piazza nulla di nuovo: trasforma UNA SOLA VOLTA
+        il fungo atomico MADRE (il generatore, vedi try_place_mushroom)
+        gia' piazzato dallo stesso giocatore, SE e SOLO SE e' ancora vivo
+        (non calpestato ne' distrutto). Da quel momento il fungo diventa
+        alto come una Tesla, visibile a tutti, e per il resto del round
+        risucchia e distrugge tutto cio' che e' nemico nel suo raggio
+        (vedi update_mega_mushrooms). Se il fungo madre non c'e' piu', la
+        pressione resta silenziosamente senza effetto e NON consuma il
+        gradino (stessa filosofia di try_activate_occult_tesla)."""
+        if not player.alive or player.trapped_left > 0 or not player.has_mega_mushroom or player.mega_mushroom_used or player.is_assassin or player.armor_active:
+            return
+        mother = next(
+            (m for m in self.mushrooms if m["owner"] == player.id and m.get("spawner")),
+            None,
+        )
+        if mother is None:
+            # Fungo madre gia' esploso/distrutto: il potenziamento non ha
+            # nulla su cui applicarsi.
+            return
+        player.mega_mushroom_used = True
+        mother["mega"] = True
+        mother["golem_cd"] = {}
+        self.push_event({
+            "kind": "mega_mushroom_activate", "id": mother["id"],
+            "player": player.id, "x": mother["x"], "y": mother["y"],
+            "radius": MEGA_MUSHROOM_RANGE_CELLS,
+        })
+
+    def update_mega_mushrooms(self):
+        """Il buco nero del fungo madre trasformato, ad ogni tick, per
+        ciascun fungo con m["mega"]:
+          - GIOCATORI nemici nel raggio (Manhattan <=
+            MEGA_MUSHROOM_RANGE_CELLS, ghost e protezione post-respawn
+            esclusi): le onde pilotano il loro movimento trascinandoli
+            lungo i corridoi verso il fungo (la direzione viene imposta
+            ad ogni tick, sovrastando i comandi del giocatore), e al
+            CONTATTO (distanza per asse <= MEGA_MUSHROOM_KILL_RANGE)
+            vengono uccisi;
+          - GADGET nemici nel raggio: risucchiati e INGHIOTTITI (mine,
+            torrette/robot, mortai, pet, bomboloni senza esplodere,
+            mongolfiere senza sganciare, blob, muri di spunzoni, Tesla
+            non occulte-sottoterra, arbusti potati, altri funghi senza
+            innescarli), con un evento "mega_swallow" per l'animazione di
+            risucchio del client;
+          - GOLEM nemici nel raggio: troppo pesanti per essere
+            inghiottiti, subiscono una vita al secondo (vedi
+            damage_golem)."""
+        megas = [m for m in self.mushrooms if m.get("mega")]
+        if not megas:
+            return
+        R = MEGA_MUSHROOM_RANGE_CELLS
+        for m in megas:
+            mx, my, owner = m["x"], m["y"], m["owner"]
+
+            def near(x, y):
+                return abs(x - mx) + abs(y - my) <= R
+
+            def swallow(x, y):
+                self.push_event({
+                    "kind": "mega_swallow", "id": m["id"],
+                    "x": x, "y": y, "tx": mx, "ty": my,
+                })
+
+            # ---- giocatori: trascinati e uccisi al contatto ----
+            for q in list(self.players.values()):
+                if (not q.alive or not self.is_enemy_ids(q.id, owner)
+                        or q.ghost_left > 0 or q.prot_left > 0
+                        or not near(q.x, q.y)):
+                    continue
+                dx, dy = mx - q.x, my - q.y
+                if max(abs(dx), abs(dy)) <= MEGA_MUSHROOM_KILL_RANGE:
+                    self.kill_player(q, "mega_mushroom", shooter_id=owner)
+                    continue
+                # Trascinamento: si impone la direzione che avvicina di
+                # piu' al fungo (asse col divario maggiore per primo),
+                # scartando quelle che sbattono contro un muro. Reimposta
+                # ad OGNI tick: i comandi del giocatore non bastano a
+                # vincere la forza delle onde.
+                prefs = []
+                if abs(dx) >= abs(dy):
+                    if dx:
+                        prefs.append("right" if dx > 0 else "left")
+                    if dy:
+                        prefs.append("down" if dy > 0 else "up")
+                else:
+                    if dy:
+                        prefs.append("down" if dy > 0 else "up")
+                    if dx:
+                        prefs.append("right" if dx > 0 else "left")
+                for d in prefs:
+                    ddx, ddy = DIRECTIONS[d]
+                    if not is_wall(self.maze, self.maze_w, self.maze_h, q.x + ddx, q.y + ddy):
+                        q.direction = d
+                        q.next_direction = None
+                        break
+
+            # ---- gadget nemici: risucchiati e inghiottiti ----
+            if self.mines:
+                remaining = []
+                for mn in self.mines:
+                    if self.is_enemy_ids(mn["owner"], owner) and near(mn["x"], mn["y"]):
+                        swallow(mn["x"], mn["y"])
+                        self.push_event({
+                            "kind": "mine_destroyed", "id": mn["id"],
+                            "x": mn["x"], "y": mn["y"], "by": owner, "cause": "mega_mushroom",
+                        })
+                    else:
+                        remaining.append(mn)
+                self.mines = remaining
+
+            if self.turrets:
+                remaining = []
+                for t in self.turrets:
+                    if self.is_enemy_ids(t["owner"], owner) and near(t["x"], t["y"]):
+                        swallow(t["x"], t["y"])
+                        self.push_event({
+                            "kind": "turret_destroyed", "id": t["id"],
+                            "x": t["x"], "y": t["y"], "by": owner, "cause": "mega_mushroom",
+                            "evolved": t.get("evolved", False),
+                        })
+                    else:
+                        remaining.append(t)
+                self.turrets = remaining
+
+            if self.mortars:
+                remaining = []
+                for mt in self.mortars:
+                    if self.is_enemy_ids(mt["owner"], owner) and near(mt["x"], mt["y"]):
+                        swallow(mt["x"], mt["y"])
+                        self.push_event({
+                            "kind": "mortar_destroyed", "id": mt["id"],
+                            "x": mt["x"], "y": mt["y"], "by": owner, "cause": "mega_mushroom",
+                        })
+                    else:
+                        remaining.append(mt)
+                self.mortars = remaining
+
+            for pet in list(self.pets):
+                if self.is_enemy_ids(pet["owner"], owner) and near(pet["x"], pet["y"]):
+                    swallow(pet["x"], pet["y"])
+                    self.destroy_pet(pet, "mega_mushroom", owner)
+
+            # Bomboloni: INGHIOTTITI senza esplodere (il buco nero li
+            # divora, non li innesca).
+            for bomb in list(self.superbombs):
+                if (self.is_enemy_ids(bomb["owner"], owner) and not bomb.get("destroyed")
+                        and near(bomb["x"], bomb["y"])):
+                    bomb["destroyed"] = True
+                    self.superbombs.remove(bomb)
+                    swallow(bomb["x"], bomb["y"])
+
+            # Mongolfiere: risucchiate in volo, senza sgancio a catena.
+            for bal in list(self.balloons):
+                if (self.is_enemy_ids(bal["owner"], owner) and not bal.get("destroyed")
+                        and near(bal["x"], bal["y"])):
+                    bal["destroyed"] = True
+                    self.balloons.remove(bal)
+                    swallow(bal["x"], bal["y"])
+
+            for blob in list(self.blobs):
+                if self.is_enemy_ids(blob["owner"], owner) and near(blob["x"], blob["y"]):
+                    swallow(blob["x"], blob["y"])
+                    self.destroy_blob(blob, "mega_mushroom", owner)
+
+            if self.spike_walls:
+                remaining = []
+                for w in self.spike_walls:
+                    if self.is_enemy_ids(w["owner"], owner) and near(w["x"], w["y"]):
+                        swallow(w["x"], w["y"])
+                        self.push_event({
+                            "kind": "spike_wall_expired", "id": w["id"],
+                            "x": w["x"], "y": w["y"],
+                        })
+                    else:
+                        remaining.append(w)
+                self.spike_walls = remaining
+
+            if self.teslas:
+                remaining = []
+                for tesla in self.teslas:
+                    if (
+                        self.is_enemy_ids(tesla["owner"], owner)
+                        and tesla.get("occult_phase") != "hidden"
+                        and near(tesla["x"], tesla["y"])
+                    ):
+                        swallow(tesla["x"], tesla["y"])
+                        self.push_event({
+                            "kind": "tesla_destroyed", "id": tesla["id"],
+                            "x": tesla["x"], "y": tesla["y"], "by": owner, "cause": "mega_mushroom",
+                        })
+                    else:
+                        remaining.append(tesla)
+                self.teslas = remaining
+
+            for bsh in list(self.bushes):
+                if not self.is_enemy_ids(bsh["owner"], owner):
+                    continue
+                hit = [c for c in bsh["cells"] if near(c[0], c[1])]
+                if hit:
+                    swallow(hit[0][0], hit[0][1])
+                    self.prune_bush_cells(bsh, hit, owner, "mega_mushroom")
+
+            # Altri funghi nemici: inghiottiti SENZA innescarli.
+            for other in list(self.mushrooms):
+                if (other is not m and self.is_enemy_ids(other["owner"], owner)
+                        and near(other["x"], other["y"])):
+                    self.mushrooms.remove(other)
+                    swallow(other["x"], other["y"])
+                    self.push_event({
+                        "kind": "mushroom_destroyed", "id": other["id"],
+                        "x": other["x"], "y": other["y"], "by": owner, "cause": "mega_mushroom",
+                    })
+
+            # ---- golem nemici: una vita al secondo ----
+            cds = m.setdefault("golem_cd", {})
+            for g in list(self.golems):
+                if not self.is_enemy_ids(g["owner"], owner) or not near(g["x"], g["y"]):
+                    continue
+                cds[g["id"]] = max(0.0, cds.get(g["id"], 0.0) - TICK_DT)
+                if cds[g["id"]] <= 0:
+                    cds[g["id"]] = MEGA_MUSHROOM_GOLEM_TICK_SECONDS
+                    self.damage_golem(g, owner, "mega_mushroom")
+
+    # ---- bonus 4000 punti: attacco aereo (tasto "1", DOPO il fungo madre) ----
+
+    def try_use_airstrike(self, player):
+        """Tasto '1', RIUSATO come VERO ultimo gradino della catena.
+        Funziona in DUE tempi:
+          1) prima pressione: il giocatore diventa IMMOBILE e (lato
+             client) TOTALMENTE NERO, ed entra in modalita' mira: il
+             mirino e' il muro perimetrale sinistro della fila scelta,
+             si parte dal primo muro in basso a sinistra e ci si sposta
+             su/giu' con le frecce (vedi airstrike_adjust);
+          2) seconda pressione: parte l'attacco vero e proprio - un aereo
+             nel colore del giocatore, col teschio della mongolfiera,
+             percorre TUTTA la fila da sinistra a destra bombardando
+             dall'alto verso il basso (vedi update_airstrikes).
+
+        Se il giocatore e' intrappolato dalla trappola di un avversario,
+        NON puo' usare alcun bonus finche' non torna libero di muoversi."""
+        if not player.alive or player.trapped_left > 0 or not player.has_airstrike or player.airstrike_used or player.is_assassin or player.armor_active:
+            return
+        if not player.airstrike_aiming:
+            player.airstrike_aiming = True
+            # Si parte dal "primo muro in basso a sinistra": la fila
+            # percorribile piu' in basso della mappa.
+            player.airstrike_row = self.maze_h - 2
+            player.direction = None
+            player.next_direction = None
+            player.move_accum = 0.0
+            self.push_event({"kind": "airstrike_aim", "player": player.id, "y": player.airstrike_row})
+            return
+        row = max(1, min(self.maze_h - 2, player.airstrike_row))
+        player.airstrike_aiming = False
+        player.airstrike_used = True
+        strike = {
+            "id": uuid.uuid4().hex[:8],
+            "owner": player.id,
+            "y": row,
+            "x": -2.0,               # parte fuori mappa, a sinistra
+            "golems_hit": set(),     # ogni golem incassa UN solo colpo per passaggio
+        }
+        self.airstrikes.append(strike)
+        self.push_event({
+            "kind": "airstrike_launch", "player": player.id, "y": row,
+        })
+
+    def airstrike_adjust(self, player, direction):
+        """Frecce su/giu' durante la mira: spostano il mirino (il muro
+        perimetrale sinistro evidenziato) di una fila alla volta, restando
+        dentro le file percorribili della mappa. Destra/sinistra vengono
+        ignorate."""
+        if not player.airstrike_aiming:
+            return
+        if direction == "up":
+            player.airstrike_row = max(1, player.airstrike_row - 1)
+        elif direction == "down":
+            player.airstrike_row = min(self.maze_h - 2, player.airstrike_row + 1)
+
+    def update_airstrikes(self):
+        """Fa avanzare gli aerei in volo: ognuno percorre la propria fila
+        da sinistra a destra ad AIRSTRIKE_SPEED celle al secondo,
+        eliminando TUTTO cio' che e' nemico sulle celle gia' sorvolate
+        (x <= muso dell'aereo): giocatori (ghost e protezione post-respawn
+        esclusi), mine, torrette/robot, mortai, pet, bomboloni (esplosione
+        a catena: le bombe li innescano), mongolfiere (sgancio a catena),
+        blob, muri di spunzoni, Tesla (tranne le occulte sottoterra),
+        arbusti (potati) e funghi (sbriciolati senza innescarli); i golem
+        incassano UN colpo a passaggio. Le cose del proprietario (e in 2v2
+        dei compagni) restano illese. A fila completata l'aereo esce di
+        scena."""
+        if not self.airstrikes:
+            return
+        for a in list(self.airstrikes):
+            a["x"] += AIRSTRIKE_SPEED * TICK_DT
+            owner, row = a["owner"], a["y"]
+            front = a["x"] + 0.5
+
+            def hit(x, y):
+                return round(y) == row and x <= front
+
+            for q in list(self.players.values()):
+                if (q.alive and self.is_enemy_ids(q.id, owner)
+                        and q.ghost_left <= 0 and q.prot_left <= 0
+                        and hit(q.x, q.y)):
+                    self.kill_player(q, "airstrike", shooter_id=owner)
+
+            if self.mines:
+                remaining = []
+                for mn in self.mines:
+                    if self.is_enemy_ids(mn["owner"], owner) and hit(mn["x"], mn["y"]):
+                        self.push_event({
+                            "kind": "mine_destroyed", "id": mn["id"],
+                            "x": mn["x"], "y": mn["y"], "by": owner, "cause": "airstrike",
+                        })
+                    else:
+                        remaining.append(mn)
+                self.mines = remaining
+
+            if self.turrets:
+                remaining = []
+                for t in self.turrets:
+                    if self.is_enemy_ids(t["owner"], owner) and hit(t["x"], t["y"]):
+                        self.push_event({
+                            "kind": "turret_destroyed", "id": t["id"],
+                            "x": t["x"], "y": t["y"], "by": owner, "cause": "airstrike",
+                            "evolved": t.get("evolved", False),
+                        })
+                    else:
+                        remaining.append(t)
+                self.turrets = remaining
+
+            if self.mortars:
+                remaining = []
+                for mt in self.mortars:
+                    if self.is_enemy_ids(mt["owner"], owner) and hit(mt["x"], mt["y"]):
+                        self.push_event({
+                            "kind": "mortar_destroyed", "id": mt["id"],
+                            "x": mt["x"], "y": mt["y"], "by": owner, "cause": "airstrike",
+                        })
+                    else:
+                        remaining.append(mt)
+                self.mortars = remaining
+
+            for pet in list(self.pets):
+                if self.is_enemy_ids(pet["owner"], owner) and hit(pet["x"], pet["y"]):
+                    self.destroy_pet(pet, "airstrike", owner)
+
+            # Bomboloni: le bombe dall'alto li INNESCANO (esplosione a catena).
+            for bomb in list(self.superbombs):
+                if (self.is_enemy_ids(bomb["owner"], owner) and not bomb.get("destroyed")
+                        and hit(bomb["x"], bomb["y"])):
+                    bomb["destroyed"] = True
+                    self.explode_superbomb(bomb)
+
+            # Mongolfiere in volo sulla fila: colpite, sgancio a catena.
+            for bal in list(self.balloons):
+                if (self.is_enemy_ids(bal["owner"], owner) and not bal.get("destroyed")
+                        and hit(bal["x"], bal["y"])):
+                    bal["destroyed"] = True
+                    self.explode_balloon_bomb(bal)
+
+            for blob in list(self.blobs):
+                if self.is_enemy_ids(blob["owner"], owner) and hit(blob["x"], blob["y"]):
+                    self.destroy_blob(blob, "airstrike", owner)
+
+            if self.spike_walls:
+                remaining = []
+                for w in self.spike_walls:
+                    if self.is_enemy_ids(w["owner"], owner) and hit(w["x"], w["y"]):
+                        self.push_event({
+                            "kind": "spike_wall_expired", "id": w["id"],
+                            "x": w["x"], "y": w["y"],
+                        })
+                    else:
+                        remaining.append(w)
+                self.spike_walls = remaining
+
+            if self.teslas:
+                remaining = []
+                for tesla in self.teslas:
+                    if (
+                        self.is_enemy_ids(tesla["owner"], owner)
+                        and tesla.get("occult_phase") != "hidden"
+                        and hit(tesla["x"], tesla["y"])
+                    ):
+                        self.push_event({
+                            "kind": "tesla_destroyed", "id": tesla["id"],
+                            "x": tesla["x"], "y": tesla["y"], "by": owner, "cause": "airstrike",
+                        })
+                    else:
+                        remaining.append(tesla)
+                self.teslas = remaining
+
+            for bsh in list(self.bushes):
+                if not self.is_enemy_ids(bsh["owner"], owner):
+                    continue
+                cells_hit = [cell for cell in bsh["cells"] if hit(cell[0], cell[1])]
+                if cells_hit:
+                    self.prune_bush_cells(bsh, cells_hit, owner, "airstrike")
+
+            # Funghi: sbriciolati SENZA innescarli.
+            for mush in list(self.mushrooms):
+                if self.is_enemy_ids(mush["owner"], owner) and hit(mush["x"], mush["y"]):
+                    self.mushrooms.remove(mush)
+                    self.push_event({
+                        "kind": "mushroom_destroyed", "id": mush["id"],
+                        "x": mush["x"], "y": mush["y"], "by": owner, "cause": "airstrike",
+                    })
+
+            # Golem: un colpo (una vita) per passaggio, come ogni arma.
+            for g in list(self.golems):
+                if (self.is_enemy_ids(g["owner"], owner) and g["id"] not in a["golems_hit"]
+                        and hit(g["x"], g["y"])):
+                    a["golems_hit"].add(g["id"])
+                    self.damage_golem(g, owner, "airstrike")
+
+            # Fila completata: l'aereo esce di scena a destra.
+            if a["x"] > self.maze_w + 2:
+                self.airstrikes.remove(a)
+
     def pick_teleport_cell(self, origin, distance=OCCULT_TESLA_TELEPORT_DISTANCE_CELLS):
         """Sceglie una cella di pavimento CASUALE (mai un muro) che si trovi
         a esattamente 'distance' caselle (distanza Manhattan) da 'origin':
@@ -4061,13 +5312,18 @@ class Room:
         if not self.mushrooms:
             return
         for m in list(self.mushrooms):
+            # Bonus 3800 punti: il fungo madre trasformato non e' piu' una
+            # bomba da calpestare - uccide gia' al contatto tramite le sue
+            # onde magnetiche (vedi update_mega_mushrooms).
+            if m.get("mega"):
+                continue
             stepped = any(
-                q.alive and q.id != m["owner"]
+                q.alive and self.is_enemy_ids(q.id, m["owner"])
                 and q.ghost_left <= 0 and q.prot_left <= 0
                 and q.x == m["x"] and q.y == m["y"]
                 for q in self.players.values()
             ) or any(
-                pet["owner"] != m["owner"] and pet["x"] == m["x"] and pet["y"] == m["y"]
+                self.is_enemy_ids(pet["owner"], m["owner"]) and pet["x"] == m["x"] and pet["y"] == m["y"]
                 for pet in self.pets
             )
             if stepped:
@@ -4103,7 +5359,7 @@ class Room:
         # Giocatori: corazza e ninja NON proteggono.
         victims = [
             p for p in self.players.values()
-            if p.alive and p.id != owner
+            if p.alive and self.is_enemy_ids(p.id, owner)
             and p.ghost_left <= 0 and p.prot_left <= 0
             and abs(p.x - ox) + abs(p.y - oy) <= MUSHROOM_BLAST_RADIUS_CELLS
         ]
@@ -4113,7 +5369,7 @@ class Room:
         # Mine avversarie: distrutte.
         remaining_mines = []
         for mn in self.mines:
-            if mn["owner"] != owner and abs(mn["x"] - ox) + abs(mn["y"] - oy) <= MUSHROOM_BLAST_RADIUS_CELLS:
+            if self.is_enemy_ids(mn["owner"], owner) and abs(mn["x"] - ox) + abs(mn["y"] - oy) <= MUSHROOM_BLAST_RADIUS_CELLS:
                 self.push_event({
                     "kind": "mine_destroyed", "id": mn["id"],
                     "x": mn["x"], "y": mn["y"], "by": owner, "cause": "mushroom",
@@ -4125,7 +5381,7 @@ class Room:
         # Torrette/robot avversari: distrutti.
         remaining_turrets = []
         for t in self.turrets:
-            if t["owner"] != owner and abs(t["x"] - ox) + abs(t["y"] - oy) <= MUSHROOM_BLAST_RADIUS_CELLS:
+            if self.is_enemy_ids(t["owner"], owner) and abs(t["x"] - ox) + abs(t["y"] - oy) <= MUSHROOM_BLAST_RADIUS_CELLS:
                 self.push_event({
                     "kind": "turret_destroyed", "id": t["id"],
                     "x": t["x"], "y": t["y"], "by": owner, "cause": "mushroom",
@@ -4138,7 +5394,7 @@ class Room:
         # Mortai avversari: distrutti.
         remaining_mortars = []
         for mt in self.mortars:
-            if mt["owner"] != owner and abs(mt["x"] - ox) + abs(mt["y"] - oy) <= MUSHROOM_BLAST_RADIUS_CELLS:
+            if self.is_enemy_ids(mt["owner"], owner) and abs(mt["x"] - ox) + abs(mt["y"] - oy) <= MUSHROOM_BLAST_RADIUS_CELLS:
                 self.push_event({
                     "kind": "mortar_destroyed", "id": mt["id"],
                     "x": mt["x"], "y": mt["y"], "by": owner, "cause": "mushroom",
@@ -4149,33 +5405,33 @@ class Room:
 
         # Pet avversari: distrutti.
         for pet in list(self.pets):
-            if pet["owner"] != owner and abs(pet["x"] - ox) + abs(pet["y"] - oy) <= MUSHROOM_BLAST_RADIUS_CELLS:
+            if self.is_enemy_ids(pet["owner"], owner) and abs(pet["x"] - ox) + abs(pet["y"] - oy) <= MUSHROOM_BLAST_RADIUS_CELLS:
                 self.destroy_pet(pet, "mushroom", owner)
 
         # Bomboloni avversari inesplosi: esplosione a catena.
         for other in list(self.superbombs):
-            if (other["owner"] != owner and not other.get("destroyed")
+            if (self.is_enemy_ids(other["owner"], owner) and not other.get("destroyed")
                     and abs(other["x"] - ox) + abs(other["y"] - oy) <= MUSHROOM_BLAST_RADIUS_CELLS):
                 other["destroyed"] = True
                 self.explode_superbomb(other)
 
         # Mongolfiere avversarie in volo: sgancio a catena.
         for bal in list(self.balloons):
-            if (bal["owner"] != owner and not bal.get("destroyed")
+            if (self.is_enemy_ids(bal["owner"], owner) and not bal.get("destroyed")
                     and abs(bal["x"] - ox) + abs(bal["y"] - oy) <= MUSHROOM_BLAST_RADIUS_CELLS):
                 bal["destroyed"] = True
                 self.explode_balloon_bomb(bal)
 
         # Blob avversari: distrutti.
         for blob in list(self.blobs):
-            if blob["owner"] != owner and abs(blob["x"] - ox) + abs(blob["y"] - oy) <= MUSHROOM_BLAST_RADIUS_CELLS:
+            if self.is_enemy_ids(blob["owner"], owner) and abs(blob["x"] - ox) + abs(blob["y"] - oy) <= MUSHROOM_BLAST_RADIUS_CELLS:
                 self.destroy_blob(blob, "mushroom", owner)
 
         # Muri di spunzoni avversari: sgretolati (stesso evento del
         # fulmine di Tesla, riusato dal client per suono/effetto).
         remaining_walls = []
         for w in self.spike_walls:
-            if w["owner"] != owner and abs(w["x"] - ox) + abs(w["y"] - oy) <= MUSHROOM_BLAST_RADIUS_CELLS:
+            if self.is_enemy_ids(w["owner"], owner) and abs(w["x"] - ox) + abs(w["y"] - oy) <= MUSHROOM_BLAST_RADIUS_CELLS:
                 self.push_event({
                     "kind": "spike_wall_expired", "id": w["id"],
                     "x": w["x"], "y": w["y"],
@@ -4190,7 +5446,7 @@ class Room:
         remaining_teslas = []
         for tesla in self.teslas:
             if (
-                tesla["owner"] != owner
+                self.is_enemy_ids(tesla["owner"], owner)
                 and tesla.get("occult_phase") != "hidden"
                 and abs(tesla["x"] - ox) + abs(tesla["y"] - oy) <= MUSHROOM_BLAST_RADIUS_CELLS
             ):
@@ -4209,6 +5465,11 @@ class Room:
             hit = [c for c in bsh["cells"]
                    if abs(c[0] - ox) + abs(c[1] - oy) <= MUSHROOM_BLAST_RADIUS_CELLS]
             self.prune_bush_cells(bsh, hit, owner, "mushroom")
+
+        # Bonus 3600 punti: l'esplosione colpisce (una vita) anche ogni
+        # golem spaccapietra avversario nel raggio (il macigno regge anche
+        # all'atomica: serve comunque un colpo alla volta dei suoi 15).
+        self.damage_golems_in_radius(ox, oy, MUSHROOM_BLAST_RADIUS_CELLS, owner, "mushroom")
 
         # Il fungo atomico ora e' pura esplosione istantanea: niente piu'
         # area avvelenata residua sull'epicentro (rimossa su richiesta:
@@ -4248,7 +5509,7 @@ class Room:
         if not self.mortars:
             return
         for mt in self.mortars:
-            target = self.nearest_alive(mt["x"], mt["y"], {mt["owner"]})
+            target = self.nearest_alive(mt["x"], mt["y"], self.hostile_exclude(mt["owner"]))
             in_range = (
                 target is not None
                 and abs(target.x - mt["x"]) + abs(target.y - mt["y"]) <= MORTAR_RANGE_CELLS
@@ -4318,11 +5579,20 @@ class Room:
         for victim in victims:
             self.kill_player(victim, "mortar", shooter_id=bomb["owner"])
 
+        # Bonus 3600 punti: l'impatto diretto colpisce (una vita) anche
+        # ogni golem spaccapietra avversario nel raggio d'urto (il veleno
+        # residuo, poi, fa il resto: una vita al secondo, vedi
+        # update_golems).
+        self.damage_golems_in_radius(
+            bomb["x1"], bomb["y1"], MORTAR_BLAST_RADIUS_CELLS,
+            bomb["owner"], "mortar",
+        )
+
         # NERF pet: l'impatto del mortaio distrugge anche il pet AVVERSARIO
         # (non il proprio) che si trova nel raggio dello scoppio, come gia'
         # succede con mine/missili/torrette.
         for pet in list(self.pets):
-            if pet["owner"] != bomb["owner"] \
+            if self.is_enemy_ids(pet["owner"], bomb["owner"]) \
                     and abs(pet["x"] - bomb["x1"]) + abs(pet["y"] - bomb["y1"]) <= MORTAR_BLAST_RADIUS_CELLS:
                 self.destroy_pet(pet, "mortar", bomb["owner"])
 
@@ -4362,7 +5632,7 @@ class Room:
                 radius = pz.get("radius", POISON_RADIUS_CELLS)
                 victims = [
                     p for p in self.players.values()
-                    if p.alive and p.id != pz["owner"]
+                    if p.alive and self.is_enemy_ids(p.id, pz["owner"])
                     and p.ghost_left <= 0 and p.prot_left <= 0
                     and abs(p.x - pz["x"]) + abs(p.y - pz["y"]) <= radius
                 ]
@@ -4391,7 +5661,7 @@ class Room:
                 # mobile, bonus 1000 punti): il resto della logica
                 # (mine/mortai/pet) resta invariato.
                 destroyer = next(
-                    (a for a in armored if a.id != t["owner"] and a.x == t["x"] and a.y == t["y"]),
+                    (a for a in armored if self.is_enemy_ids(a.id, t["owner"]) and a.x == t["x"] and a.y == t["y"]),
                     None,
                 )
                 if destroyer is not None:
@@ -4516,7 +5786,7 @@ class Room:
                 target = None
             if target is None:
                 pet["target_id"] = None
-                candidate = self.nearest_alive(pet["x"], pet["y"], {pet["owner"]})
+                candidate = self.nearest_alive(pet["x"], pet["y"], self.hostile_exclude(pet["owner"]))
                 if candidate is not None and \
                         abs(candidate.x - pet["x"]) + abs(candidate.y - pet["y"]) <= PET_RANGE_CELLS:
                     target = candidate
@@ -4601,6 +5871,18 @@ class Room:
             # le vite) sia in casi limite come disconnessioni multiple: si
             # chiude il round senza vincitori "veri".
             return [], "no_survivors"
+        # Modalita' 2v2: vince la SQUADRA, non il singolo. Appena i vivi
+        # appartengono TUTTI alla stessa squadra (anche se sono ancora in
+        # due), il round finisce e vince quella squadra al completo -
+        # compreso l'eventuale compagno gia' eliminato.
+        if self.mode == "2v2":
+            teams_alive = {p.team for p in alive if p.team}
+            teams_total = {p.team for p in self.players.values() if p.team}
+            if len(teams_alive) == 1 and len(teams_total) > 1:
+                winning_team = next(iter(teams_alive))
+                winners = [p.id for p in self.players.values() if p.team == winning_team]
+                return winners, "team_win"
+            return None, None
         if len(alive) == 1 and len(self.players) > 1:
             return [alive[0].id], "last_survivor"
         return None, None
@@ -4643,6 +5925,26 @@ class Room:
             "spike_walls": [self.spike_wall_public(w) for w in self.spike_walls],
             "bushes": [self.bush_public(b) for b in self.bushes],
             "mushrooms": [self.mushroom_public(m) for m in self.mushrooms],
+            # Terremoti attivi della pozione (bonus 3400 punti): il client
+            # disegna il cerchio del raggio d'azione con le crepe animate
+            # nel colore del proprietario (vedi drawQuakes in index.html).
+            "quakes": [
+                {
+                    "id": q["id"], "x": q["x"], "y": q["y"],
+                    "owner": q["owner"],
+                    "left": round(max(q["left"], 0), 2),
+                    "radius": POTION_RADIUS_CELLS,
+                    "duration": POTION_EFFECT_SECONDS,
+                }
+                for q in self.quakes
+            ],
+            "golems": [self.golem_public(g) for g in self.golems],
+            # Attacchi aerei in volo (bonus 4000 punti): il client disegna
+            # l'aereo col teschio e le esplosioni lungo la fila.
+            "airstrikes": [
+                {"id": a["id"], "x": round(a["x"], 3), "y": a["y"], "owner": a["owner"]}
+                for a in self.airstrikes
+            ],
             "teslas": [self.tesla_public(t) for t in self.teslas],
             "portal_on": self.portal_on,
             "portal_cycle_left": round(max(self.portal_cycle_left, 0), 1),
@@ -4678,6 +5980,17 @@ class Room:
         self.teslas = []
         self.bushes = []
         self.mushrooms = []
+        # Terremoti attivi della pozione (bonus 3400 punti): cerchi a terra
+        # che rallentano i giocatori e distruggono ogni struttura/gadget al
+        # loro interno finche' non scadono (vedi update_quakes).
+        self.quakes = []
+        # Golem spaccapietra piazzati (bonus 3600 punti): dormono 30
+        # secondi, poi vagano divorando i gadget avversari e bloccando i
+        # giocatori come muri (vedi update_golems).
+        self.golems = []
+        # Attacchi aerei in corso (bonus 4000 punti): aerei che
+        # attraversano una fila bombardando (vedi update_airstrikes).
+        self.airstrikes = []
         self.bombs = []
         self.poison_zones = []  # nuvole velenose lasciate a terra dagli impatti del mortaio
         for p in self.players.values():
@@ -4737,6 +6050,17 @@ class Room:
             p.mushroom_placed = False
             p.has_occult_tesla = False
             p.occult_tesla_used = False
+            p.has_potion = False
+            p.potion_aiming = False
+            p.potion_used = False
+            p.has_golem = False
+            p.golem_placed = False
+            p.has_mega_mushroom = False
+            p.mega_mushroom_used = False
+            p.has_airstrike = False
+            p.airstrike_aiming = False
+            p.airstrike_row = 0
+            p.airstrike_used = False
             p.next_lives_milestone = LIVES_EVERY_POINTS
             p.kills = 0
 
@@ -4787,6 +6111,10 @@ class Room:
                 self.update_territory_marking()  # bonus 2600 punti: marca (in privato) le caselle calpestate durante la fase di selezione della trappola territoriale
                 self.update_bushes()  # bonus 2800 punti: cresce gli arbusti spinosi (una casella al minuto), uccide al contatto, la corazza li spezza
                 self.update_mushrooms()  # bonus 3000 punti: fa esplodere i funghi atomici calpestati (distruzione totale raggio 10 + area avvelenata 1 minuto)
+                self.update_quakes()  # bonus 3400 punti: la pozione terremoto rallenta i giocatori e demolisce ogni struttura nel cerchio, tick dopo tick
+                self.update_golems()  # bonus 3600 punti: i golem spaccapietra dormono/si svegliano, vagano divorando i gadget avversari e subiscono veleno/terremoto
+                self.update_mega_mushrooms()  # bonus 3800 punti: il fungo madre trasformato attira e distrugge come un buco nero tutto cio' che e' nemico entro 3 caselle
+                self.update_airstrikes()  # bonus 4000 punti: gli aerei percorrono la fila scelta bombardando tutto cio' che e' nemico
                 self.update_mushroom_spawners()  # il fungo "generatore" ne crea un altro a caso sulla mappa ogni minuto, finche' non viene fatto esplodere
                 self.move_missiles()  # bonus 400 punti: avanza i missili guidati verso il bersaglio
                 self.update_bombs()   # bonus 1200 punti: avanza le bombe di mortaio in volo e le fa esplodere all'impatto
@@ -4798,7 +6126,21 @@ class Room:
                 winners, reason = self.check_win()
                 if winners is None and self.timer_left <= 0:
                     alive = [p for p in self.players.values() if p.alive]
-                    if alive:
+                    if self.mode == "2v2":
+                        # A tempo scaduto in 2v2 vince la squadra con la
+                        # SOMMA di punti piu' alta (pareggio: vincono
+                        # entrambe).
+                        totals = {}
+                        for p in self.players.values():
+                            if p.team:
+                                totals[p.team] = totals.get(p.team, 0) + p.points
+                        if totals:
+                            best_total = max(totals.values())
+                            top_teams = {t for t, v in totals.items() if v == best_total}
+                            winners = [p.id for p in self.players.values() if p.team in top_teams]
+                        else:
+                            winners = []
+                    elif alive:
                         best = max(p.points for p in alive)
                         winners = [p.id for p in alive if p.points == best]
                     else:
@@ -4816,6 +6158,8 @@ class Room:
                         "reason": reason,
                         "names": {p.id: p.name for p in self.players.values()},
                         "scores": {p.id: p.points for p in self.players.values()},
+                        "mode": self.mode,
+                        "teams": {p.id: p.team for p in self.players.values()},
                     })
                     break
 
@@ -5001,6 +6345,26 @@ async def handle_client(ws):
                 player.character = character
                 await room.broadcast_lobby()
 
+            elif mtype == "set_mode":
+                # L'host sceglie la modalita' della stanza (bottone
+                # Pac-Man "2v2" in lobby): "ffa" = tutti contro tutti,
+                # "2v2" = due squadre da due con colori automatici (vedi
+                # assign_teams). Solo in LOBBY, mai a partita in corso.
+                if not room or not player or not player.host:
+                    continue
+                if room.state != "LOBBY":
+                    continue
+                new_mode = msg.get("mode")
+                if new_mode not in ("ffa", "2v2"):
+                    continue
+                room.mode = new_mode
+                if new_mode == "2v2":
+                    room.assign_teams()
+                else:
+                    for p in room.players.values():
+                        p.team = None
+                await room.broadcast_lobby()
+
             elif mtype == "start_game":
                 if not room or not player or not player.host:
                     continue
@@ -5009,6 +6373,13 @@ async def handle_client(ws):
                 if len(room.players) < MIN_PLAYERS:
                     await send_error(ws, f"Servono almeno {MIN_PLAYERS} giocatori.")
                     continue
+                if room.mode == "2v2":
+                    if len(room.players) != 4:
+                        await send_error(ws, "La modalita' 2v2 richiede esattamente 4 giocatori.")
+                        continue
+                    # Squadre e colori automatici, ricalcolati un'ultima
+                    # volta sull'ordine definitivo dei presenti.
+                    room.assign_teams()
                 if any(not p.colors for p in room.players.values()):
                     await send_error(ws, "Tutti i giocatori devono scegliere un colore.")
                     continue
@@ -5019,6 +6390,13 @@ async def handle_client(ws):
                     continue
                 direction = msg.get("direction")
                 if direction in DIRECTIONS:
+                    if player.airstrike_aiming:
+                        # Attacco aereo (bonus 4000 punti): mentre il
+                        # giocatore mira e' IMMOBILE, e le frecce su/giu'
+                        # spostano il mirino di fila in fila invece di
+                        # muovere il personaggio (vedi airstrike_adjust).
+                        room.airstrike_adjust(player, direction)
+                        continue
                     # Invece di limitarsi ad accodare la direzione nella
                     # posizione ATTUALE (gia' "nel futuro" per via del
                     # ritardo di rete del pacchetto), si compensa la
@@ -5182,7 +6560,76 @@ async def handle_client(ws):
                                     # VERO ultimo gradino della catena.
                                     if player.bush_placed:
                                         if player.mushroom_placed:
-                                            room.try_activate_occult_tesla(player)
+                                            # Fungo gia' piazzato: tocca
+                                            # alla Tesla occulta (3200) e,
+                                            # una volta usata - oppure
+                                            # diventata IMPOSSIBILE per
+                                            # sempre (Tesla gia' distrutta
+                                            # prima del potenziamento) -,
+                                            # la stessa pressione gestisce
+                                            # infine la pozione terremoto
+                                            # (bonus 3400 punti, vedi
+                                            # try_use_potion: prima
+                                            # pressione = mira, seconda =
+                                            # lancio).
+                                            tesla_alive = any(
+                                                t["owner"] == player.id
+                                                for t in room.teslas
+                                            )
+                                            occult_step_done = (
+                                                player.occult_tesla_used
+                                                or (player.has_occult_tesla and not tesla_alive)
+                                            )
+                                            if occult_step_done:
+                                                # Pozione gia' lanciata: la
+                                                # stessa pressione piazza
+                                                # infine il golem
+                                                # spaccapietra (bonus 3600
+                                                # punti, vedi
+                                                # try_place_golem), nuovo,
+                                                # VERO ultimo gradino.
+                                                if player.potion_used:
+                                                    # Golem gia' piazzato:
+                                                    # la stessa pressione
+                                                    # trasforma infine il
+                                                    # fungo madre (bonus
+                                                    # 3800 punti, vedi
+                                                    # try_activate_mega_mushroom),
+                                                    # nuovo, VERO ultimo
+                                                    # gradino.
+                                                    if player.golem_placed:
+                                                        # Fungo madre gia'
+                                                        # trasformato - o
+                                                        # impossibile per
+                                                        # sempre (madre gia'
+                                                        # distrutta): la
+                                                        # stessa pressione
+                                                        # gestisce infine
+                                                        # l'attacco aereo
+                                                        # (bonus 4000 punti,
+                                                        # vedi
+                                                        # try_use_airstrike:
+                                                        # 1a pressione =
+                                                        # mirino, 2a =
+                                                        # attacco).
+                                                        mother_alive = any(
+                                                            mm["owner"] == player.id and mm.get("spawner")
+                                                            for mm in room.mushrooms
+                                                        )
+                                                        mega_step_done = (
+                                                            player.mega_mushroom_used
+                                                            or (player.has_mega_mushroom and not mother_alive)
+                                                        )
+                                                        if mega_step_done:
+                                                            room.try_use_airstrike(player)
+                                                        else:
+                                                            room.try_activate_mega_mushroom(player)
+                                                    else:
+                                                        room.try_place_golem(player)
+                                                else:
+                                                    room.try_use_potion(player)
+                                            else:
+                                                room.try_activate_occult_tesla(player)
                                         else:
                                             room.try_place_mushroom(player)
                                     else:

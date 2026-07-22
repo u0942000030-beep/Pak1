@@ -457,6 +457,111 @@ OCCULT_TESLA_THRESHOLD = 3200
 OCCULT_TESLA_ATTACK_SECONDS = 8.0          # durata di ogni fase "in superficie", a fulminare come al solito
 OCCULT_TESLA_HIDDEN_SECONDS = 1.0          # durata di ogni fase "sottoterra", invisibile e inattiva
 OCCULT_TESLA_TELEPORT_DISTANCE_CELLS = 10  # distanza (Manhattan) esatta a cui riemerge rispetto a dove si trovava
+
+# ---- bonus 3400 punti: pozione terremoto (tasto "1", DOPO la Tesla occulta) ----
+# Nuovo, vero ultimo gradino della catena del tasto "1", 200 punti dopo la
+# Tesla occulta (3200). Una boccetta di pozione QUADRATA che si usa in due
+# tempi (vedi try_use_potion in main.py):
+#   1) PRIMA pressione del tasto "1" (a fine catena): si entra in modalita'
+#      mira; il client mostra un mirino (stile spunzoni dal pavimento) a
+#      POTION_THROW_RANGE_CELLS caselle davanti al giocatore, nella
+#      direzione in cui sta guardando, cosi' si vede DOVE si sta puntando.
+#   2) SECONDA pressione: la boccetta viene LANCIATA verso quel punto,
+#      volando SOPRA i muri (come le bombe di mortaio, mai bloccata dal
+#      labirinto). L'effetto parte esattamente nel punto d'impatto:
+#      un TERREMOTO circolare (stesso raggio del bombolone,
+#      POTION_RADIUS_CELLS, distanza Manhattan) che resta attivo per
+#      POTION_EFFECT_SECONDS: il client disegna il cerchio del raggio
+#      d'azione a terra con crepe animate (terra che si spacca), nel COLORE
+#      del giocatore che l'ha lanciata. Per tutta la durata:
+#        - i giocatori dentro il cerchio sono RALLENTATI del 50%
+#          (POTION_SLOW_MULT, vedi quake_slow_mult in main.py);
+#        - TUTTE le strutture e i gadget dentro il cerchio (proprio tutte,
+#          anche quelle del proprietario) vengono DISTRUTTE dal terremoto
+#          (vedi quake_destroy in main.py): mine, torrette/robot, mortai,
+#          pet, bomboloni (esplosione a catena), mongolfiere (sgancio a
+#          catena), blob, muri di spunzoni, Tesla (tranne quelle occulte
+#          sottoterra in quel momento), arbusti e funghi atomici.
+# Come gli altri gradini della catena, e' consumata UNA SOLA VOLTA per
+# giocatore per round (vedi Player.potion_used).
+POTION_THRESHOLD = 3400
+POTION_THROW_RANGE_CELLS = 5     # distanza (caselle) del lancio, oltre i muri
+POTION_RADIUS_CELLS = SUPERBOMB_RADIUS_CELLS  # stesso raggio del bombolone
+POTION_EFFECT_SECONDS = 5.0      # durata del terremoto a terra
+POTION_SLOW_MULT = 0.5           # rallentamento dei giocatori dentro il cerchio (-50%)
+
+# ---- bonus 3600 punti: golem spaccapietra (tasto "1", DOPO la pozione terremoto) ----
+# Nuovo, vero ultimo gradino della catena del tasto "1", 200 punti dopo la
+# pozione terremoto (3400). Un GROSSO golem di pietra (stile mostro
+# roccioso di Clash of Clans: corpo grigio scuro con placche piu' chiare,
+# ma occhi e gemme sulla schiena nel COLORE di chi lo piazza), affamato di
+# oggetti. Piazzato nella cella corrente del giocatore, DORME per
+# GOLEM_WAKE_SECONDS (30 secondi); una volta sveglio vaga a caso per tutta
+# la mappa (via bfs_path, mai attraverso i muri) a GOLEM_SPEED celle al
+# secondo, MANGIANDO ogni genere di gadget AVVERSARIO che trova a portata
+# (GOLEM_EAT_RANGE_CELLS, distanza a scacchi): mine, torrette/robot,
+# mortai, pet, bomboloni (li ingoia SENZA farli esplodere), blob, muri di
+# spunzoni, Tesla (tranne quelle occulte sottoterra), arbusti (potati) e
+# funghi atomici (senza innescarli). NON uccide i giocatori: li BLOCCA
+# come un muro, ostruendo il passaggio (solo il proprietario lo
+# attraversa). Ha una barra della vita sopra la testa: per ucciderlo
+# servono GOLEM_HP colpi in totale, con QUALSIASI arma (laser, missile,
+# fulmine di Tesla, esplosioni di bombolone/mongolfiera/fungo, impatto di
+# mortaio: una vita a colpo); il VELENO invece gli toglie una vita al
+# secondo finche' ci resta dentro (GOLEM_POISON_TICK_SECONDS), e lo stesso
+# vale per il terremoto della pozione.
+GOLEM_THRESHOLD = 3600
+GOLEM_HP = 15                    # colpi totali necessari per abbatterlo
+GOLEM_WAKE_SECONDS = 30.0        # dorme cosi' a lungo dopo il piazzamento
+GOLEM_SPEED = 0.5                # celle al secondo (lento, e' un macigno)
+GOLEM_EAT_RANGE_CELLS = 1        # distanza (a scacchi/Chebyshev) a cui divora i gadget
+GOLEM_POISON_TICK_SECONDS = 1.0  # il veleno (e il terremoto) gli tolgono una vita al secondo
+
+# ---- bonus 3800 punti: fungo madre magnetico (tasto "1", DOPO il golem) ----
+# Nuovo, vero ultimo gradino della catena del tasto "1". NON piazza nulla
+# di nuovo: e' un POTENZIAMENTO che si applica al fungo atomico MADRE (il
+# "generatore" originale del bonus 3000 punti, vedi try_place_mushroom),
+# SE E SOLO SE e' ancora vivo (non calpestato/distrutto). Alla pressione
+# del tasto "1" (vedi try_activate_mega_mushroom in main.py) il fungo
+# madre si TRASFORMA: diventa alto quanto una Tesla, VISIBILE A TUTTI
+# (niente piu' occultamento a 3 caselle), smette di generare altri funghi
+# e di esplodere se calpestato, e diventa una vera e propria arma: emette
+# onde elettromagnetiche APPENA VISIBILI per MEGA_MUSHROOM_RANGE_CELLS
+# caselle che, come un BUCO NERO, attirano verso di lui tutto cio' che e'
+# nemico:
+#   - i GIOCATORI avversari nel raggio vengono trascinati lungo i
+#     corridoi verso il fungo (le onde pilotano il loro movimento) e
+#     UCCISI AL CONTATTO (solo ghost e protezione post-respawn salvano);
+#   - i GADGET avversari nel raggio vengono risucchiati e INGHIOTTITI
+#     (bomboloni e funghi senza esplodere, mongolfiere senza sganciare);
+#   - i GOLEM avversari, troppo pesanti per essere inghiottiti, subiscono
+#     una vita al secondo finche' restano nel raggio (come col veleno).
+# Come gli altri gradini, e' consumato UNA SOLA VOLTA per round.
+MEGA_MUSHROOM_THRESHOLD = 3800
+MEGA_MUSHROOM_RANGE_CELLS = 3     # raggio delle onde elettromagnetiche (distanza Manhattan)
+MEGA_MUSHROOM_KILL_RANGE = 0.8    # distanza (per asse) sotto la quale il contatto e' letale
+MEGA_MUSHROOM_GOLEM_TICK_SECONDS = 1.0  # danno ai golem nel raggio: una vita al secondo
+
+# ---- bonus 4000 punti: attacco aereo (tasto "1", DOPO il fungo madre magnetico) ----
+# Nuovo, vero ultimo gradino della catena del tasto "1". Si usa in DUE
+# tempi (vedi try_use_airstrike in main.py):
+#   1) PRIMA pressione: il giocatore diventa IMMOBILE e TOTALMENTE NERO
+#      ed entra in modalita' selezione della fila. Il MIRINO e' il muro
+#      perimetrale SINISTRO della fila scelta (si parte dal primo muro in
+#      basso a sinistra) e si sposta su/giu' con le frecce (il server
+#      reinterpreta i normali messaggi "move", vedi airstrike_adjust).
+#   2) SECONDA pressione: parte il VERO attacco. Un aereo nel colore del
+#      giocatore, col teschio della mongolfiera dipinto sulla fusoliera,
+#      attraversa TUTTA la fila da sinistra verso destra bombardando
+#      dall'alto verso il basso: elimina OGNI cosa nemica su quella fila
+#      (giocatori - ghost e protezione post-respawn esclusi - mine,
+#      torrette/robot, mortai, pet, bomboloni ed esplosioni a catena,
+#      mongolfiere, blob, muri di spunzoni, Tesla non occulte-sottoterra,
+#      arbusti potati, funghi senza innescarli; i golem, come sempre,
+#      incassano un colpo). Le cose del giocatore restano illese, e in
+#      2v2 anche quelle dei compagni (niente fuoco amico).
+AIRSTRIKE_THRESHOLD = 4000
+AIRSTRIKE_SPEED = 10.0   # celle al secondo percorse dall'aereo lungo la fila
 BLOB_POISON_DURATION_SECONDS = 4.0                # quanto resta a terra ciascuna nuvola della scia del blob vivo
 BLOB_EAT_RANGE_CELLS = 1                          # distanza (caselle, stile scacchi/Chebyshev): il blob mangia anche chi non e' esattamente sopra di lui, ma solo adiacente
 
@@ -792,17 +897,71 @@ MAZES = [
         "theme": {'wall': '#0a0a3a', 'edge': '#5b6bff', 'glow': '#a6b0ff', 'pellet': '#e6e9ff', 'bg': '#020214', 'fx': 'stars', 'decor': 'stardust'},
     },
 ]
+EXTRA_LANES_PER_SIDE = 2  # mappe allargate: 2 nuove corsie di corridoio su OGNI lato
+
+
+def expand_maze(rows, lanes=EXTRA_LANES_PER_SIDE):
+    """Allarga una mappa di 'lanes' corsie su OGNI lato CONTINUANDO la
+    logica del labirinto, senza anelli vuoti: le nuove corsie sono la
+    RIFLESSIONE del disegno del labirinto stesso (le prime/ultime righe e
+    colonne interne, specchiate verso l'esterno), quindi muri e corridoi
+    proseguono lo stesso pattern della mappa originale. La riflessione
+    garantisce anche il collegamento: ogni corridoio che tocca il vecchio
+    bordo continua nel suo specchio, esattamente come faceva all'interno.
+    In piu' vengono scavati due brevi passaggi d'angolo verso (1,1) e
+    (w-2,h-2), le celle-sede dei portali diagonali, che devono restare
+    aperte come nelle mappe originali. La mappa cresce di 2*lanes celle
+    in larghezza e altezza."""
+    inner = [r[1:-1] for r in rows[1:-1]]      # il labirinto senza il vecchio bordo
+
+    # Riflessione ORIZZONTALE: ogni riga viene estesa a sinistra e a
+    # destra con lo specchio delle proprie prime/ultime 'lanes' colonne.
+    def pad_row(r):
+        return r[:lanes][::-1] + r + r[-lanes:][::-1]
+
+    padded = [pad_row(r) for r in inner]
+    # Riflessione VERTICALE: sopra e sotto si aggiungono gli specchi delle
+    # prime/ultime 'lanes' righe (gia' estese in orizzontale), in ordine
+    # rovesciato cosi' la riga adiacente al labirinto e' il suo specchio.
+    top = [padded[i] for i in range(lanes)][::-1]
+    bottom = [padded[-1 - i] for i in range(lanes)]
+    core = top + padded + bottom
+
+    new_w = len(core[0]) + 2
+    out = ["#" * new_w] + ["#" + r + "#" for r in core] + ["#" * new_w]
+
+    # Le celle (1,1) e (w-2,h-2) DEVONO restare aperte (sede dei portali
+    # diagonali, come nelle mappe originali): si scava un breve passaggio
+    # d'angolo che le collega alle vecchie celle d'angolo del labirinto -
+    # (1,1) e (w-2,h-2) originali, garantite aperte - traslate di 'lanes'.
+    grid = [list(r) for r in out]
+    h = len(grid)
+    w = new_w
+    for x in range(1, lanes + 2):
+        grid[1][x] = "."                        # tratto orizzontale in alto a sinistra
+    for y in range(1, lanes + 2):
+        grid[y][lanes + 1] = "."                # tratto verticale fino alla vecchia (1,1)
+    for x in range(w - lanes - 3, w - 1):
+        grid[h - 2][x] = "."                    # tratto orizzontale in basso a destra
+    for y in range(h - lanes - 3, h - 1):
+        grid[y][w - lanes - 2] = "."            # tratto verticale fino alla vecchia (w-2,h-2)
+    return ["".join(r) for r in grid]
+
+
 def pick_random_maze():
-    """Sceglie casualmente una delle 10 mappe. Ritorna un dict con
+    """Sceglie casualmente una delle 10 mappe e la ALLARGA di
+    EXTRA_LANES_PER_SIDE corsie per lato (vedi expand_maze); gli spawn
+    point vengono traslati di conseguenza. Ritorna un dict con
     maze/w/h/spawn_points/theme/name pronto da assegnare a una Room."""
     m = random.choice(MAZES)
-    rows = m["maze"]
+    lanes = EXTRA_LANES_PER_SIDE
+    rows = expand_maze(m["maze"], lanes)
     return {
         "name": m["name"],
         "maze": rows,
         "w": len(rows[0]),
         "h": len(rows),
-        "spawn_points": m["spawn_points"],
+        "spawn_points": [[x + lanes, y + lanes] for x, y in m["spawn_points"]],
         "theme": m["theme"],
     }
 
