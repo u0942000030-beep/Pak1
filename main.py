@@ -5036,33 +5036,47 @@ class Room:
                 g["wander_target"] = random.choice(self.free_cells)
                 g["hunting"] = False
 
-            g["move_accum"] = g.get("move_accum", 0.0) + GOLEM_SPEED * TICK_DT
-            g["next_cell"] = None
-            while g["move_accum"] >= 1.0:
-                goal = g.get("wander_target")
-                if goal is None or (g["x"], g["y"]) == goal:
-                    if not g.get("hunting"):
-                        # Vagabondaggio a caso: raggiunta la meta, sceglie
-                        # subito la prossima cella libera a caso.
-                        g["wander_target"] = random.choice(self.free_cells)
-                        continue
-                    break
-                nxt = self.flow_cache.next_step((g["x"], g["y"]), goal, self.perf_tick)
-                if nxt is None:
-                    break
-                nx, ny = nxt
+            # ---- pianificazione E movimento -------------------------------
+            # PRIMA bacata: il "next_cell" (usato da golem_public per
+            # l'interpolazione lato client) veniva calcolato solo nell'
+            # istante stesso in cui il golem finiva di attraversare la
+            # cella, e "x"/"y" diventavano gia' quella cella nello stesso
+            # momento: partenza e arrivo coincidevano sempre, quindi il
+            # client non aveva NIENTE da interpolare per ~2 secondi (a
+            # GOLEM_SPEED=0.5 celle/sec) e poi vedeva un salto secco alla
+            # cella dopo. Ora la prossima cella si pianifica IN ANTICIPO,
+            # appena il golem riparte, e resta "next_cell" per tutta la
+            # durata del tragitto: golem_public puo' quindi interpolare
+            # con continuita' lungo l'intero movimento.
+            goal = g.get("wander_target")
+            if g.get("next_cell") is None:
+                if goal is not None and (g["x"], g["y"]) == goal and not g.get("hunting"):
+                    # Vagabondaggio a caso: raggiunta la meta, sceglie
+                    # subito la prossima cella libera a caso.
+                    g["wander_target"] = goal = random.choice(self.free_cells)
+                if goal is not None and (g["x"], g["y"]) != goal:
+                    nxt = self.flow_cache.next_step((g["x"], g["y"]), goal, self.perf_tick)
+                    if nxt is not None:
+                        g["next_cell"] = nxt
+
+            if g.get("next_cell") is not None:
                 blocked_by_player = any(
-                    q.alive for q in self.player_grid.at_cell(nx, ny)
+                    q.alive for q in self.player_grid.at_cell(*g["next_cell"])
                 )
                 if blocked_by_player:
-                    # Blocca i giocatori come un muro, ma non gli cammina
-                    # addosso: aspetta senza rifare alcun ricalcolo pesante,
-                    # al prossimo tick la query costera' comunque O(1).
-                    g["move_accum"] = 0.0
-                    break
-                g["move_accum"] -= 1.0
-                g["next_cell"] = nxt
-                g["x"], g["y"] = nx, ny
+                    # Blocca i giocatori come un muro: aspetta fermo SENZA
+                    # scartare il tragitto gia' pianificato, cosi' riprende
+                    # non appena la cella si libera (niente ricalcoli
+                    # pesanti, niente scatti quando il giocatore si sposta).
+                    pass
+                else:
+                    g["move_accum"] = g.get("move_accum", 0.0) + GOLEM_SPEED * TICK_DT
+                    if g["move_accum"] >= 1.0:
+                        g["move_accum"] -= 1.0
+                        g["x"], g["y"] = g["next_cell"]
+                        g["next_cell"] = None
+            else:
+                g["move_accum"] = 0.0
 
             # ---- pasto ----
             eaten_now = self.golem_eat(g)
@@ -5073,6 +5087,7 @@ class Room:
                 # giro nearest_golem_target ne trova subito un altro (o
                 # None, nel qual caso si torna a vagare a caso).
                 g["wander_target"] = None
+                g["next_cell"] = None
                 g["move_accum"] = 0.0
 
             # ---- veleno avversario: una vita al secondo ----
