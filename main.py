@@ -45,6 +45,7 @@ from common import (
     MAX_PLAYERS, MIN_PLAYERS, NORMAL_SPEED, ASSASSIN_SPEED_MULT,
     COLORS, CHARACTERS, DIRECTIONS, is_wall, ROOM_CODE_CHARS, SECONDARY_ONLY_COLORS,
     pick_random_maze, choose_power_pellet_cells, bfs_path,
+    FlowFieldCache, SpatialGrid,
     BONUS_THRESHOLDS, GHOST_SECONDS,
     PELLET_POINTS, POWER_PELLET_POINTS, POWER_PELLET_COUNT,
     PELLET_RESPAWN_SECONDS, MEGA_PELLET_POINTS, MEGA_PELLET_INTERVAL_SECONDS, SUPER_ASSASSIN_THRESHOLD,
@@ -91,6 +92,7 @@ from common import (
     RTT_PING_INTERVAL_SECONDS, RTT_DEFAULT_SECONDS,
     REWIND_MAX_SECONDS, REWIND_HISTORY_SECONDS,
     RECONNECT_GRACE_SECONDS,
+    LOBBY_IDLE_TIMEOUT_SECONDS,
 )
 import math
 import time
@@ -489,6 +491,24 @@ class Room:
         self.timer_left = 0.0
         self.loop_task = None
         self.last_result = None
+        # Timestamp (time.monotonic()) dell'ultima azione di lobby
+        # rilevante (creazione, join, scelta colore/personaggio, cambio
+        # modalita', o ritorno in LOBBY a fine round): usato solo da
+        # _lobby_watchdog per capire se la stanza e' davvero abbandonata o
+        # se qualcuno la sta ancora usando attivamente. Vedi touch_lobby().
+        self.lobby_touched_at = time.monotonic()
+        self.lobby_watchdog_task = None
+        # Contatore di tick "logico" usato come chiave di invalidazione per
+        # FlowFieldCache (vedi pick_new_map) e per sapere quando rifare il
+        # rebuild di self.player_grid: incrementato una volta a inizio di
+        # ogni giro del loop di gioco in run_round.
+        self.perf_tick = 0
+        # Griglia spaziale dei giocatori (spatial hashing): ricostruita una
+        # volta per tick in run_round e usata per rispondere in O(1) alle
+        # query "chi e' esattamente su questa cella?" (es. impatto laser),
+        # invece di scandire self.players.values() ad ogni singolo colpo/
+        # passo di ogni proiettile/entita' del tick.
+        self.player_grid = SpatialGrid()
         # Contatore dei tick di gioco, usato per limitare la frequenza di
         # invio dello stato COMPLETO (vedi STATE_BROADCAST_EVERY_N_TICKS in
         # common.py): il movimento/la logica restano a TICK_HZ pieno, ma lo
@@ -584,6 +604,11 @@ class Room:
         self.maze_w = map_data["w"]
         self.maze_h = map_data["h"]
         self.maze_name = map_data["name"]
+        # I muri sono statici per tutto il round: il flow field (Dijkstra
+        # map) verso un dato obiettivo dipende solo da loro, quindi la
+        # cache va rigenerata da zero SOLO quando cambia la mappa, non ad
+        # ogni tick (vedi FlowFieldCache in common.py e update_golems).
+        self.flow_cache = FlowFieldCache(self.maze, self.maze_w, self.maze_h)
         self.spawn_points = map_data["spawn_points"]
         self.theme = map_data["theme"]
         self.compute_portals()
@@ -686,6 +711,128 @@ class Room:
     def add_player(self, player):
         player.host = (len(self.players) == 0)
         self.players[player.id] = player
+        self.touch_lobby()
+
+    def touch_lobby(self):
+        """Segna un'azione di lobby appena avvenuta (creazione stanza,
+        join, scelta colore/personaggio, cambio modalita', ritorno in
+        LOBBY a fine round): resetta il conto alla rovescia del watchdog
+        di inattivita' (vedi _lobby_watchdog). Chiamarla anche se la
+        stanza non e' in LOBBY in questo momento non fa danno: il
+        watchdog controlla comunque lo stato prima di agire."""
+        self.lobby_touched_at = time.monotonic()
+
+    async def _lobby_watchdog(self):
+        """Chiude d'ufficio una stanza rimasta in LOBBY senza che nessuno
+        la tocchi per LOBBY_IDLE_TIMEOUT_SECONDS (vedi common.py): una
+        stanza creata e poi dimenticata (tab lasciata aperta, nessuno
+        preme mai "Avvia partita") altrimenti resterebbe viva per sempre,
+        dato che nessun timer di gioco la riguarda finche' resta in
+        LOBBY - a differenza di COUNTDOWN/PLAYING, che hanno gia' i loro
+        timer (countdown, durata round) e _grace_expire per i singoli
+        giocatori disconnessi.
+
+        Un solo task per stanza, avviato dall'handler "create_room" subito
+        dopo la creazione della Room (e poi da reset_to_lobby ogni volta
+        che si ritorna in LOBBY a fine round): ad ogni giro dorme fino al momento in cui l'inattivita' corrente
+        raggiungerebbe la soglia, poi ricontrolla se nel frattempo
+        qualcosa ha "ritoccato" la lobby (touch_lobby, che sposta in
+        avanti self.lobby_touched_at) - in tal caso si riaddormenta per
+        il nuovo tempo residuo, esattamente come un timer che si
+        riavvolge. Esce silenziosamente, senza pianificare altro, appena
+        la stanza non e' piu' in LOBBY (una partita e' partita: sara'
+        reset_to_lobby a farne ripartire uno nuovo quando si ritorna in
+        LOBBY a fine round). Se l'inattivita' raggiunge davvero la soglia
+        piena, la stanza viene chiusa per davvero: tutti i websocket
+        ancora aperti vengono avvisati con un messaggio dedicato e poi
+        chiusi, e la stanza viene tolta da ROOMS."""
+        while True:
+            if self.state != "LOBBY":
+                return
+            remaining = LOBBY_IDLE_TIMEOUT_SECONDS - (time.monotonic() - self.lobby_touched_at)
+            if remaining > 0:
+                await asyncio.sleep(remaining)
+                continue
+            for p in list(self.players.values()):
+                try:
+                    await send_error(p.ws, "Stanza chiusa per inattivita'.", session_invalid=True)
+                except websockets.exceptions.ConnectionClosed:
+                    pass
+                try:
+                    await p.ws.close()
+                except websockets.exceptions.ConnectionClosed:
+                    pass
+            ROOMS.pop(self.code, None)
+            return
+
+    def _purge_owned_structures(self, pid):
+        """Rimuove TUTTO cio' che il giocatore 'pid' aveva piazzato in
+        campo (torrette, mortai, mine, superbombe, tesla, blob, muri di
+        spunzoni, arbusti) quando lascia la stanza per sempre (vedi
+        _grace_expire, subito sotto).
+
+        Senza questa pulizia, quelle strutture restavano "orfane" ma
+        PIENAMENTE ATTIVE per sempre: is_enemy_ids/hostile_exclude, non
+        trovando piu' il proprietario in self.players, le trattavano come
+        ostili verso chiunque (comportamento corretto e voluto per un
+        giocatore ancora in vita ma temporaneamente non owner di qualcosa
+        - vedi commenti li' - ma qui il proprietario non torna piu', quindi
+        una torretta avrebbe continuato a sparare all'infinito senza che
+        nessuno potesse mai distruggerla in risposta). E' l'equivalente
+        server-side del leak gia' corretto lato client in remoteSim/
+        lastServerPos: qui pero' non e' solo memoria sprecata, e' un
+        oggetto che resta attivo in partita senza un proprietario.
+
+        I pet erano gia' gestiti a parte (vedi kill_player): qui li
+        includiamo anche per il caso di disconnessione definitiva, che
+        prima non passava da li'."""
+        removed_turrets = [t for t in self.turrets if t["owner"] == pid]
+        self.turrets = [t for t in self.turrets if t["owner"] != pid]
+        for t in removed_turrets:
+            self.push_event({"kind": "turret_destroyed", "id": t["id"]})
+
+        removed_mortars = [mt for mt in self.mortars if mt["owner"] == pid]
+        self.mortars = [mt for mt in self.mortars if mt["owner"] != pid]
+        for mt in removed_mortars:
+            self.push_event({"kind": "mortar_destroyed", "id": mt["id"]})
+
+        removed_mines = [m for m in self.mines if m["owner"] == pid]
+        self.mines = [m for m in self.mines if m["owner"] != pid]
+        for m in removed_mines:
+            self.push_event({"kind": "mine_destroyed", "id": m["id"]})
+
+        removed_bombs = [b for b in self.superbombs if b["owner"] == pid]
+        self.superbombs = [b for b in self.superbombs if b["owner"] != pid]
+        # Nessun evento dedicato: le superbombe (a differenza di torrette/
+        # mortai/tesla/blob/muri/arbusti) vengono gia' lette dal client
+        # direttamente da currSnapshot.superbombs ad ogni frame (vedi
+        # drawSuperbombs in index.html), quindi la sola rimozione dalla
+        # lista qui sopra basta a farle sparire al prossimo snapshot.
+
+        removed_teslas = [t for t in self.teslas if t["owner"] == pid]
+        self.teslas = [t for t in self.teslas if t["owner"] != pid]
+        for t in removed_teslas:
+            self.push_event({"kind": "tesla_destroyed", "id": t["id"]})
+
+        removed_blobs = [b for b in self.blobs if b["owner"] == pid]
+        self.blobs = [b for b in self.blobs if b["owner"] != pid]
+        for b in removed_blobs:
+            self.push_event({"kind": "blob_destroyed", "id": b["id"], "x": b["x"], "y": b["y"]})
+
+        removed_walls = [w for w in self.spike_walls if w["owner"] == pid]
+        self.spike_walls = [w for w in self.spike_walls if w["owner"] != pid]
+        for w in removed_walls:
+            self.push_event({"kind": "spike_wall_expired", "id": w["id"], "x": w["x"], "y": w["y"]})
+
+        removed_bushes = [b for b in self.bushes if b["owner"] == pid]
+        self.bushes = [b for b in self.bushes if b["owner"] != pid]
+        for b in removed_bushes:
+            self.push_event({"kind": "bush_destroyed", "id": b["id"]})
+
+        removed_pets = [pt for pt in self.pets if pt["owner"] == pid]
+        self.pets = [pt for pt in self.pets if pt["owner"] != pid]
+        for pt in removed_pets:
+            self.push_event({"kind": "pet_destroyed", "id": pt["id"]})
 
     async def _grace_expire(self, pid, stale_ws):
         """Rimozione DEFINITIVA di un giocatore disconnesso, ma solo dopo
@@ -700,9 +847,12 @@ class Room:
         if player is None or player.ws is not stale_ws or player.connected:
             return
         was_host = player.host
+        self._purge_owned_structures(pid)
         self.players.pop(pid, None)
         if not self.players:
             ROOMS.pop(self.code, None)
+            if self.lobby_watchdog_task is not None:
+                self.lobby_watchdog_task.cancel()
             return
         if was_host:
             new_host = next(iter(self.players.values()))
@@ -2142,8 +2292,8 @@ class Room:
                 if lz["bounce_left"] is not None:
                     lz["bounce_left"] -= 1
                 victims = [
-                    q for q in self.players.values()
-                    if q.alive and self.is_enemy_ids(q.id, lz["owner"]) and q.x == nx and q.y == ny
+                    q for q in self.player_grid.at_cell(nx, ny)
+                    if q.alive and self.is_enemy_ids(q.id, lz["owner"])
                     and q.ghost_left <= 0 and q.prot_left <= 0
                 ]
                 if victims:
@@ -4585,7 +4735,9 @@ class Room:
             "hp": GOLEM_HP,
             "awake": False,
             "wake_left": GOLEM_WAKE_SECONDS,
-            "wander_path": [],
+            "wander_target": None,  # cella-goal corrente (caccia o vagabondaggio)
+            "hunting": False,
+            "next_cell": None,      # prossima cella, per l'interpolazione client (vedi golem_public)
             "move_accum": 0.0,
             "poison_cd": 0.0,   # cadenza del danno da veleno (1 vita/sec)
             "quake_cd": 0.0,    # cadenza del danno da terremoto (1 vita/sec)
@@ -4603,8 +4755,8 @@ class Room:
         cella in cella. gx/gy restano la cella-griglia autoritativa, usata
         dal client per replicare il blocco del passaggio in predizione."""
         fx, fy = float(g["x"]), float(g["y"])
-        if g["awake"] and g.get("wander_path"):
-            nx, ny = g["wander_path"][0]
+        if g["awake"] and g.get("next_cell"):
+            nx, ny = g["next_cell"]
             a = min(0.999, max(0.0, g.get("move_accum", 0.0)))
             fx = g["x"] + (nx - g["x"]) * a
             fy = g["y"] + (ny - g["y"]) * a
@@ -4866,30 +5018,50 @@ class Room:
             # Finche' c'e' un gadget nemico sulla mappa il golem gli punta
             # dritto contro (uno alla volta, sempre il piu' vicino); solo
             # se non ce n'e' piu' nessuno torna a vagare a caso.
-            if not g.get("wander_path"):
-                hunt_target = self.nearest_golem_target(g)
-                path = None
-                if hunt_target is not None:
-                    path = bfs_path(self.maze, self.maze_w, self.maze_h, (g["x"], g["y"]), hunt_target)
-                if not path:
-                    target = random.choice(self.free_cells)
-                    path = bfs_path(self.maze, self.maze_w, self.maze_h, (g["x"], g["y"]), target)
-                g["wander_path"] = path or []
+            #
+            # A differenza di prima (bfs_path completo ogni volta che il
+            # percorso si svuota, il che capitava OGNI TICK se un
+            # giocatore bloccava la strada) qui si ricalcola solo il
+            # bersaglio "logico" (cella goal), mentre il prossimo passo
+            # verso quel goal viene letto in O(1) dal FlowFieldCache della
+            # stanza (vedi Room.pick_new_map/self.flow_cache): il campo
+            # di distanza verso un dato goal si costruisce una volta sola
+            # per tick anche se piu' golem/pet/robot puntano allo stesso
+            # bersaglio, e resta valido finche' il goal non cambia.
+            hunt_target = self.nearest_golem_target(g)
+            if hunt_target is not None:
+                g["wander_target"] = hunt_target
+                g["hunting"] = True
+            elif not g.get("hunting") and g.get("wander_target") is None:
+                g["wander_target"] = random.choice(self.free_cells)
+                g["hunting"] = False
+
             g["move_accum"] = g.get("move_accum", 0.0) + GOLEM_SPEED * TICK_DT
-            while g["move_accum"] >= 1.0 and g["wander_path"]:
-                nx, ny = g["wander_path"][0]
+            g["next_cell"] = None
+            while g["move_accum"] >= 1.0:
+                goal = g.get("wander_target")
+                if goal is None or (g["x"], g["y"]) == goal:
+                    if not g.get("hunting"):
+                        # Vagabondaggio a caso: raggiunta la meta, sceglie
+                        # subito la prossima cella libera a caso.
+                        g["wander_target"] = random.choice(self.free_cells)
+                        continue
+                    break
+                nxt = self.flow_cache.next_step((g["x"], g["y"]), goal, self.perf_tick)
+                if nxt is None:
+                    break
+                nx, ny = nxt
                 blocked_by_player = any(
-                    q.alive and q.x == nx and q.y == ny
-                    for q in self.players.values()
+                    q.alive for q in self.player_grid.at_cell(nx, ny)
                 )
                 if blocked_by_player:
                     # Blocca i giocatori come un muro, ma non gli cammina
-                    # addosso: aspetta (e al prossimo giro ripianifica).
-                    g["wander_path"] = []
+                    # addosso: aspetta senza rifare alcun ricalcolo pesante,
+                    # al prossimo tick la query costera' comunque O(1).
                     g["move_accum"] = 0.0
                     break
                 g["move_accum"] -= 1.0
-                g["wander_path"].pop(0)
+                g["next_cell"] = nxt
                 g["x"], g["y"] = nx, ny
 
             # ---- pasto ----
@@ -4897,10 +5069,10 @@ class Room:
             if g not in self.golems:
                 continue  # (per sicurezza: il pasto non lo uccide mai, ma non si sa mai)
             if eaten_now:
-                # Il bersaglio appena divorato non c'e' piu': ripianifica
-                # subito verso il prossimo gadget nemico piu' vicino,
-                # invece di continuare a seguire il vecchio percorso.
-                g["wander_path"] = []
+                # Il bersaglio appena divorato non c'e' piu': al prossimo
+                # giro nearest_golem_target ne trova subito un altro (o
+                # None, nel qual caso si torna a vagare a caso).
+                g["wander_target"] = None
                 g["move_accum"] = 0.0
 
             # ---- veleno avversario: una vita al secondo ----
@@ -6135,6 +6307,12 @@ class Room:
             p.airstrike_used = False
             p.next_lives_milestone = LIVES_EVERY_POINTS
             p.kills = 0
+        # Si torna in LOBBY dopo la fine di un round: il conto alla
+        # rovescia di inattivita' riparte da zero (touch_lobby) e il suo
+        # watchdog, che era uscito da solo quando la partita era iniziata
+        # (vedi _lobby_watchdog), va fatto ripartire.
+        self.touch_lobby()
+        self.lobby_watchdog_task = asyncio.create_task(self._lobby_watchdog())
 
     # ---------- main loop ----------
 
@@ -6154,6 +6332,15 @@ class Room:
             await asyncio.sleep(TICK_DT)
             if not self.players:
                 return
+
+            # Avanza il contatore di tick "logico" (invalida FlowFieldCache
+            # per i goal che sono cambiati) e ricostruisce la griglia
+            # spaziale dei giocatori UNA volta sola per tick: O(numero
+            # giocatori), poi tutte le query per-cella del tick (impatti
+            # laser, ecc.) sono O(1) invece di scandire self.players ogni
+            # volta.
+            self.perf_tick += 1
+            self.player_grid.rebuild(self.players.values())
 
             # Il movimento e' attivo sia in countdown che in gioco: ci si puo'
             # muovere subito, ancora prima che il round entri nel vivo.
@@ -6260,8 +6447,19 @@ def gen_room_code():
             return code
 
 
-async def send_error(ws, message):
-    await ws.send(encode_text({"type": "error", "message": message}))
+async def send_error(ws, message, session_invalid=False):
+    # session_invalid=True SOLO per gli errori di join_room/rejoin: sono i
+    # soli casi in cui il client non ha (o non ha piu') una sessione valida
+    # in questa stanza, quindi e' anche il segnale giusto per fargli
+    # scartare myId/roomCode/sessionStorage lato suo (vedi handleMessage
+    # in index.html) invece di ritentare all'infinito un rejoin destinato
+    # a fallire sempre. Gli altri errori (colore gia' preso, giocatori
+    # insufficienti, ecc.) sono invece benigni: il giocatore e' gia'
+    # regolarmente in lobby e deve restarci.
+    payload = {"type": "error", "message": message}
+    if session_invalid:
+        payload["session_invalid"] = True
+    await ws.send(encode_text(payload))
 
 
 def disable_nagle(ws):
@@ -6302,6 +6500,7 @@ async def handle_client(ws):
                 name = (msg.get("name") or "Player")[:16]
                 room = Room(gen_room_code())
                 ROOMS[room.code] = room
+                room.lobby_watchdog_task = asyncio.create_task(room._lobby_watchdog())
                 player = Player(uuid.uuid4().hex[:8], name, ws)
                 room.add_player(player)
                 await ws.send(encode_text({
@@ -6315,15 +6514,15 @@ async def handle_client(ws):
                 name = (msg.get("name") or "Player")[:16]
                 room = ROOMS.get(code)
                 if room is None:
-                    await send_error(ws, "Codice stanza non trovato.")
+                    await send_error(ws, "Codice stanza non trovato.", session_invalid=True)
                     room = None
                     continue
                 if room.state != "LOBBY":
-                    await send_error(ws, "Partita gia' in corso, riprova piu' tardi.")
+                    await send_error(ws, "Partita gia' in corso, riprova piu' tardi.", session_invalid=True)
                     room = None
                     continue
                 if len(room.players) >= MAX_PLAYERS:
-                    await send_error(ws, "Stanza piena (max 5 giocatori).")
+                    await send_error(ws, "Stanza piena (max 5 giocatori).", session_invalid=True)
                     room = None
                     continue
                 player = Player(uuid.uuid4().hex[:8], name, ws)
@@ -6348,11 +6547,11 @@ async def handle_client(ws):
                 pid = msg.get("player_id") or ""
                 r = ROOMS.get(code)
                 if r is None:
-                    await send_error(ws, "Stanza non trovata: la partita potrebbe essere finita.")
+                    await send_error(ws, "Stanza non trovata: la partita potrebbe essere finita.", session_invalid=True)
                     continue
                 existing = r.players.get(pid)
                 if existing is None:
-                    await send_error(ws, "Non e' piu' possibile rientrare: il posto e' scaduto.")
+                    await send_error(ws, "Non e' piu' possibile rientrare: il posto e' scaduto.", session_invalid=True)
                     continue
                 existing.ws = ws
                 existing.connected = True
@@ -6365,6 +6564,7 @@ async def handle_client(ws):
                     **room.map_payload(),
                 }))
                 if room.state == "LOBBY":
+                    room.touch_lobby()
                     await room.broadcast_lobby()
                 else:
                     # Partita gia' in corso: oltre alla mappa serve subito
@@ -6406,6 +6606,7 @@ async def handle_client(ws):
                     await send_error(ws, "Colore primario gia' scelto da un altro giocatore.")
                     continue
                 player.colors = seen
+                room.touch_lobby()
                 await room.broadcast_lobby()
 
             elif mtype == "select_character":
@@ -6415,6 +6616,7 @@ async def handle_client(ws):
                 if character not in CHARACTERS:
                     continue
                 player.character = character
+                room.touch_lobby()
                 await room.broadcast_lobby()
 
             elif mtype == "set_mode":
@@ -6435,6 +6637,7 @@ async def handle_client(ws):
                 else:
                     for p in room.players.values():
                         p.team = None
+                room.touch_lobby()
                 await room.broadcast_lobby()
 
             elif mtype == "start_game":
@@ -6455,6 +6658,18 @@ async def handle_client(ws):
                 if any(not p.colors for p in room.players.values()):
                     await send_error(ws, "Tutti i giocatori devono scegliere un colore.")
                     continue
+                # Uscita dalla LOBBY marcata SUBITO, in modo sincrono, prima
+                # di schedulare run_round: asyncio.create_task non esegue la
+                # coroutine immediatamente, la accoda solo per il prossimo
+                # giro dell'event loop. Senza questa riga, un secondo
+                # "start_game" arrivato a doppio-tap (o da un client con un
+                # bug che duplica l'invio) prima che run_round abbia
+                # eseguito la sua prima riga troverebbe ancora
+                # room.state == "LOBBY" e passerebbe il controllo qui sopra,
+                # schedulando un SECONDO run_round concorrente sulla stessa
+                # stanza (due loop che si pestano i piedi sullo stesso
+                # stato). Impostare lo stato qui chiude quella finestra.
+                room.state = "STARTING"
                 room.loop_task = asyncio.create_task(room.run_round())
 
             elif mtype == "move":
