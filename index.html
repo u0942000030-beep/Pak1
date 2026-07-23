@@ -785,6 +785,16 @@ let mazeName = "";
 let themeWallVariants = [];
 
 function makeThemeVariants(theme){
+  // Se il tema arriva dal server con una vera "palette" (4 tonalita' di
+  // colore DIVERSE, non solo lo stesso colore schiarito/scurito - es. per
+  // un tema blu: blu notte, azzurro elettrico, verde acqua, celeste
+  // ghiaccio), usiamo direttamente quella: e' cosi' che una mappa smette
+  // di sembrare "tutta di un colore solo" e prende davvero piu' sfumature
+  // percepibili, come richiesto. Se un tema piu' vecchio non la fornisce,
+  // si ricade sul vecchio schema di semplice schiarimento.
+  if (Array.isArray(theme.palette) && theme.palette.length){
+    return theme.palette.map(p => ({ wall: p.wall, edge: p.edge, glow: p.glow }));
+  }
   const base = { wall: theme.wall, edge: theme.edge, glow: theme.glow };
   return [
     base,
@@ -2082,11 +2092,18 @@ function paintMaze(targetCtx){
       // (scelta deterministica in base alla posizione, cosi' resta
       // identica ad ogni ricostruzione del layer) per restare leggero e
       // non trasformare i muri in un tappeto ripetitivo.
+      // Densita' decor alzata (era 1 cella su ~4, ora circa 1 su 2) e con
+      // una scala leggermente variabile per cella, cosi' i muri risultano
+      // davvero "pieni" di dettagli invece che spogli, senza pero'
+      // diventare un tappeto identico ovunque (seed deterministico per
+      // cella => stesso risultato ad ogni ricostruzione del layer).
       const decorKind = mazeTheme.decor;
       if (decorKind){
         const dr = cellPseudoRandom(x, y);
-        if (dr < 0.24){
-          drawWallDecor(targetCtx, px, py, decorKind, wc, dr);
+        if (dr < 0.52){
+          const scaleSeed = cellPseudoRandom(x + 91, y + 47);
+          const scale = 0.82 + scaleSeed * 0.5;
+          drawWallDecor(targetCtx, px, py, decorKind, wc, dr, scale);
         }
       }
     }
@@ -2106,12 +2123,14 @@ function cellPseudoRandom(x, y){
 // ciliegio, conchiglie, venature di lava, ecc. - disegnato una sola volta
 // nel layer offscreen (buildMazeLayer/paintMaze), quindi a costo zero a
 // runtime. wc = { wall, edge, glow } della variante di quel muro.
-function drawWallDecor(targetCtx, px, py, kind, wc, seed){
+function drawWallDecor(targetCtx, px, py, kind, wc, seed, scale){
   const cx = px + BASE_CELL / 2, cy = py + BASE_CELL / 2;
   const rot = seed * Math.PI * 2;
+  const sc = scale || 1;
   targetCtx.save();
   targetCtx.translate(cx, cy);
   targetCtx.rotate(rot * 0.35); // leggera variazione di orientamento, non casuale ogni frame
+  targetCtx.scale(sc, sc);
   switch (kind){
     case "blossom": { // Rosa Arcade: fiori di ciliegio sparsi sui muri
       targetCtx.globalAlpha = 0.55;
@@ -2148,79 +2167,220 @@ function drawWallDecor(targetCtx, px, py, kind, wc, seed){
       }
       break;
     }
-    case "lava": { // Lava Cremisi: venature incandescenti sui muri
-      targetCtx.globalAlpha = 0.75;
-      targetCtx.strokeStyle = "#ffb347";
+    case "lava": { // Cripta Cremisi: vera crepa incandescente nella roccia,
+                   // non piu' una singola linea ma una spaccatura con
+                   // corpo (riempimento a gradiente caldo), diramazioni
+                   // secondarie piu' sottili e bolle di magma che pulsano.
+      const variant = seed > 0.5;
+      const crackGrad = targetCtx.createLinearGradient(-6, -6, 6, 6);
+      crackGrad.addColorStop(0, "#3a0a02");
+      crackGrad.addColorStop(0.45, "#ff5a1f");
+      crackGrad.addColorStop(0.55, "#ffcf6b");
+      crackGrad.addColorStop(1, "#3a0a02");
+      targetCtx.globalAlpha = 0.85;
       targetCtx.shadowColor = "#ff5a1f";
-      targetCtx.shadowBlur = 4;
-      targetCtx.lineWidth = 1.3;
+      targetCtx.shadowBlur = 5;
+      targetCtx.strokeStyle = crackGrad;
+      targetCtx.lineWidth = 2.1;
+      targetCtx.lineCap = "round";
       targetCtx.beginPath();
-      targetCtx.moveTo(-6, -5);
-      targetCtx.lineTo(-1, -1);
-      targetCtx.lineTo(-3, 2);
-      targetCtx.lineTo(1, 3);
-      targetCtx.lineTo(6, 6);
+      if (variant){
+        targetCtx.moveTo(-6.5, -5.5);
+        targetCtx.lineTo(-2, -2);
+        targetCtx.lineTo(-3.5, 1.5);
+        targetCtx.lineTo(0.5, 3);
+        targetCtx.lineTo(6.5, 6.5);
+      } else {
+        targetCtx.moveTo(-6, 6);
+        targetCtx.lineTo(-1.5, 1.5);
+        targetCtx.lineTo(2, 2.5);
+        targetCtx.lineTo(1, -2);
+        targetCtx.lineTo(6, -6);
+      }
+      targetCtx.stroke();
+      // diramazioni secondarie piu' sottili, staccate dalla crepa principale
+      targetCtx.lineWidth = 0.9;
+      targetCtx.globalAlpha = 0.6;
+      targetCtx.beginPath();
+      if (variant){
+        targetCtx.moveTo(-2, -2); targetCtx.lineTo(-4.5, -0.5);
+        targetCtx.moveTo(-3.5, 1.5); targetCtx.lineTo(-5, 3.5);
+      } else {
+        targetCtx.moveTo(-1.5, 1.5); targetCtx.lineTo(-4, 3);
+        targetCtx.moveTo(2, 2.5); targetCtx.lineTo(4, 4.5);
+      }
       targetCtx.stroke();
       targetCtx.shadowBlur = 0;
-      targetCtx.fillStyle = "#ffe27a";
-      targetCtx.beginPath(); targetCtx.arc(1, 3, 0.9, 0, Math.PI * 2); targetCtx.fill();
+      // bolla di magma incandescente con nucleo piu' chiaro (falso 3D)
+      targetCtx.globalAlpha = 0.9;
+      const bx = variant ? 0.5 : 2, by = variant ? 3 : 2.5;
+      targetCtx.fillStyle = "#ff7a2e";
+      targetCtx.beginPath(); targetCtx.arc(bx, by, 1.3, 0, Math.PI * 2); targetCtx.fill();
+      targetCtx.fillStyle = "#ffe9a0";
+      targetCtx.beginPath(); targetCtx.arc(bx - 0.35, by - 0.35, 0.55, 0, Math.PI * 2); targetCtx.fill();
       break;
     }
-    case "vines": { // Giungla Smeraldo: rampicanti/foglie sui muri
-      targetCtx.globalAlpha = 0.6;
-      targetCtx.strokeStyle = "#1f7a3d";
-      targetCtx.lineWidth = 1.2;
+    case "vines": { // Giungla Smeraldo: vero rametto con corteccia (linea
+                     // doppia invece di un semplice tratto), grappoli di
+                     // foglie ovali sovrapposte a due tonalita' e piccola
+                     // bacca, per un rilievo vegetale credibile.
+      targetCtx.globalAlpha = 0.8;
+      targetCtx.strokeStyle = "#0f4a22";
+      targetCtx.lineWidth = 2.1;
+      targetCtx.lineCap = "round";
       targetCtx.beginPath();
-      targetCtx.moveTo(-6, 6);
-      targetCtx.quadraticCurveTo(-2, -6, 6, -5);
+      targetCtx.moveTo(-6.5, 6.5);
+      targetCtx.quadraticCurveTo(-2, -6, 6.5, -5.5);
       targetCtx.stroke();
-      targetCtx.fillStyle = "#5dffb0";
-      for (const t of [0.2, 0.55, 0.85]){
-        const lx = -6 + (12) * t, ly = 6 + (-11) * t + (t*t*2);
+      targetCtx.strokeStyle = "#3fae62";
+      targetCtx.lineWidth = 0.8;
+      targetCtx.beginPath();
+      targetCtx.moveTo(-6.5, 6.5);
+      targetCtx.quadraticCurveTo(-2, -6, 6.5, -5.5);
+      targetCtx.stroke();
+      const leafSpots = [[0.15, -0.9, 1], [0.42, 0.85, -1], [0.68, -0.75, 1], [0.9, 0.6, -1]];
+      for (const [t, off, side] of leafSpots){
+        const lx = -6.5 + 13 * t, ly = 6.5 + (-12) * t + (t * t * 2.2);
+        targetCtx.save();
+        targetCtx.translate(lx, ly);
+        targetCtx.rotate(side * 0.9 + t);
+        targetCtx.fillStyle = side > 0 ? "#4fdc7f" : "#2f9c53";
         targetCtx.beginPath();
-        targetCtx.ellipse(lx, ly, 1.8, 1, 0.6, 0, Math.PI * 2);
+        targetCtx.moveTo(0, 0);
+        targetCtx.quadraticCurveTo(1.6, -0.9, 3, 0);
+        targetCtx.quadraticCurveTo(1.6, 0.9, 0, 0);
         targetCtx.fill();
+        targetCtx.strokeStyle = "rgba(255,255,255,0.25)";
+        targetCtx.lineWidth = 0.3;
+        targetCtx.beginPath(); targetCtx.moveTo(0, 0); targetCtx.lineTo(2.9, 0); targetCtx.stroke();
+        targetCtx.restore();
+      }
+      targetCtx.fillStyle = "#ff5c7a";
+      targetCtx.beginPath(); targetCtx.arc(3.6, -3.8, 0.85, 0, Math.PI * 2); targetCtx.fill();
+      targetCtx.fillStyle = "rgba(255,255,255,0.35)";
+      targetCtx.beginPath(); targetCtx.arc(3.35, -4.05, 0.3, 0, Math.PI * 2); targetCtx.fill();
+      break;
+    }
+    case "gems": { // Sala del Trono Violetta: gemma sfaccettata vera, con
+                    // piu' triangoli di taglio (facce) shading diversi
+                    // per dare l'effetto di luce che rifrange dentro il
+                    // cristallo, corredata da due gemme satellite minori.
+      const drawGem = (gx, gy, s, hue) => {
+        targetCtx.save();
+        targetCtx.translate(gx, gy);
+        targetCtx.scale(s, s);
+        const facets = [
+          { pts: [[0,-5],[3,-1],[0,0]], c: lightenHex(hue, 0.35) },
+          { pts: [[3,-1],[0,5],[0,0]],  c: hue },
+          { pts: [[0,5],[-3,-1],[0,0]], c: darkenHex(hue, 0.25) },
+          { pts: [[-3,-1],[0,-5],[0,0]], c: lightenHex(hue, 0.1) },
+        ];
+        targetCtx.globalAlpha = 0.75;
+        for (const f of facets){
+          targetCtx.fillStyle = f.c;
+          targetCtx.beginPath();
+          targetCtx.moveTo(f.pts[0][0], f.pts[0][1]);
+          targetCtx.lineTo(f.pts[1][0], f.pts[1][1]);
+          targetCtx.lineTo(f.pts[2][0], f.pts[2][1]);
+          targetCtx.closePath();
+          targetCtx.fill();
+        }
+        targetCtx.globalAlpha = 0.9;
+        targetCtx.strokeStyle = "rgba(255,255,255,0.75)";
+        targetCtx.lineWidth = 0.4;
+        targetCtx.beginPath();
+        targetCtx.moveTo(0, -5); targetCtx.lineTo(3, -1); targetCtx.lineTo(0, 5);
+        targetCtx.lineTo(-3, -1); targetCtx.closePath(); targetCtx.stroke();
+        targetCtx.beginPath(); targetCtx.moveTo(0, -5); targetCtx.lineTo(0, 5); targetCtx.stroke();
+        // scintillio
+        targetCtx.fillStyle = "rgba(255,255,255,0.9)";
+        targetCtx.beginPath(); targetCtx.moveTo(-0.5, -3); targetCtx.lineTo(0.5, -3); targetCtx.lineTo(0, -1); targetCtx.closePath(); targetCtx.fill();
+        targetCtx.restore();
+      };
+      drawGem(0, 0, 1, "#c68bff");
+      drawGem(-3.6, 3.6, 0.42, "#ff8bdc");
+      drawGem(3.4, -3.7, 0.42, "#8bb8ff");
+      break;
+    }
+    case "hieroglyph": { // Bastioni Ambra: vero glifo scolpito (non piu'
+                          // linee sparse) scelto tra 3 icone incise nella
+                          // pietra - ankh, disco solare, occhio - riempite
+                          // a tinta unita con un leggero rilievo bicolore
+                          // per sembrare davvero incise nel blocco.
+      const glyphIdx = Math.floor(seed * 30) % 3;
+      targetCtx.globalAlpha = 0.85;
+      targetCtx.fillStyle = "#ffdca0";
+      targetCtx.strokeStyle = "rgba(90,50,10,0.55)";
+      targetCtx.lineWidth = 0.5;
+      if (glyphIdx === 0){ // ankh
+        targetCtx.beginPath(); targetCtx.arc(0, -3.4, 2.1, 0, Math.PI * 2); targetCtx.fill(); targetCtx.stroke();
+        targetCtx.beginPath();
+        roundRectPath(targetCtx, -0.9, -1.6, 1.8, 8.4, 0.9);
+        targetCtx.fill(); targetCtx.stroke();
+        targetCtx.beginPath();
+        roundRectPath(targetCtx, -4.2, 1.4, 8.4, 1.8, 0.9);
+        targetCtx.fill(); targetCtx.stroke();
+      } else if (glyphIdx === 1){ // disco solare alato (stilizzato)
+        targetCtx.beginPath(); targetCtx.arc(0, 0, 2.4, 0, Math.PI * 2); targetCtx.fill(); targetCtx.stroke();
+        targetCtx.beginPath();
+        targetCtx.moveTo(-2.2, 0); targetCtx.quadraticCurveTo(-6, -3, -7.5, 0.5);
+        targetCtx.quadraticCurveTo(-5.5, -1, -2.2, 1.2);
+        targetCtx.closePath(); targetCtx.fill();
+        targetCtx.beginPath();
+        targetCtx.moveTo(2.2, 0); targetCtx.quadraticCurveTo(6, -3, 7.5, 0.5);
+        targetCtx.quadraticCurveTo(5.5, -1, 2.2, 1.2);
+        targetCtx.closePath(); targetCtx.fill();
+      } else { // occhio protettivo (occhio di Horus stilizzato)
+        targetCtx.beginPath();
+        targetCtx.moveTo(-6, 0);
+        targetCtx.quadraticCurveTo(-2, -3.4, 3.5, 0);
+        targetCtx.quadraticCurveTo(-2, 2.4, -6, 0);
+        targetCtx.closePath();
+        targetCtx.fill(); targetCtx.stroke();
+        targetCtx.fillStyle = "#3a2405";
+        targetCtx.beginPath(); targetCtx.arc(-1, 0, 1.35, 0, Math.PI * 2); targetCtx.fill();
+        targetCtx.fillStyle = "#ffdca0";
+        targetCtx.beginPath();
+        targetCtx.moveTo(3.5, 0); targetCtx.quadraticCurveTo(5.5, 1, 5, 3.5);
+        targetCtx.quadraticCurveTo(4, 2, 3.2, 1.4); targetCtx.closePath(); targetCtx.fill();
+        targetCtx.beginPath(); targetCtx.moveTo(-6, 0.4); targetCtx.lineTo(-8, 3); targetCtx.lineWidth = 1; targetCtx.strokeStyle = "#ffdca0"; targetCtx.stroke();
       }
       break;
     }
-    case "gems": { // Violetto Regale: gemme incastonate
-      targetCtx.globalAlpha = 0.65;
-      targetCtx.fillStyle = "#e6c6ff";
-      targetCtx.strokeStyle = "#ffffff";
-      targetCtx.lineWidth = 0.5;
-      targetCtx.beginPath();
-      targetCtx.moveTo(0, -5); targetCtx.lineTo(3.5, 0);
-      targetCtx.lineTo(0, 5); targetCtx.lineTo(-3.5, 0);
-      targetCtx.closePath();
-      targetCtx.fill(); targetCtx.stroke();
-      targetCtx.strokeStyle = "rgba(255,255,255,0.8)";
-      targetCtx.beginPath(); targetCtx.moveTo(0, -5); targetCtx.lineTo(0, 5); targetCtx.stroke();
-      break;
-    }
-    case "hieroglyph": { // Sabbia Ambra: glifi incisi nella pietra
-      targetCtx.globalAlpha = 0.55;
-      targetCtx.strokeStyle = "#ffdca0";
-      targetCtx.lineWidth = 1;
-      targetCtx.beginPath();
-      targetCtx.moveTo(-4, -5); targetCtx.lineTo(-4, 5);
-      targetCtx.moveTo(-4, -2); targetCtx.lineTo(2, -5);
-      targetCtx.moveTo(-4, 1); targetCtx.lineTo(3, 4);
-      targetCtx.stroke();
-      targetCtx.fillStyle = "#ffdca0";
-      targetCtx.beginPath(); targetCtx.arc(4, -3, 1.1, 0, Math.PI * 2); targetCtx.fill();
-      break;
-    }
-    case "crystal": { // Ghiaccio Ciano: facce di cristallo di ghiaccio
-      targetCtx.globalAlpha = 0.6;
-      targetCtx.fillStyle = "rgba(157,246,255,0.55)";
-      targetCtx.strokeStyle = "#ffffff";
-      targetCtx.lineWidth = 0.6;
-      targetCtx.beginPath();
-      targetCtx.moveTo(0, -6); targetCtx.lineTo(3, -1); targetCtx.lineTo(1.5, 6);
-      targetCtx.lineTo(-1.5, 6); targetCtx.lineTo(-3, -1);
-      targetCtx.closePath();
-      targetCtx.fill(); targetCtx.stroke();
-      targetCtx.beginPath(); targetCtx.moveTo(0, -6); targetCtx.lineTo(0, 6); targetCtx.stroke();
+    case "crystal": { // Ciano Arcade: cluster di 3 schegge di ghiaccio
+                       // sfaccettate (grande + due piccole ai lati) con
+                       // faccia interna piu' scura e spigolo luminoso,
+                       // molto piu' "vero" di un singolo esagono piatto.
+      const drawShard = (gx, gy, s, rotShard) => {
+        targetCtx.save();
+        targetCtx.translate(gx, gy);
+        targetCtx.rotate(rotShard);
+        targetCtx.scale(s, s);
+        targetCtx.globalAlpha = 0.85;
+        targetCtx.fillStyle = "rgba(210,250,255,0.35)";
+        targetCtx.beginPath();
+        targetCtx.moveTo(0, -7); targetCtx.lineTo(2.6, -1); targetCtx.lineTo(1.3, 7);
+        targetCtx.lineTo(-1.3, 7); targetCtx.lineTo(-2.6, -1);
+        targetCtx.closePath();
+        targetCtx.fill();
+        // faccia destra piu' scura (ombra) per dare volume
+        targetCtx.fillStyle = "rgba(70,150,180,0.45)";
+        targetCtx.beginPath();
+        targetCtx.moveTo(0, -7); targetCtx.lineTo(2.6, -1); targetCtx.lineTo(1.3, 7); targetCtx.lineTo(0, 6.6);
+        targetCtx.closePath();
+        targetCtx.fill();
+        targetCtx.strokeStyle = "rgba(255,255,255,0.85)";
+        targetCtx.lineWidth = 0.5;
+        targetCtx.beginPath();
+        targetCtx.moveTo(0, -7); targetCtx.lineTo(2.6, -1); targetCtx.lineTo(1.3, 7);
+        targetCtx.lineTo(-1.3, 7); targetCtx.lineTo(-2.6, -1); targetCtx.closePath();
+        targetCtx.stroke();
+        targetCtx.beginPath(); targetCtx.moveTo(0, -7); targetCtx.lineTo(0, 7); targetCtx.stroke();
+        targetCtx.restore();
+      };
+      drawShard(0, 0, 1, 0);
+      drawShard(-3.4, 3, 0.4, -0.3);
+      drawShard(3.2, 2.6, 0.42, 0.35);
       break;
     }
     case "moss": { // Foresta Notte: chiazze di muschio e funghetti
@@ -2270,6 +2430,7 @@ function drawWallDecor(targetCtx, px, py, kind, wc, seed){
   }
   targetCtx.restore();
 }
+
 
 // Schiarisce un colore esadecimale di una frazione 0-1 (usato per i
 // gradienti di sfondo/bevel). Puramente estetico.
