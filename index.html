@@ -435,26 +435,87 @@ function makeCharacterMesh(colorHex){
 }
 
 /* ============================================================
-   MOVIMENTO: identico al gioco originale — un tasto NON avvia/ferma
-   il movimento, imposta solo la PROSSIMA direzione desiderata (il
-   personaggio e' sempre in moto lato server). Le direzioni sono
-   fisse rispetto alla mappa (Nord/Sud/Ovest/Est), non rispetto allo
-   sguardo: esattamente come nella versione 2D, il mouse qui serve
-   SOLO a guardarsi intorno.
+   MOVIMENTO: WASD relativo allo sguardo (yaw della camera), non piu'
+   fisso rispetto alla mappa. "W" e' sempre "avanti rispetto a dove sto
+   guardando", "A"/"D" sempre sinistra/destra rispetto allo sguardo,
+   "S" sempre indietro. Siccome pero' il server accetta solo le 4
+   direzioni di griglia (up/down/left/right), lo sguardo viene
+   "agganciato" (snap) alla direzione cardinale piu' vicina: es. se sto
+   guardando qualcosa tra nord e ovest ma piu' verso nord, "W" manda
+   "up". La direzione va ricalcolata ad ogni movimento del mouse (non
+   solo alla pressione del tasto): se tengo premuto "W" e giro la
+   visuale oltre i 45 gradi, il verso inviato al server deve cambiare
+   di conseguenza senza dover rilasciare e ripremere il tasto.
    ============================================================ */
 let lastRequestedDir = null;
 function requestDir(dir){
   if (dir !== lastRequestedDir) lastRequestedDir = dir;
   sendMsg({ type:"move", direction:dir });
 }
-const keysDown = {};
+
+// Tasto fisico -> "verso" astratto relativo alla camera (non ancora una
+// direzione di griglia: quella si calcola in base allo yaw corrente).
+function normalizeMoveKey(key){
+  const map = {
+    w:"forward", W:"forward", ArrowUp:"forward",
+    s:"backward", S:"backward", ArrowDown:"backward",
+    a:"left", A:"left", ArrowLeft:"left",
+    d:"right", D:"right", ArrowRight:"right",
+  };
+  return map[key] || null;
+}
+
+// Data una coppia (x,z) nel piano orizzontale, restituisce la direzione
+// di griglia il cui asse e' piu' allineato (snap ai 4 cardinali).
+// Convenzione del progetto: up=[0,-1] (z decresce), down=[0,1] (z
+// cresce), left=[-1,0] (x decresce), right=[1,0] (x cresce) — vedi
+// DIR_VEC e applyMapData (wx = x*CELL, wz = y*CELL).
+function dirFromVector(x, z){
+  return Math.abs(x) > Math.abs(z) ? (x > 0 ? "right" : "left")
+                                    : (z > 0 ? "down" : "up");
+}
+
+// "Verso" astratto (forward/backward/left/right rispetto alla camera) ->
+// direzione di griglia effettiva, in base allo yaw corrente.
+function baseToGridDir(base){
+  const fx = -Math.sin(yaw), fz = -Math.cos(yaw); // avanti rispetto alla camera
+  const rx =  Math.cos(yaw), rz = -Math.sin(yaw); // destra rispetto alla camera
+  switch (base){
+    case "forward":  return dirFromVector(fx, fz);
+    case "backward": return dirFromVector(-fx, -fz);
+    case "right":    return dirFromVector(rx, rz);
+    case "left":     return dirFromVector(-rx, -rz);
+    default: return null;
+  }
+}
+
+const heldMoveKeys = new Set(); // "forward"/"backward"/"left"/"right" attualmente premuti
+let heldBase = null;            // ultimo tasto premuto, ha la priorita'
+
+function updateMovementDirection(){
+  if (!heldBase) return;
+  const dir = baseToGridDir(heldBase);
+  if (dir) requestDir(dir);
+}
+
 window.addEventListener("keydown", e => {
   if (currentScreen !== "game") return;
-  const dir = KEY_TO_DIR[e.key];
-  if (dir && !keysDown[e.key]) requestDir(dir);
-  keysDown[e.key] = true;
+  const base = normalizeMoveKey(e.key);
+  if (!base || heldMoveKeys.has(base)) return; // ignora la ripetizione automatica del tasto tenuto premuto
+  heldMoveKeys.add(base);
+  heldBase = base;
+  updateMovementDirection();
 });
-window.addEventListener("keyup", e => { keysDown[e.key] = false; });
+window.addEventListener("keyup", e => {
+  const base = normalizeMoveKey(e.key);
+  if (!base) return;
+  heldMoveKeys.delete(base);
+  if (heldBase === base){
+    // se restano altri tasti di movimento premuti, passa a uno di quelli
+    heldBase = heldMoveKeys.size ? heldMoveKeys.values().next().value : null;
+    if (heldBase) updateMovementDirection();
+  }
+});
 
 let yaw = 0, pitch = 0, locked = false;
 document.addEventListener("pointerlockchange", () => {
@@ -465,6 +526,7 @@ document.addEventListener("mousemove", e => {
   yaw   -= e.movementX * 0.0022;
   pitch -= e.movementY * 0.0022;
   pitch = Math.max(-Math.PI/2+0.05, Math.min(Math.PI/2-0.05, pitch));
+  updateMovementDirection(); // lo sguardo e' cambiato: se un tasto e' tenuto premuto, ricalcola il verso
 });
 
 function enterGame(){
