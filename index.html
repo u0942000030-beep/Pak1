@@ -143,12 +143,15 @@
   <div id="hudLives">vite: 0</div>
   <div id="hudMissile" class="hidden" style="color:#8fd3ff;"></div>
   <div id="hudMines" class="hidden" style="color:#2bff5c;"></div>
+  <div id="hudTurret" class="hidden" style="color:#ff8a6e;"></div>
+  <div id="hudPet" class="hidden" style="color:#ffd400;"></div>
+  <div id="hudRobot" class="hidden" style="color:#c6ff3f;"></div>
 </div>
 <div id="minimapWrap" class="hidden">
   <canvas id="minimap" width="240" height="240"></canvas>
 </div>
 <div id="toast"></div>
-<div id="hint" class="hidden">Click per guardarti intorno — WASD = avanti/sinistra/indietro/destra rispetto allo sguardo, la visuale sterza da sola verso la direzione presa — tasto sinistro = spara laser (se sbloccato)</div>
+<div id="hint" class="hidden">Click per guardarti intorno — WASD = avanti/sinistra/indietro/destra rispetto allo sguardo, la visuale sterza da sola verso la direzione presa — tasto sinistro = spara laser · 1 = mina/mortaio · 3 = missile · 5 = torretta · 8 = pet · 9 = evolvi torretta (se sbloccati)</div>
 <div id="deadBanner" class="hidden">SEI MORTO — attendi il respawn</div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
@@ -735,6 +738,21 @@ function playPetSpawn(){
 // di bip meccanici che salgono di tono, tipo macchinario che si "assembla"
 // e si accende, chiusa da un tono piu' lungo e ruvido (sawtooth) che da'
 // il senso del "corpo" meccanico appena completato.
+// Piazzamento della torretta automatica (bonus 600 punti): un "clang"
+// metallico secco, come una base pesante che si aggancia a terra - piu'
+// leggero del "thunk" del mortaio, perche' qui non c'e' nessun arco da
+// segnalare, solo un piazzamento fisso.
+function playTurretPlace(){
+  tone(180, 0.07, "square", 0.13, 0);
+  tone(260, 0.05, "square", 0.1, 0.05);
+}
+// Distruzione della torretta (normale o evoluta in navicella): esplosione
+// + tono grave, stessa base sonora usata anche per playRobotDestroy (la
+// versione evoluta aggiunge in piu' il glitch meccanico finale).
+function playTurretDestroy(){
+  noiseBurst(0.18, 0.15);
+  tone(150, 0.14, "sawtooth", 0.12, 0.02);
+}
 function playRobotEvolve(){
   [220, 330, 440, 660].forEach(function(f, i){ tone(f, 0.06, "square", 0.13, i * 0.05); });
   tone(880, 0.12, "sawtooth", 0.1, 0.22);
@@ -744,8 +762,7 @@ function playRobotEvolve(){
 // meccanico finale, bip discendenti rapidi, per far capire che si trattava
 // di una macchina che cammina e non di un semplice impianto fisso.
 function playRobotDestroy(){
-  noiseBurst(0.18, 0.15);
-  tone(150, 0.14, "sawtooth", 0.12, 0.02);
+  playTurretDestroy(); // stessa base sonora della torretta normale (esplosione + tono grave)
   [500, 380, 260, 140].forEach(function(f, i){ tone(f, 0.045, "square", 0.1, 0.1 + i * 0.04); });
 }
 // Schieramento del mortaio (bonus 1200 punti, tasto 0): un "thunk" grave e
@@ -920,6 +937,11 @@ let remotePlayers = {};  // id -> {group, targetX, targetZ, colorHex}
 let laserMeshes = {};    // id -> {mesh, x, z, targetX, targetZ} bonus 150 punti: proiettili laser in volo
 let missileMeshes = {};  // id -> {mesh, x, z, targetX, targetZ} bonus 400 punti: missile guidato in volo
 let mineMeshes = {};     // id -> mesh bonus 200 punti: mine posate, statiche (nessuna interpolazione)
+let turretMeshes = {};   // id -> THREE.Group con userData {halo, barrelPivot, core, ring, aim, currentAng} — bonus 600 punti: torrette automatiche permanenti
+let petMeshes = {};      // id -> {group, x, z, targetX, targetZ} — bonus 900 punti: pet fedele, mini Pac-Man che segue il proprietario (aim/aimDot vivono in group.userData)
+let mortarMeshes = {};   // id -> THREE.Group con userData {halo, mouth, core, aim} — bonus 1200 punti: mortai permanenti (ad arco, non ruotano come la torretta)
+let bombMeshes = {};     // id -> THREE.Group con userData {shadow, body} — bonus 1200 punti: bombe di mortaio in volo, ricreate/aggiornate leggendo msg.bombs ad ogni state (stessa idea della 2D: nessun evento fire/end dedicato)
+let poisonZoneMeshes = {}; // id -> THREE.Mesh — nuvole velenose a terra (impatto mortaio, radius>=1) o scia del blob vivo (radius=0, bonus 2000)
 let playerColorHex = {}; // playerId -> colore primario (int), aggiornato da onState/onLobbyState:
                           // serve a colorare oggetti "di proprieta'" di un giocatore (missile, ecc.)
                           // per riconoscerne subito il lanciatore, come nella versione 2D.
@@ -1377,6 +1399,250 @@ function makeMineMesh(colorHex){
   return g;
 }
 
+/* ---- Sprite di testo "LEVEL UP" (bonus 1000 punti, evoluzione della
+   torretta): stessa idea della scritta 2D che compare per ~1 secondo
+   sopra la torretta appena evolve (t.level_up, server-authoritative,
+   sparisce da sola senza bisogno di un timer lato client). Un THREE.Sprite
+   con testo disegnato su canvas resta sempre rivolto verso la camera
+   (billboard), leggibile da qualsiasi angolazione. ---- */
+function makeLevelUpSprite(){
+  const canvas = document.createElement("canvas");
+  canvas.width = 256; canvas.height = 64;
+  const ctx2d = canvas.getContext("2d");
+  ctx2d.fillStyle = "#ffffff";
+  ctx2d.font = "bold 40px monospace";
+  ctx2d.textAlign = "center";
+  ctx2d.textBaseline = "middle";
+  ctx2d.shadowColor = "#000";
+  ctx2d.shadowBlur = 8;
+  ctx2d.fillText("LEVEL UP", 128, 32);
+  const tex = new THREE.CanvasTexture(canvas);
+  const mat = new THREE.SpriteMaterial({ map: tex, transparent:true, depthTest:false });
+  const sprite = new THREE.Sprite(mat);
+  sprite.scale.set(0.9, 0.22, 1);
+  sprite.position.y = 0.5;
+  sprite.visible = false;
+  return sprite;
+}
+
+/* ---- bonus 600 punti: torretta automatica permanente — stessa idea
+   della versione 2D (drawTurrets: piastra ottagonale con canna rotante
+   e nucleo pulsante), qui come un piccolo "cannoncino" fisso a terra.
+   E' visibile a TUTTI (non e' una trappola nascosta come le mine), nel
+   colore del proprietario. La canna ruota verso il bersaglio agganciato
+   (t.aim, aggiornato in onState) con la stessa interpolazione angolare
+   morbida della 2D, gestita nel render loop. La torretta EVOLUTA (bonus
+   1000 punti, tasto 9) e' VOLUTAMENTE identica in tutto e per tutto:
+   stessa piastra, stessa scala, stessa canna, STESSA POSIZIONE FISSA
+   (non fluttua e non si muove, e' solo un potenziamento del "cervello"
+   della torretta) — l'unica differenza e' un anello colorato (ring)
+   attorno alla base, mostrato/nascosto a seconda di t.evolved senza
+   cambiare la mesh, piu' la scritta "LEVEL UP" che compare per ~1
+   secondo al momento dell'evoluzione. ---- */
+function makeTurretMesh(colorHex){
+  const g = new THREE.Group();
+
+  const halo = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.32, 0.32, 0.02, 16),
+    new THREE.MeshBasicMaterial({ color: colorHex, transparent:true, opacity:0.22 })
+  );
+  halo.position.y = 0.01;
+  g.add(halo);
+
+  const plate = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.24, 0.26, 0.14, 8),
+    new THREE.MeshStandardMaterial({ color: colorHex, transparent:true, opacity:0.95 })
+  );
+  plate.position.y = 0.09;
+  g.add(plate);
+
+  const barrel = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.035, 0.045, 0.34, 8),
+    new THREE.MeshStandardMaterial({ color: colorHex })
+  );
+  barrel.rotation.z = Math.PI / 2;
+  const barrelPivot = new THREE.Group();
+  barrelPivot.position.y = 0.16;
+  barrel.position.set(0.17, 0, 0);
+  barrelPivot.add(barrel);
+  g.add(barrelPivot);
+
+  const core = new THREE.Mesh(
+    new THREE.SphereGeometry(0.065, 8, 6),
+    new THREE.MeshStandardMaterial({ color:0xffffff, emissive:0xffffff, emissiveIntensity:1.2 })
+  );
+  core.position.y = 0.16;
+  g.add(core);
+
+  const ring = new THREE.Mesh(
+    new THREE.TorusGeometry(0.3, 0.02, 6, 16),
+    new THREE.MeshBasicMaterial({ color: colorHex, transparent:true, opacity:0.7 })
+  );
+  ring.rotation.x = Math.PI / 2;
+  ring.position.y = 0.09;
+  ring.visible = false;
+  g.add(ring);
+
+  const levelUpSprite = makeLevelUpSprite();
+  g.add(levelUpSprite);
+
+  g.userData.halo = halo;
+  g.userData.barrelPivot = barrelPivot;
+  g.userData.core = core;
+  g.userData.ring = ring;
+  g.userData.levelUpSprite = levelUpSprite;
+  g.userData.aim = null;
+  g.userData.currentAng = Math.random() * Math.PI * 2;
+  return g;
+}
+
+/* ---- bonus 900 punti: pet fedele — stessa idea della versione 2D
+   (drawPets: mini Pac-Man dello stesso colore del proprietario, grande
+   la meta', con un alone morbido per riconoscerlo a distanza e un
+   puntino rosso davanti alla bocca quando sta puntando un bersaglio
+   entro le 6 caselle). Riusa la STESSA mesh dei giocatori
+   (makeCharacterMesh: testa + mascelle che masticano), solo scalata a
+   0.5 tramite group.scale invece di riscrivere la geometria da capo. ---- */
+function makePetMesh(colorHex){
+  const g = new THREE.Group();
+
+  const body = makeCharacterMesh(colorHex);
+  body.scale.setScalar(0.5); // "grande la meta' di un giocatore normale", come nella 2D
+  g.add(body);
+
+  // Alone morbido nel colore del proprietario, per riconoscere di chi e'
+  // il pet anche a distanza (stessa idea dell'alone 2D).
+  const halo = new THREE.Mesh(
+    new THREE.SphereGeometry(0.24, 12, 8),
+    new THREE.MeshBasicMaterial({ color: colorHex, transparent:true, opacity:0.22 })
+  );
+  halo.position.y = 0.31;
+  g.add(halo);
+
+  // Puntino rosso davanti alla "bocca": indica il bersaglio agganciato
+  // entro le 6 caselle (pet.aim), stessa idea del puntino 2D. Nascosto
+  // di default, posizionato/mostrato nel render loop in base a aim.
+  const aimDot = new THREE.Mesh(
+    new THREE.SphereGeometry(0.05, 6, 6),
+    new THREE.MeshStandardMaterial({ color:0xff3b5c, emissive:0xff3b5c, emissiveIntensity:1 })
+  );
+  aimDot.visible = false;
+  g.add(aimDot);
+
+  g.userData.body = body;
+  g.userData.aimDot = aimDot;
+  g.userData.aim = null; // [gx, gy] in coordinate di griglia, o null se non sta puntando nessuno
+  return g;
+}
+
+/* ---- bonus 1200 punti: mortaio permanente — stessa idea "da tavolo da
+   gioco" della 2D (drawMortars: tronco di legno su treppiede, bocca larga
+   rivolta verso il cielo) invece di riciclare il corpo della torretta,
+   perche' e' un'arma indiretta ad arco che non punta mai dritta al
+   bersaglio come laser/torretta. NON ruota mai (a differenza della
+   torretta): solo la bocca "respira" (si allarga leggermente) e il
+   nucleo pulsa piu' rosso quando ha agganciato un bersaglio. ---- */
+function makeMortarMesh(colorHex){
+  const g = new THREE.Group();
+  const WOOD = 0x8a5a34, WOOD_DARK = 0x5e3b21, METAL = 0xcaa25a;
+
+  // Alone morbido a terra.
+  const halo = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.36, 0.36, 0.02, 16),
+    new THREE.MeshBasicMaterial({ color: colorHex, transparent:true, opacity:0.18 })
+  );
+  halo.position.y = 0.01;
+  g.add(halo);
+
+  // Treppiede: tre gambe tozze di legno scuro, orientate a 120 gradi.
+  const legMat = new THREE.MeshStandardMaterial({ color: WOOD_DARK });
+  for (let i = 0; i < 3; i++){
+    const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.03, 0.26, 6), legMat);
+    const a = i * (Math.PI * 2 / 3);
+    leg.position.set(Math.cos(a) * 0.14, 0.1, Math.sin(a) * 0.14);
+    leg.rotation.z = Math.cos(a) * 0.5;
+    leg.rotation.x = Math.sin(a) * 0.5;
+    g.add(leg);
+  }
+
+  // Base rotonda di legno.
+  const base = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.24, 0.26, 0.16, 12),
+    new THREE.MeshStandardMaterial({ color: WOOD })
+  );
+  base.position.y = 0.2;
+  g.add(base);
+
+  // Fascia metallica nel colore del proprietario, attorno alla bocca.
+  const band = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.19, 0.19, 0.05, 12),
+    new THREE.MeshStandardMaterial({ color: colorHex })
+  );
+  band.position.y = 0.29;
+  g.add(band);
+  const metalRing = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.16, 0.16, 0.03, 12),
+    new THREE.MeshStandardMaterial({ color: METAL })
+  );
+  metalRing.position.y = 0.31;
+  g.add(metalRing);
+
+  // Bocca scura vista dall'alto (il "respiro" e' animato scalando questo mesh).
+  const mouth = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.13, 0.13, 0.04, 12),
+    new THREE.MeshStandardMaterial({ color: WOOD_DARK })
+  );
+  mouth.position.y = 0.33;
+  g.add(mouth);
+
+  // Nucleo: scuro a riposo, rosso pulsante quando ha agganciato un bersaglio.
+  const core = new THREE.Mesh(
+    new THREE.SphereGeometry(0.05, 8, 6),
+    new THREE.MeshStandardMaterial({ color:0x3a2213, emissive:0x3a2213, emissiveIntensity:0.4 })
+  );
+  core.position.y = 0.35;
+  g.add(core);
+
+  g.userData.halo = halo;
+  g.userData.mouth = mouth;
+  g.userData.core = core;
+  g.userData.aim = null; // presente solo per coerenza col pattern torretta (il mortaio non ruota mai una canna)
+  return g;
+}
+
+/* ---- bonus 1200 punti: bomba di mortaio in volo — stessa idea della
+   2D (drawBombs: NON segue i corridoi come laser/missili, viaggia in
+   linea d'aria in un arco parabolico dal mortaio al bersaglio). Il
+   server manda gia' x/y (posizione a terra, cioe' l'"ombra") e frac
+   (0..1, progresso del volo): qui si legge frac ad ogni state per
+   sollevare la bomba lungo l'arco, esattamente come nella 2D. ---- */
+function makeBombMesh(){
+  const g = new THREE.Group();
+  const shadow = new THREE.Mesh(
+    new THREE.CircleGeometry(0.16, 12),
+    new THREE.MeshBasicMaterial({ color:0x000000, transparent:true, opacity:0.35 })
+  );
+  shadow.rotation.x = -Math.PI / 2;
+  shadow.position.y = 0.01;
+  g.add(shadow);
+
+  const body = new THREE.Mesh(
+    new THREE.SphereGeometry(0.11, 10, 8),
+    new THREE.MeshStandardMaterial({ color:0x2b2b2b })
+  );
+  g.add(body);
+  const bandMat = new THREE.Mesh(
+    new THREE.TorusGeometry(0.11, 0.015, 6, 12),
+    new THREE.MeshBasicMaterial({ color:0xff9d3b })
+  );
+  bandMat.rotation.x = Math.PI / 2;
+  g.add(bandMat);
+
+  g.userData.shadow = shadow;
+  g.userData.body = body;
+  return g;
+}
+
 /* ============================================================
    MOVIMENTO: WASD/frecce restano relative a dove sto guardando (come
    un vero gioco in prima persona: "D" gira sempre verso la mia destra
@@ -1546,18 +1812,68 @@ window.addEventListener("keydown", e => {
 });
 
 /* ============================================================
-   MINE (bonus 200 punti): stesso tasto "1" della versione 2D. Il
-   server e' l'autorita' su quante mine restano (mines_left) e ignora
-   la richiesta se il bonus non e' sbloccato o le mine sono finite -
-   qui basta il tasto, nessun controllo lato client (vedi try_place_mine
-   in main.py). NB: nella 2D il tasto "1" gestisce anche la catena
-   mortaio/bombolone/mongolfiera una volta finite le mine - per ora,
-   come da richiesta, porto solo il primo anello (le mine).
+   CATENA MINE -> MORTAIO (bonus 200 poi 1200): stesso tasto "1" della
+   versione 2D. Il tasto "1" sgancia prima le mine finche' ne restano
+   (mines_left > 0), poi - solo quando sono finite o il bonus mina non
+   e' mai stato sbloccato - passa a "place_mortar" per il gradino
+   successivo della catena (mortaio, poi bombolone/mongolfiera/blob una
+   volta portati anche quelli in 3D). Il client sceglie solo QUALE
+   messaggio inviare in base al proprio stato noto (myState): il server
+   resta comunque l'autorita' su cosa e' davvero disponibile, esattamente
+   come nella 2D (vedi dispatch del tasto "1" in main.py).
    ============================================================ */
 window.addEventListener("keydown", e => {
   if (currentScreen !== "game") return;
   if (e.key !== "1") return;
-  sendMsg({ type:"place_mine" });
+  if (myState.mines && myState.mines_left > 0){
+    sendMsg({ type:"place_mine" });
+  } else {
+    sendMsg({ type:"place_mortar" });
+  }
+});
+
+/* ============================================================
+   TORRETTA AUTOMATICA (bonus 600 punti): stesso tasto "5" della
+   versione 2D. Piazza una torretta permanente nella cella corrente,
+   che poi spara da sola verso i nemici entro il suo raggio d'azione
+   (10 caselle, gestito interamente dal server). Utilizzabile una sola
+   volta per round: il server ignora richieste successive (vedi
+   try_place_turret in main.py) - qui basta il tasto, nessun controllo
+   lato client.
+   ============================================================ */
+window.addEventListener("keydown", e => {
+  if (currentScreen !== "game") return;
+  if (e.key !== "5") return;
+  sendMsg({ type:"place_turret" });
+});
+
+/* ============================================================
+   PET FEDELE (bonus 900 punti): stesso tasto "8" della versione 2D.
+   Evoca un mini Pac-Man che segue il giocatore per tutto il resto del
+   round e attacca da solo chi si avvicina entro 6 caselle (interamente
+   gestito dal server). Utilizzabile una sola volta per round: il server
+   ignora richieste successive (vedi try_summon_pet in main.py) - qui
+   basta il tasto, nessun controllo lato client.
+   ============================================================ */
+window.addEventListener("keydown", e => {
+  if (currentScreen !== "game") return;
+  if (e.key !== "8") return;
+  sendMsg({ type:"activate_pet" });
+});
+
+/* ============================================================
+   EVOLUZIONE NAVICELLA (bonus 1000 punti): stesso tasto "9" della
+   versione 2D. Evolve la torretta automatica (bonus 600 punti) in una
+   versione potenziata, MA SOLO SE la torretta e' ancora viva sulla
+   mappa in quel momento (il server ignora la richiesta se e' gia'
+   stata distrutta, vedi try_evolve_turret in main.py). Utilizzabile una
+   sola volta per round - qui basta il tasto, nessun controllo lato
+   client.
+   ============================================================ */
+window.addEventListener("keydown", e => {
+  if (currentScreen !== "game") return;
+  if (e.key !== "9") return;
+  sendMsg({ type:"evolve_turret" });
 });
 
 function enterGame(){
@@ -1576,6 +1892,8 @@ function exitGame(){
    ping lo rende necessario).
    ============================================================ */
 let myRenderX = 0, myRenderZ = 0, myInited = false;
+let myState = {}; // ultimo stato noto del giocatore locale (aggiornato in onState): serve al tasto "1"
+                   // per decidere QUALE messaggio inviare nella catena mine -> mortaio -> ... (vedi sotto)
 
 /* ============================================================
    MINIMAPPA: vista dall'alto del labirinto in un angolo dello
@@ -1661,6 +1979,7 @@ function onState(msg){
     if (p.id === myId){
       if (!myInited){ myRenderX = wx; myRenderZ = wz; myInited = true; }
       else { myRenderX = wx; myRenderZ = wz; } // target aggiornato, il lerp e' nel render loop
+      myState = p; // usato dal tasto "1" per decidere quale messaggio inviare (vedi mineChainNextMsg)
       document.getElementById("hudScore").textContent = "punti: " + (p.points||0);
       document.getElementById("hudLives").textContent = "vite: " + (p.lives||0);
       document.getElementById("deadBanner").classList.toggle("hidden", p.alive !== false);
@@ -1672,13 +1991,51 @@ function onState(msg){
       } else {
         hudMissile.classList.add("hidden");
       }
-      // bonus 200 punti: mine, sbloccate ma non ancora esaurite
+      // Catena del tasto "1" (bonus 200 mine -> 1200 mortaio -> ...): una
+      // sola riga HUD che segue l'anello ATTUALMENTE attivo, stessa idea
+      // della colonna "1" nella 2D (mineChainStep) - il numero del tasto
+      // resta sempre "1", solo il testo/anello cambia.
       const hudMines = document.getElementById("hudMines");
       if (p.mines && p.mines_left > 0){
         hudMines.textContent = "mine: " + p.mines_left + " (tasto 1)";
         hudMines.classList.remove("hidden");
+      } else if (p.mortar && !p.mortar_placed){
+        hudMines.textContent = "mortaio: premi 1 per schierarlo";
+        hudMines.classList.remove("hidden");
       } else {
         hudMines.classList.add("hidden");
+      }
+      // bonus 600 punti: torretta, sbloccata ma non ancora piazzata (una
+      // sola volta per round, stessa logica di me.turret/turret_placed
+      // nella 2D).
+      const hudTurret = document.getElementById("hudTurret");
+      if (p.turret && !p.turret_placed){
+        hudTurret.textContent = "torretta: premi 5 per piazzarla";
+        hudTurret.classList.remove("hidden");
+      } else {
+        hudTurret.classList.add("hidden");
+      }
+      // bonus 900 punti: pet fedele, sbloccato ma non ancora evocato (una
+      // sola volta per round, stessa logica di me.pet/pet_summoned nella
+      // 2D).
+      const hudPet = document.getElementById("hudPet");
+      if (p.pet && !p.pet_summoned){
+        hudPet.textContent = "pet: premi 8 per evocarlo";
+        hudPet.classList.remove("hidden");
+      } else {
+        hudPet.classList.add("hidden");
+      }
+      // bonus 1000 punti: evoluzione della torretta, sbloccata ma non
+      // ancora usata (una sola volta per round, stessa logica di
+      // me.robot/robot_used nella 2D). Funziona solo se la torretta e'
+      // ancora viva, ma questo controllo resta al server: qui si mostra
+      // comunque l'HUD finche' non e' stata usata.
+      const hudRobot = document.getElementById("hudRobot");
+      if (p.robot && !p.robot_used){
+        hudRobot.textContent = "evoluzione: premi 9 (torretta deve essere viva)";
+        hudRobot.classList.remove("hidden");
+      } else {
+        hudRobot.classList.add("hidden");
       }
       return;
     }
@@ -1755,6 +2112,152 @@ function onState(msg){
   Object.keys(mineMeshes).forEach(id => {
     if (!seenMines.has(id)){ scene.remove(mineMeshes[id]); delete mineMeshes[id]; }
   });
+
+  // bonus 600 punti: torrette automatiche permanenti. Sono ferme (nessuna
+  // interpolazione di posizione), ma la CANNA ruota di continuo verso il
+  // bersaglio agganciato (t.aim) o in lento pattugliamento se non ha
+  // nessuno sotto tiro - qui si aggiornano solo posizione/colore/aim/
+  // evoluzione, la rotazione vera e propria e' nel render loop (stessa
+  // idea della 2D: interpolazione angolare morbida, non uno scatto).
+  const seenTurrets = new Set();
+  (msg.turrets||[]).forEach(t => {
+    seenTurrets.add(t.id);
+    let entry = turretMeshes[t.id];
+    if (!entry){
+      const hex = playerColorHex[t.owner] !== undefined ? playerColorHex[t.owner] : 0xff3b5c;
+      const group = makeTurretMesh(hex);
+      group.position.set(t.x*CELL + CELL/2, 0, t.y*CELL + CELL/2);
+      scene.add(group);
+      entry = turretMeshes[t.id] = group;
+    }
+    // Bersaglio corrente: t.aim e' [gx, gy] in coordinate di griglia
+    // (stessa convenzione della 2D), o assente/null se non sta tracciando
+    // nessuno. L'angolo viene ricalcolato ogni state per restare sempre
+    // aggiornato col bersaglio piu' recente confermato dal server.
+    if (t.aim){
+      const dx = t.aim[0] - t.x, dz = t.aim[1] - t.y;
+      entry.userData.aim = Math.atan2(dz, dx); // angolo sul piano orizzontale (X,Z)
+    } else {
+      entry.userData.aim = null;
+    }
+    // Torretta evoluta (bonus 1000 punti, tasto 9): stessa piastra, stesso
+    // corpo - unica differenza visiva l'anello colorato attorno alla base.
+    entry.userData.ring.visible = !!t.evolved;
+    // Scritta "LEVEL UP" (bonus 1000 punti): t.level_up e' server-
+    // authoritative (vedi ROBOT_LEVELUP_DISPLAY_SECONDS/level_up_left in
+    // main.py), quindi sparisce da sola senza bisogno di un timer lato
+    // client - qui basta rispecchiare lo stato ad ogni "state" ricevuto.
+    entry.userData.levelUpSprite.visible = !!t.level_up;
+  });
+  Object.keys(turretMeshes).forEach(id => {
+    if (!seenTurrets.has(id)){ scene.remove(turretMeshes[id]); delete turretMeshes[id]; }
+  });
+
+  // bonus 900 punti: pet fedele. Si muove come un giocatore (x/y continui
+  // + facing), quindi qui si usa lo stesso schema di lerp verso target
+  // gia' collaudato per remotePlayers/missili, invece del "dead
+  // reckoning" complesso della 2D — coerente con lo stile gia' scelto
+  // per gli altri oggetti mobili in questa versione 3D.
+  const seenPets = new Set();
+  (msg.pets||[]).forEach(pet => {
+    seenPets.add(pet.id);
+    const wx = pet.x*CELL + CELL/2, wz = pet.y*CELL + CELL/2;
+    let entry = petMeshes[pet.id];
+    if (!entry){
+      const hex = playerColorHex[pet.owner] !== undefined ? playerColorHex[pet.owner] : 0xffd400;
+      const group = makePetMesh(hex);
+      group.position.set(wx, 0, wz);
+      scene.add(group);
+      entry = petMeshes[pet.id] = { group, x:wx, z:wz, targetX:wx, targetZ:wz };
+    }
+    entry.targetX = wx; entry.targetZ = wz;
+    if (pet.facing){
+      const ang = { right:Math.PI/2, left:-Math.PI/2, down:Math.PI, up:0 }[pet.facing];
+      if (ang !== undefined) entry.group.rotation.y = ang;
+    }
+    // Bersaglio agganciato entro le 6 caselle (stessa meccanica della
+    // torretta): il puntino rosso si posiziona/mostra nel render loop.
+    entry.group.userData.aim = pet.aim || null;
+  });
+  Object.keys(petMeshes).forEach(id => {
+    if (!seenPets.has(id)){ scene.remove(petMeshes[id].group); delete petMeshes[id]; }
+  });
+
+  // bonus 1200 punti: mortai permanenti. Fermi (nessuna interpolazione di
+  // posizione, non ruotano mai una canna: e' un'arma indiretta ad arco),
+  // qui si aggiornano solo colore/aim - il "respiro" della bocca e il
+  // pulsare del nucleo sono nel render loop, stessa idea della torretta.
+  const seenMortars = new Set();
+  (msg.mortars||[]).forEach(mt => {
+    seenMortars.add(mt.id);
+    let entry = mortarMeshes[mt.id];
+    if (!entry){
+      const hex = playerColorHex[mt.owner] !== undefined ? playerColorHex[mt.owner] : 0xff9d3b;
+      const group = makeMortarMesh(hex);
+      group.position.set(mt.x*CELL + CELL/2, 0, mt.y*CELL + CELL/2);
+      scene.add(group);
+      entry = mortarMeshes[mt.id] = group;
+    }
+    entry.userData.aim = !!mt.aim;
+  });
+  Object.keys(mortarMeshes).forEach(id => {
+    if (!seenMortars.has(id)){ scene.remove(mortarMeshes[id]); delete mortarMeshes[id]; }
+  });
+
+  // bonus 1200 punti: bombe di mortaio in volo. NON seguono i corridoi
+  // come laser/missili: il server manda gia' x/y (posizione a terra,
+  // l'"ombra") e frac (0..1, progresso del volo) gia' interpolati (vedi
+  // bomb_public in main.py) - qui basta leggerli ad ogni state, nessun
+  // evento fire/end dedicato (stessa idea della 2D: currSnapshot.bombs
+  // letto direttamente ad ogni frame in drawBombs).
+  const seenBombs = new Set();
+  (msg.bombs||[]).forEach(b => {
+    seenBombs.add(b.id);
+    let entry = bombMeshes[b.id];
+    if (!entry){
+      const group = makeBombMesh();
+      scene.add(group);
+      entry = bombMeshes[b.id] = group;
+    }
+    const shadowX = b.x*CELL + CELL/2, shadowZ = b.y*CELL + CELL/2;
+    // Altezza dell'arco: massima a meta' volo (frac=0.5), zero a
+    // partenza e arrivo, esattamente come Math.sin(PI*frac) nella 2D.
+    const arcHeight = Math.sin(Math.PI * Math.min(1, b.frac||0)) * 1.1;
+    entry.position.set(shadowX, arcHeight, shadowZ);
+    entry.userData.shadow.material.opacity = 0.35 * (1 - arcHeight/1.4);
+  });
+  Object.keys(bombMeshes).forEach(id => {
+    if (!seenBombs.has(id)){ scene.remove(bombMeshes[id]); delete bombMeshes[id]; }
+  });
+
+  // Nuvole velenose a terra: dall'impatto del mortaio (radius >= 1) o
+  // dalla scia del blob vivo (radius 0, bonus 2000 - non ancora portato
+  // in 3D, ma la struttura e' gia' pronta per riceverlo). Si dissolvono
+  // da sole quando il server smette di mandarle (pz.left in esaurimento).
+  const seenPoison = new Set();
+  (msg.poison_zones||[]).forEach(pz => {
+    seenPoison.add(pz.id);
+    const rad = (typeof pz.radius === "number") ? pz.radius : 1;
+    let entry = poisonZoneMeshes[pz.id];
+    if (!entry){
+      const hex = playerColorHex[pz.owner] !== undefined ? playerColorHex[pz.owner] : 0x7cff3b;
+      const r = CELL * (0.5 + rad * 1.0);
+      const mesh = new THREE.Mesh(
+        new THREE.CylinderGeometry(r, r, 0.03, 16),
+        new THREE.MeshBasicMaterial({ color: hex, transparent:true, opacity:0.3 })
+      );
+      mesh.position.set(pz.x*CELL + CELL/2, 0.02, pz.y*CELL + CELL/2);
+      scene.add(mesh);
+      entry = poisonZoneMeshes[pz.id] = mesh;
+    }
+    // Sfuma dolcemente negli ultimi istanti prima di svanire (stessa
+    // soglia della 2D: fade = min(1, pz.left/0.6)).
+    const fade = Math.min(1, (pz.left !== undefined ? pz.left : 1) / 0.6);
+    entry.material.opacity = 0.3 * fade;
+  });
+  Object.keys(poisonZoneMeshes).forEach(id => {
+    if (!seenPoison.has(id)){ scene.remove(poisonZoneMeshes[id]); delete poisonZoneMeshes[id]; }
+  });
 }
 
 function onGameEvent(msg){
@@ -1784,10 +2287,26 @@ function onGameEvent(msg){
       showToast(msg.victim === myId ? "Sei stato eliminato!" : "Un giocatore \u00e8 stato eliminato");
       playEliminate();
       break;
-    case "bonus":
-      if (msg.player === myId) showToast("Bonus sbloccato: " + msg.bonus);
+    case "bonus": {
+      // Etichette leggibili per i bonus gia' implementati in 3D (stesso
+      // testo della versione 2D, vedi "labels" in onGameEvent li');
+      // quelli non ancora portati qui restano col nome grezzo come
+      // fallback, cosi' non serve piu' toccare questo switch ogni volta.
+      const bonusLabels = {
+        extra_life: "VITA EXTRA!",
+        laser: "LASER SBLOCCATO! (click sinistro per sparare)",
+        mines: "MINE SBLOCCATE! (tasto 1)",
+        missile: "MISSILE GUIDATO! (tasto 3)",
+        turret: "TORRETTA SBLOCCATA! raggio 10 caselle \u00b7 premi 5 per piazzarla",
+        pet: "PET FEDELE SBLOCCATO! premi 8 per evocarlo \u00b7 ti segue e attacca chi si avvicina",
+        robot: "EVOLUZIONE SBLOCCATA! premi 9 per evolvere la torretta, se \u00e8 ancora viva",
+        mortar: "MORTAIO SBLOCCATO! raggio 15 caselle \u00b7 premi 1 per schierarlo \u00b7 scavalca i muri",
+      };
+      const label = bonusLabels[msg.bonus] || ("Bonus sbloccato: " + msg.bonus);
+      if (msg.player === myId) showToast(label);
       playBonus();
       break;
+    }
     case "laser_fire": {
       // bonus 150 punti: nuovo colpo di laser sparato (dal server, in
       // risposta al comando manuale del giocatore). Crea un piccolo
@@ -1887,6 +2406,80 @@ function onGameEvent(msg){
       if (mm){ scene.remove(mm); delete mineMeshes[msg.id]; }
       break;
     }
+    case "turret_place": {
+      // Bonus 600 punti: la mesh vera e propria viene creata dal prossimo
+      // onState (blocco msg.turrets) - qui serve solo il feedback per chi
+      // l'ha piazzata, stesso comportamento di mine_place.
+      if (msg.player === myId) showToast("Torretta piazzata! E' permanente.");
+      playTurretPlace();
+      break;
+    }
+    case "turret_evolve": {
+      // Bonus 1000 punti: la torretta e' evoluta (potenziamento del
+      // "cervello": scala di fuoco raddoppiata lato server). L'anello
+      // colorato e la scritta "LEVEL UP" vengono gia' letti dal prossimo
+      // onState (t.evolved/t.level_up) - qui serve solo il feedback
+      // sonoro/toast per chi l'ha attivata.
+      if (msg.player === myId) showToast("La torretta si \u00e8 evoluta!");
+      playRobotEvolve();
+      break;
+    }
+    case "turret_destroyed": {
+      // Distrutta da bombolone/mongolfiera/corazza (stessa causa mostrata
+      // nella 2D). La mesh viene rimossa qui; se il colpo arriva prima che
+      // la mesh esista ancora (raro, race condition di rete) non succede
+      // nulla di grave: il prossimo onState la terrebbe comunque fuori
+      // dal set "seenTurrets" e verrebbe ripulita al giro successivo.
+      spawnExplosion(msg.x*CELL+CELL/2, msg.y*CELL+CELL/2, 0xff3b5c);
+      playTurretDestroy();
+      const what = msg.evolved ? "Navicella" : "Torretta";
+      const whose = (msg.owner === myId) ? "La tua " + what.toLowerCase() : what + " avversaria";
+      showToast(whose + " \u00e8 stata distrutta!");
+      const tm = turretMeshes[msg.id];
+      if (tm){ scene.remove(tm); delete turretMeshes[msg.id]; }
+      break;
+    }
+    case "pet_summon": {
+      // Bonus 900 punti: la mesh vera e propria viene creata dal prossimo
+      // onState (blocco msg.pets) - qui serve solo il feedback per chi
+      // l'ha evocato, stesso comportamento di turret_place/mine_place.
+      if (msg.player === myId) showToast("Pet evocato! Ti seguir\u00e0 finch\u00e9 non viene distrutto.");
+      playPetSpawn();
+      break;
+    }
+    case "pet_destroyed": {
+      // Distrutto da qualsiasi arma nemica (stessa gamma di cause della
+      // 2D: mina, missile, laser, corazza, ecc.) - qui non serve
+      // distinguere la causa nel testo, basta il colore dell'esplosione
+      // nel colore del proprietario, come nella 2D.
+      const ownerHex = playerColorHex[msg.owner] !== undefined ? playerColorHex[msg.owner] : 0xffffff;
+      spawnExplosion(msg.x*CELL+CELL/2, msg.y*CELL+CELL/2, ownerHex);
+      playTurretDestroy(); // stessa base sonora (esplosione + tono grave) usata dalla 2D per il pet
+      if (msg.owner === myId) showToast("Il tuo pet \u00e8 stato distrutto!");
+      const pm = petMeshes[msg.id];
+      if (pm){ scene.remove(pm.group); delete petMeshes[msg.id]; }
+      break;
+    }
+    case "mortar_place": {
+      // Bonus 1200 punti: la mesh vera e propria viene creata dal prossimo
+      // onState (blocco msg.mortars) - qui serve solo il feedback per chi
+      // l'ha schierato, stesso comportamento di turret_place.
+      if (msg.player === myId) showToast("Mortaio schierato! E' permanente.");
+      playMortarPlace();
+      break;
+    }
+    case "mortar_fire": {
+      // Solo suono: la bomba in volo viene disegnata ad ogni frame
+      // leggendo msg.bombs (autorita' server, vedi onState), stessa
+      // idea della 2D (drawBombs legge currSnapshot.bombs).
+      playMortarFire();
+      break;
+    }
+    case "mortar_impact": {
+      spawnExplosion(msg.x*CELL+CELL/2, msg.y*CELL+CELL/2, 0xffb347);
+      playMortarImpact();
+      break;
+    }
   }
 }
 
@@ -1937,6 +2530,74 @@ function animate(){
   const minePulse = 0.75 + 0.25*Math.sin(performance.now()*0.006);
   Object.values(mineMeshes).forEach(mesh => {
     if (mesh.userData.core) mesh.userData.core.scale.setScalar(minePulse);
+  });
+  // bonus 600 punti: torrette automatiche. La canna ruota morbidamente
+  // verso l'ultimo bersaglio agganciato (userData.aim, aggiornato in
+  // onState) con la stessa interpolazione angolare "smorzata" della 2D
+  // (drawTurrets: turretAim[t.id] += d*0.25), gestendo il wrap a +/-PI;
+  // se non sta tracciando nessuno la canna gira lentamente da sola
+  // ("pattugliamento"). Il nucleo pulsa piu' veloce e diventa rosso
+  // quando sta tracciando, esattamente come nella 2D.
+  const nowTurret = performance.now();
+  Object.values(turretMeshes).forEach(g => {
+    const tracking = g.userData.aim !== null;
+    if (tracking){
+      let d = g.userData.aim - g.userData.currentAng;
+      while (d > Math.PI) d -= Math.PI * 2;
+      while (d < -Math.PI) d += Math.PI * 2;
+      g.userData.currentAng += d * 0.25;
+    } else {
+      g.userData.currentAng += 0.012; // pattugliamento lento, stesso ritmo della 2D
+    }
+    g.userData.barrelPivot.rotation.y = -g.userData.currentAng;
+    const turretPulse = 0.75 + 0.25*Math.abs(Math.sin(nowTurret / (tracking ? 140 : 320)));
+    g.userData.core.scale.setScalar(turretPulse);
+    g.userData.core.material.color.setHex(tracking ? 0xff5b5b : 0xffffff);
+    g.userData.core.material.emissive.setHex(tracking ? 0xff5b5b : 0xffffff);
+    g.userData.halo.material.opacity = tracking ? 0.34 : 0.22;
+    // Anello evoluto (bonus 1000 punti): leggermente pulsante per farsi
+    // notare, come nella 2D, solo se t.evolved (userData.ring.visible).
+    if (g.userData.ring.visible){
+      g.userData.ring.material.opacity = 0.55 + 0.25*Math.abs(Math.sin(nowTurret / 260));
+    }
+  });
+  // bonus 900 punti: pet fedele. Si muove come un giocatore (stessa
+  // interpolazione/masticazione di remotePlayers, vedi sopra), scalato
+  // pero' a 0.5. Il puntino rosso di mira si posiziona davanti al pet
+  // nella direzione del bersaglio agganciato (userData.aim), o resta
+  // nascosto se non sta puntando nessuno - stessa idea del puntino 2D
+  // "davanti alla bocca".
+  Object.values(petMeshes).forEach(pm => {
+    pm.x += (pm.targetX - pm.x) * LERP;
+    pm.z += (pm.targetZ - pm.z) * LERP;
+    pm.group.position.set(pm.x, 0, pm.z);
+    const moving = Math.abs(pm.targetX - pm.x) > 0.01 || Math.abs(pm.targetZ - pm.z) > 0.01;
+    animatePacmanMouth(pm.group.userData.body, dt, moving);
+    const aim = pm.group.userData.aim;
+    const aimDot = pm.group.userData.aimDot;
+    if (aim){
+      const dx = aim[0]*CELL + CELL/2 - pm.x, dz = aim[1]*CELL + CELL/2 - pm.z;
+      const ang = Math.atan2(dx, dz);
+      aimDot.position.set(Math.sin(ang) * 0.22, 0.31, Math.cos(ang) * 0.22);
+      aimDot.visible = true;
+    } else {
+      aimDot.visible = false;
+    }
+  });
+  // bonus 1200 punti: mortai. NON ruotano mai (arma indiretta ad arco,
+  // vedi makeMortarMesh) - solo la bocca "respira" (si allarga
+  // leggermente quando ha agganciato un bersaglio) e il nucleo pulsa
+  // piu' rosso, stessa idea del "respiro"/pulse della 2D (drawMortars).
+  const nowMortar = performance.now();
+  Object.values(mortarMeshes).forEach(g => {
+    const tracking = g.userData.aim;
+    const mouthScale = (tracking ? 1.12 : 1) + Math.sin(nowMortar / (tracking ? 180 : 500)) * 0.04;
+    g.userData.mouth.scale.set(mouthScale, 1, mouthScale);
+    const pulse = 0.6 + 0.4 * Math.abs(Math.sin(nowMortar / (tracking ? 140 : 320)));
+    g.userData.core.scale.setScalar(pulse);
+    g.userData.core.material.color.setHex(tracking ? 0xff5b5b : 0x3a2213);
+    g.userData.core.material.emissive.setHex(tracking ? 0xff5b5b : 0x3a2213);
+    g.userData.halo.material.opacity = tracking ? 0.30 : 0.18;
   });
   // esplosioni (missile_end/missile_reflect, in futuro anche mine/superbomb):
   // si espandono e sfumano in ~350ms, poi si rimuovono da sole.
