@@ -110,6 +110,8 @@
   <div>stanza <b id="hudRoom"></b> — <span id="hudMapName"></span></div>
   <div id="hudScore">punti: 0</div>
   <div id="hudLives">vite: 0</div>
+  <div id="hudMissile" class="hidden" style="color:#8fd3ff;"></div>
+  <div id="hudMines" class="hidden" style="color:#2bff5c;"></div>
 </div>
 <div id="toast"></div>
 <div id="hint" class="hidden">Click per guardarti intorno — WASD = movimento relativo allo sguardo — tasto destro = spara laser (se sbloccato)</div>
@@ -496,6 +498,21 @@ let pelletMeshes = {};   // "x,y" -> THREE.Mesh
 let powerPelletCells = new Set();
 let remotePlayers = {};  // id -> {group, targetX, targetZ, colorHex}
 let laserMeshes = {};    // id -> {mesh, x, z, targetX, targetZ} bonus 150 punti: proiettili laser in volo
+let missileMeshes = {};  // id -> {mesh, x, z, targetX, targetZ} bonus 400 punti: missile guidato in volo
+let mineMeshes = {};     // id -> mesh bonus 200 punti: mine posate, statiche (nessuna interpolazione)
+let playerColorHex = {}; // playerId -> colore primario (int), aggiornato da onState/onLobbyState:
+                          // serve a colorare oggetti "di proprieta'" di un giocatore (missile, ecc.)
+                          // per riconoscerne subito il lanciatore, come nella versione 2D.
+let explosions = [];     // { mesh, start } - piccola sfera che si espande e sfuma, riusata da
+                          // qualsiasi evento "botto" (missile_end, missile_reflect, e in futuro
+                          // mine_boom/superbomb/ecc.) invece di scrivere un effetto ad hoc ognuno.
+function spawnExplosion(wx, wz, colorHex){
+  const mat = new THREE.MeshBasicMaterial({ color: colorHex, transparent:true, opacity:0.9 });
+  const mesh = new THREE.Mesh(new THREE.SphereGeometry(0.22, 10, 8), mat);
+  mesh.position.set(wx, 0.55, wz);
+  scene.add(mesh);
+  explosions.push({ mesh, start: performance.now() });
+}
 
 function initThree(){
   scene = new THREE.Scene();
@@ -678,6 +695,48 @@ function makeCharacterMesh(colorHex){
   return g;
 }
 
+/* ---- bonus 400 punti: missile guidato — stessa idea della versione 2D
+   (drawMissiles: alone translucido nel colore del proprietario + nucleo
+   bianco acceso al centro), qui come due sfere in un gruppo. ---- */
+function makeMissileMesh(colorHex){
+  const g = new THREE.Group();
+  const halo = new THREE.Mesh(
+    new THREE.SphereGeometry(0.22, 10, 8),
+    new THREE.MeshBasicMaterial({ color: colorHex, transparent:true, opacity:0.35 })
+  );
+  g.add(halo);
+  const core = new THREE.Mesh(
+    new THREE.SphereGeometry(0.08, 8, 6),
+    new THREE.MeshStandardMaterial({ color:0xe8f7ff, emissive:0xe8f7ff, emissiveIntensity:1.3 })
+  );
+  g.add(core);
+  return g;
+}
+
+/* ---- bonus 200 punti: mina — stessa idea della versione 2D (drawMines:
+   quadrato pieno bordato di scuro con nucleo bianco pulsante), qui come
+   un piccolo cilindro basso nel colore del proprietario con un nucleo
+   che pulsa lentamente per restare visibile anche da lontano. A
+   differenza del missile la mina resta ferma: nessuna interpolazione,
+   basta posizionarla una volta e lasciarla li'. ---- */
+function makeMineMesh(colorHex){
+  const g = new THREE.Group();
+  const base = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.18, 0.2, 0.12, 10),
+    new THREE.MeshStandardMaterial({ color: colorHex })
+  );
+  base.position.y = 0.06;
+  g.add(base);
+  const core = new THREE.Mesh(
+    new THREE.SphereGeometry(0.06, 8, 6),
+    new THREE.MeshStandardMaterial({ color:0xffffff, emissive:0xffffff, emissiveIntensity:1.1 })
+  );
+  core.position.y = 0.16;
+  g.add(core);
+  g.userData.core = core; // per farlo pulsare nel render loop
+  return g;
+}
+
 /* ============================================================
    MOVIMENTO: WASD relativo allo sguardo (yaw della camera), non piu'
    fisso rispetto alla mappa. "W" e' sempre "avanti rispetto a dove sto
@@ -796,6 +855,34 @@ document.addEventListener("mousedown", e => {
   sendMsg({ type:"fire_laser", direction: dir });
 });
 
+/* ============================================================
+   MISSILE GUIDATO (bonus 400 punti): stesso tasto "3" della
+   versione 2D. A differenza del laser non serve mirare - il
+   server aggancia da solo il nemico piu' vicino e lo insegue via
+   pathfinding (vedi try_fire_missile/move_missiles in main.py) -
+   quindi qui basta il tasto, senza leggere lo sguardo.
+   ============================================================ */
+window.addEventListener("keydown", e => {
+  if (currentScreen !== "game") return;
+  if (e.key !== "3") return;
+  sendMsg({ type:"fire_missile" });
+});
+
+/* ============================================================
+   MINE (bonus 200 punti): stesso tasto "1" della versione 2D. Il
+   server e' l'autorita' su quante mine restano (mines_left) e ignora
+   la richiesta se il bonus non e' sbloccato o le mine sono finite -
+   qui basta il tasto, nessun controllo lato client (vedi try_place_mine
+   in main.py). NB: nella 2D il tasto "1" gestisce anche la catena
+   mortaio/bombolone/mongolfiera una volta finite le mine - per ora,
+   come da richiesta, porto solo il primo anello (le mine).
+   ============================================================ */
+window.addEventListener("keydown", e => {
+  if (currentScreen !== "game") return;
+  if (e.key !== "1") return;
+  sendMsg({ type:"place_mine" });
+});
+
 function enterGame(){
   showScreen("game");
   if (renderer) renderer.domElement.addEventListener("click", () => renderer.domElement.requestPointerLock());
@@ -823,18 +910,36 @@ function onState(msg){
     seen.add(p.id);
     const wx = p.x*CELL + CELL/2, wz = p.y*CELL + CELL/2;
 
+    playerColorHex[p.id] = hexToInt(COLOR_HEX[(p.colors||[])[0]] || "#5ab8ff");
+
     if (p.id === myId){
       if (!myInited){ myRenderX = wx; myRenderZ = wz; myInited = true; }
       else { myRenderX = wx; myRenderZ = wz; } // target aggiornato, il lerp e' nel render loop
       document.getElementById("hudScore").textContent = "punti: " + (p.points||0);
       document.getElementById("hudLives").textContent = "vite: " + (p.lives||0);
       document.getElementById("deadBanner").classList.toggle("hidden", p.alive !== false);
+      // bonus 400 punti: missile guidato, sbloccato ma non ancora usato
+      const hudMissile = document.getElementById("hudMissile");
+      if (p.missile && p.missiles_left > 0){
+        hudMissile.textContent = "missile: " + p.missiles_left + " (tasto 3)";
+        hudMissile.classList.remove("hidden");
+      } else {
+        hudMissile.classList.add("hidden");
+      }
+      // bonus 200 punti: mine, sbloccate ma non ancora esaurite
+      const hudMines = document.getElementById("hudMines");
+      if (p.mines && p.mines_left > 0){
+        hudMines.textContent = "mine: " + p.mines_left + " (tasto 1)";
+        hudMines.classList.remove("hidden");
+      } else {
+        hudMines.classList.add("hidden");
+      }
       return;
     }
 
     let rp = remotePlayers[p.id];
     if (!rp){
-      const hex = hexToInt(COLOR_HEX[(p.colors||[])[0]] || "#888888");
+      const hex = playerColorHex[p.id];
       const group = makeCharacterMesh(hex);
       scene.add(group);
       rp = remotePlayers[p.id] = { group, x:wx, z:wz, targetX:wx, targetZ:wz };
@@ -865,6 +970,37 @@ function onState(msg){
     entry.targetZ = lz.y*CELL + CELL/2;
     const ang = { "1,0":Math.PI/2, "-1,0":-Math.PI/2, "0,1":Math.PI, "0,-1":0 }[lz.dir[0]+","+lz.dir[1]];
     if (ang !== undefined) entry.mesh.rotation.y = ang;
+  });
+
+  // bonus 400 punti: missile guidato. Il server manda gia' x/y continui
+  // (vedi missile_public in main.py), quindi qui aggiorna solo il
+  // bersaglio di interpolazione — creazione/rimozione restano gestite
+  // dagli eventi missile_fire/missile_end/missile_reflect.
+  (msg.missiles||[]).forEach(mz => {
+    const entry = missileMeshes[mz.id];
+    if (!entry) return; // missile_fire non ancora processato: aspetta il prossimo state
+    entry.targetX = mz.x*CELL + CELL/2;
+    entry.targetZ = mz.y*CELL + CELL/2;
+  });
+
+  // bonus 200 punti: mine. Sono ferme (nessuna interpolazione), quindi lo
+  // state serve solo a: 1) crearle se mancano (es. ci si e' uniti a una
+  // partita gia' iniziata e l'evento "mine_place" originale non e' mai
+  // arrivato a questo client) e 2) rimuovere quelle disinnescate nel caso
+  // l'evento "mine_boom"/"mine_destroyed" fosse andato perso.
+  const seenMines = new Set();
+  (msg.mines||[]).forEach(m => {
+    seenMines.add(m.id);
+    if (!mineMeshes[m.id]){
+      const hex = playerColorHex[m.owner] !== undefined ? playerColorHex[m.owner] : 0x2bff5c;
+      const mesh = makeMineMesh(hex);
+      mesh.position.set(m.x*CELL + CELL/2, 0, m.y*CELL + CELL/2);
+      scene.add(mesh);
+      mineMeshes[m.id] = mesh;
+    }
+  });
+  Object.keys(mineMeshes).forEach(id => {
+    if (!seenMines.has(id)){ scene.remove(mineMeshes[id]); delete mineMeshes[id]; }
   });
 }
 
@@ -931,6 +1067,58 @@ function onGameEvent(msg){
       if (lz){ scene.remove(lz.mesh); delete laserMeshes[msg.id]; }
       break;
     }
+    case "missile_fire": {
+      // bonus 400 punti: missile guidato lanciato. Il colore dell'alone
+      // e' quello del proprietario (playerColorHex), cosi' si riconosce
+      // subito di chi e' - stessa idea della versione 2D.
+      if (msg.owner === myId) showToast("Missile lanciato (" + msg.left + " rimasti)");
+      const wx = msg.x*CELL + CELL/2, wz = msg.y*CELL + CELL/2;
+      const mesh = makeMissileMesh(playerColorHex[msg.owner] || 0x5ab8ff);
+      mesh.position.set(wx, 0.55, wz);
+      scene.add(mesh);
+      missileMeshes[msg.id] = { mesh, x:wx, z:wz, targetX:wx, targetZ:wz };
+      break;
+    }
+    case "missile_reflect": {
+      // respinto da una corazza laser: esplode li' ma NON viene rimosso
+      // dal client - il server manda comunque un successivo missile_end
+      // (stesso comportamento della versione 2D), quindi qui e' solo un
+      // lampo visivo in piu'.
+      spawnExplosion(msg.x*CELL+CELL/2, msg.y*CELL+CELL/2, 0x4dffe8);
+      break;
+    }
+    case "missile_end": {
+      spawnExplosion(msg.x*CELL+CELL/2, msg.y*CELL+CELL/2, 0x8fd3ff);
+      const mz = missileMeshes[msg.id];
+      if (mz){ scene.remove(mz.mesh); delete missileMeshes[msg.id]; }
+      break;
+    }
+    case "mine_place": {
+      // La mesh vera e propria viene creata dal prossimo onState (blocco
+      // msg.mines) - qui serve solo il feedback per chi l'ha piazzata.
+      if (msg.player === myId) showToast("Mina posata (" + msg.left + " rimaste)");
+      break;
+    }
+    case "mine_boom": {
+      // Mina calpestata: stesso colore/effetto del missile che esplode,
+      // come nella 2D (playBalloonBomb riusato per lo stesso "botto").
+      spawnExplosion(msg.x*CELL+CELL/2, msg.y*CELL+CELL/2, 0xff9d1f);
+      const mm = mineMeshes[msg.id];
+      if (mm){ scene.remove(mm); delete mineMeshes[msg.id]; }
+      break;
+    }
+    case "mine_destroyed": {
+      // Disinnescata da corazza/bombolone/mongolfiera (mina AVVERSARIA:
+      // le proprie restano sempre intatte, come nella 2D). Nel caso di
+      // rimozione per disconnessione del proprietario il server non manda
+      // x/y (la mina sparisce e basta, senza "botto" visivo).
+      if (msg.x !== undefined && msg.y !== undefined){
+        spawnExplosion(msg.x*CELL+CELL/2, msg.y*CELL+CELL/2, 0x8fe0ff);
+      }
+      const mm = mineMeshes[msg.id];
+      if (mm){ scene.remove(mm); delete mineMeshes[msg.id]; }
+      break;
+    }
   }
 }
 
@@ -966,6 +1154,29 @@ function animate(){
     lz.z += (lz.targetZ - lz.z) * LASER_LERP;
     lz.mesh.position.set(lz.x, 0.65, lz.z);
   });
+  // bonus 400 punti: missile guidato, stessa interpolazione dei laser
+  Object.values(missileMeshes).forEach(mz => {
+    mz.x += (mz.targetX - mz.x) * LASER_LERP;
+    mz.z += (mz.targetZ - mz.z) * LASER_LERP;
+    mz.mesh.position.set(mz.x, 0.55, mz.z);
+  });
+  // bonus 200 punti: mine ferme, solo il nucleo bianco pulsa (stessa idea
+  // del nucleo lampeggiante di drawMines nella 2D) per restare visibile.
+  const minePulse = 0.75 + 0.25*Math.sin(performance.now()*0.006);
+  Object.values(mineMeshes).forEach(mesh => {
+    if (mesh.userData.core) mesh.userData.core.scale.setScalar(minePulse);
+  });
+  // esplosioni (missile_end/missile_reflect, in futuro anche mine/superbomb):
+  // si espandono e sfumano in ~350ms, poi si rimuovono da sole.
+  const EXPLOSION_MS = 350;
+  const now3d = performance.now();
+  for (let i = explosions.length - 1; i >= 0; i--){
+    const ex = explosions[i];
+    const t = (now3d - ex.start) / EXPLOSION_MS;
+    if (t >= 1){ scene.remove(ex.mesh); explosions.splice(i, 1); continue; }
+    ex.mesh.scale.setScalar(1 + t*2.4);
+    ex.mesh.material.opacity = Math.max(0, 0.9 * (1 - t));
+  }
 
   camera.rotation.order = "YXZ";
   camera.rotation.y = yaw;
