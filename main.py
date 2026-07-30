@@ -1382,7 +1382,13 @@ class Room:
                             or (extra_wall is not None and extra_wall(x + ndx, y + ndy))):
                         direction = next_direction
                         next_direction = None
-                    # se e' muro: la coda resta in memoria (regola 3)
+                    else:
+                        # E' muro: la coda resta in memoria (regola 3), ma il
+                        # personaggio deve comunque girarsi SUBITO a guardare
+                        # verso la direzione appena richiesta (feedback
+                        # visivo immediato al tasto premuto), anche se non
+                        # puo' fisicamente avanzare in quel verso.
+                        facing = next_direction
             if direction is None:
                 break
             facing = direction
@@ -2183,12 +2189,13 @@ class Room:
         per TUTTA la partita da quel momento (non scade piu'). A differenza
         della versione 2D, il laser NON spara piu' in automatico per
         prossimita': e' il giocatore a decidere quando sparare (tasto
-        destro del mouse, vedi try_fire_laser/mtype "fire_laser" lato
-        server e il listener "mousedown" lato client). Questo metodo si
-        occupa solo di scalare il cooldown ad ogni tick, cosi' che
-        try_fire_laser possa verificarlo prima di consentire un nuovo
-        colpo (stessa cadenza LASER_INTERVAL_SECONDS di prima, ma a
-        richiesta invece che automatica)."""
+        sinistro del mouse, vedi try_fire_laser/mtype "fire_laser" lato
+        server e il listener "mousedown" lato client). Non c'e' nessuna
+        cadenza di fuoco: ogni pressione del tasto fa partire subito un
+        nuovo colpo (vedi try_fire_laser). Questo metodo scala solo il
+        countdown residuo di LASER_FIRST_DELAY_SECONDS dopo lo sblocco
+        iniziale, cosi' il primo colpo non parte istantaneamente appena
+        preso il bonus."""
         for p in list(self.players.values()):
             if p.laser_cd > 0:
                 p.laser_cd -= TICK_DT
@@ -2197,13 +2204,13 @@ class Room:
 
     def try_fire_laser(self, shooter, direction=None):
         """Spara un colpo di laser su richiesta esplicita del giocatore
-        (tasto destro del mouse, mira libera con la visuale 3D). Sostituisce
+        (tasto sinistro del mouse, mira libera con la visuale 3D). Sostituisce
         l'auto-fire di prossimita' della versione 2D: qui il colpo parte
         SEMPRE nella direzione indicata dal client (il punto rosso al
-        centro dello schermo), non piu' verso il nemico piu' vicino. Il
-        server resta comunque l'autorita' su cooldown e condizioni di
-        sblocco, esattamente come le altre armi a comando manuale
-        (try_fire_missile, try_place_mine, ecc.)."""
+        centro dello schermo), non piu' verso il nemico piu' vicino. Nessuna
+        cadenza di fuoco: ogni chiamata (= ogni pressione del tasto) fa
+        partire un colpo immediatamente, l'unico limite e' lo sblocco del
+        bonus e le condizioni sotto (vivo, non invisibile, non intrappolato)."""
         if not shooter.alive or not shooter.has_laser:
             return
         if shooter.is_assassin:
@@ -2212,10 +2219,7 @@ class Room:
             return
         if shooter.trapped_left > 0:
             return
-        if shooter.laser_cd > 0:
-            return
         dx, dy = DIRECTIONS.get(direction, DIRECTIONS.get(shooter.facing, (1, 0)))
-        shooter.laser_cd = LASER_INTERVAL_SECONDS
         self.spawn_laser(shooter, dx, dy, direction or shooter.facing)
 
     def spawn_laser(self, shooter, dx=None, dy=None, facing=None):

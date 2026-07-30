@@ -114,7 +114,7 @@
   <div id="hudMines" class="hidden" style="color:#2bff5c;"></div>
 </div>
 <div id="toast"></div>
-<div id="hint" class="hidden">Click per guardarti intorno — WASD = movimento relativo allo sguardo — tasto destro = spara laser (se sbloccato)</div>
+<div id="hint" class="hidden">Click per guardarti intorno — WASD = movimento relativo allo sguardo — tasto sinistro = spara laser (se sbloccato)</div>
 <div id="deadBanner" class="hidden">SEI MORTO — attendi il respawn</div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
@@ -835,20 +835,18 @@ document.addEventListener("mousemove", e => {
 /* ============================================================
    LASER (bonus 150 punti): a differenza della versione 2D non
    spara piu' in automatico quando un nemico e' vicino. E' il
-   giocatore a decidere quando sparare, con il tasto destro del
+   giocatore a decidere quando sparare, con il tasto sinistro del
    mouse, mirando con il punto rosso (crosshair) gia' al centro
-   dello schermo. La direzione inviata al server e' quella di
-   griglia piu' allineata allo sguardo attuale (stesso snap ai 4
-   cardinali gia' usato per il movimento, vedi dirFromVector):
-   il server accetta solo le 4 direzioni di griglia, non un
-   angolo libero.
+   dello schermo. Nessuna cadenza di fuoco: ogni click fa partire
+   subito un nuovo colpo (vedi try_fire_laser lato server). La
+   direzione inviata al server e' quella di griglia piu' allineata
+   allo sguardo attuale (stesso snap ai 4 cardinali gia' usato per
+   il movimento, vedi dirFromVector): il server accetta solo le 4
+   direzioni di griglia, non un angolo libero.
    ============================================================ */
-document.addEventListener("contextmenu", e => {
-  if (currentScreen === "game") e.preventDefault(); // niente menu del browser durante il gioco
-});
 document.addEventListener("mousedown", e => {
   if (currentScreen !== "game" || !locked) return;
-  if (e.button !== 2) return; // solo tasto destro
+  if (e.button !== 0) return; // solo tasto sinistro
   e.preventDefault();
   const fx = -Math.sin(yaw), fz = -Math.cos(yaw); // direzione in cui sto guardando (piano orizzontale)
   const dir = dirFromVector(fx, fz);
@@ -946,8 +944,8 @@ function onState(msg){
     }
     rp.targetX = wx; rp.targetZ = wz;
     rp.group.visible = p.alive !== false;
-    if (p.direction){
-      const ang = { right:Math.PI/2, left:-Math.PI/2, down:Math.PI, up:0 }[p.direction];
+    if (p.facing){
+      const ang = { right:Math.PI/2, left:-Math.PI/2, down:Math.PI, up:0 }[p.facing];
       if (ang !== undefined) rp.group.rotation.y = ang;
     }
   });
@@ -1038,15 +1036,12 @@ function onGameEvent(msg){
       // "proiettile" luminoso che il render loop muove morbidamente
       // verso la posizione confermata a ogni "event" successivo.
       const wx = msg.x*CELL + CELL/2, wz = msg.y*CELL + CELL/2;
-      const geo = new THREE.CylinderGeometry(0.06, 0.06, 0.5, 6);
+      const geo = new THREE.SphereGeometry(0.1, 10, 8);
       const mat = new THREE.MeshStandardMaterial({
         color: 0xff5a4d, emissive: 0xff5a4d, emissiveIntensity: 1.4,
       });
       const mesh = new THREE.Mesh(geo, mat);
       mesh.position.set(wx, 0.65, wz);
-      const ang = { right:Math.PI/2, left:-Math.PI/2, down:Math.PI, up:0 }[msg.dir];
-      if (ang !== undefined) mesh.rotation.y = ang;
-      mesh.rotation.x = Math.PI/2; // il cilindro punta lungo z di default
       scene.add(mesh);
       laserMeshes[msg.id] = { mesh, x:wx, z:wz, targetX:wx, targetZ:wz, dir: msg.dir };
       break;
