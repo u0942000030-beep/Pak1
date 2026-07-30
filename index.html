@@ -148,7 +148,7 @@
   <canvas id="minimap" width="240" height="240"></canvas>
 </div>
 <div id="toast"></div>
-<div id="hint" class="hidden">Click per guardarti intorno — WASD = movimento (la visuale sterza da sola nella direzione presa) — tasto sinistro = spara laser (se sbloccato)</div>
+<div id="hint" class="hidden">Click per guardarti intorno — WASD = avanti/sinistra/indietro/destra rispetto allo sguardo, la visuale sterza da sola verso la direzione presa — tasto sinistro = spara laser (se sbloccato)</div>
 <div id="deadBanner" class="hidden">SEI MORTO — attendi il respawn</div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
@@ -1063,16 +1063,19 @@ function makeMineMesh(colorHex){
 }
 
 /* ============================================================
-   MOVIMENTO: WASD/frecce sono ora direzioni ASSOLUTE di griglia
-   (W=su, S=giu', A=sinistra, D=destra, indipendentemente da dove sto
-   guardando), come nel Pac-Man classico. La visuale (yaw della camera)
-   NON e' piu' l'unica cosa che decide dove si va: e' il contrario,
-   quando premo un tasto di movimento la visuale sterza automaticamente
-   fino ad allinearsi con la direzione presa dal personaggio (vedi
-   steerCameraTowardsMovement nel render loop), invece di scattare di
-   colpo. Il mouse resta comunque libero di guardarsi intorno quando non
-   ci si sta muovendo o per un attimo mentre ci si muove: la sterzata
-   automatica riprende non appena il mouse smette di muoversi.
+   MOVIMENTO: WASD/frecce restano relative a dove sto guardando (come
+   un vero gioco in prima persona: "D" gira sempre verso la mia destra
+   sullo schermo, "A" verso la mia sinistra, "W" avanti, "S" indietro),
+   MA ora e' la visuale a inseguire il personaggio invece che il
+   contrario: appena premo un tasto, lo yaw corrente viene "agganciato"
+   (snap) alla direzione cardinale piu' vicina in base al tasto premuto
+   E allo sguardo ATTUALE in quel momento, poi il personaggio parte in
+   quella direzione di griglia e la visuale sterza dolcemente fino ad
+   allinearsi esattamente. Cosi' il tasto premuto corrisponde sempre a
+   cio' che vedi sullo schermo in quel momento (mai piu' "D" che ti
+   manda in una direzione che sullo schermo sembra tutt'altro), e in
+   piu' la visuale segue il personaggio con una sterzata morbida invece
+   di scattare di colpo.
    ============================================================ */
 let lastRequestedDir = null;
 function requestDir(dir){
@@ -1080,11 +1083,13 @@ function requestDir(dir){
   sendMsg({ type:"move", direction:dir });
 }
 
-// Tasto fisico -> direzione di griglia assoluta diretta.
+// Tasto fisico -> "verso" astratto relativo allo sguardo (non ancora
+// una direzione di griglia: quella si calcola al momento della
+// pressione, in base allo yaw corrente in quell'istante).
 function normalizeMoveKey(key){
   const map = {
-    w:"up", W:"up", ArrowUp:"up",
-    s:"down", S:"down", ArrowDown:"down",
+    w:"forward", W:"forward", ArrowUp:"forward",
+    s:"backward", S:"backward", ArrowDown:"backward",
     a:"left", A:"left", ArrowLeft:"left",
     d:"right", D:"right", ArrowRight:"right",
   };
@@ -1092,15 +1097,28 @@ function normalizeMoveKey(key){
 }
 
 // Data una coppia (x,z) nel piano orizzontale, restituisce la direzione
-// di griglia il cui asse e' piu' allineato (snap ai 4 cardinali). Usata
-// dalla mira del laser per calcolare il "direction" cardinale di
-// fallback a partire dal vettore di mira libero. Convenzione del
-// progetto: up=[0,-1] (z decresce), down=[0,1] (z cresce), left=[-1,0]
-// (x decresce), right=[1,0] (x cresce) — vedi DIR_VEC e applyMapData
-// (wx = x*CELL, wz = y*CELL).
+// di griglia il cui asse e' piu' allineato (snap ai 4 cardinali).
+// Convenzione del progetto: up=[0,-1] (z decresce), down=[0,1] (z
+// cresce), left=[-1,0] (x decresce), right=[1,0] (x cresce) — vedi
+// DIR_VEC e applyMapData (wx = x*CELL, wz = y*CELL).
 function dirFromVector(x, z){
   return Math.abs(x) > Math.abs(z) ? (x > 0 ? "right" : "left")
                                     : (z > 0 ? "down" : "up");
+}
+
+// "Verso" astratto (forward/backward/left/right rispetto alla camera,
+// calcolato con lo yaw ATTUALE al momento della pressione) -> direzione
+// di griglia effettiva.
+function baseToGridDir(base){
+  const fx = -Math.sin(yaw), fz = -Math.cos(yaw); // avanti rispetto alla camera
+  const rx =  Math.cos(yaw), rz = -Math.sin(yaw); // destra rispetto alla camera
+  switch (base){
+    case "forward":  return dirFromVector(fx, fz);
+    case "backward": return dirFromVector(-fx, -fz);
+    case "right":    return dirFromVector(rx, rz);
+    case "left":     return dirFromVector(-rx, -rz);
+    default: return null;
+  }
 }
 
 // yaw "canonico" per ogni direzione di griglia, stessa convenzione usata
@@ -1108,35 +1126,39 @@ function dirFromVector(x, z){
 // yaw -PI/2 (fx=-sin(yaw)=1), down->yaw PI, left->yaw PI/2.
 const DIR_TO_YAW = { up: 0, right: -Math.PI/2, down: Math.PI, left: Math.PI/2 };
 
-const heldMoveKeys = new Set(); // "up"/"down"/"left"/"right" attualmente premuti
-let heldDir = null;             // ultimo tasto premuto, ha la priorita'
+const heldMoveKeys = new Set(); // "forward"/"backward"/"left"/"right" attualmente premuti
+let heldBase = null;            // ultimo tasto premuto, ha la priorita'
+let steerTargetYaw = null;      // direzione di griglia agganciata all'ultima pressione: verso cui sterzare
 
 function updateMovementDirection(){
-  if (!heldDir) return;
-  requestDir(heldDir);
+  if (!heldBase) return;
+  const dir = baseToGridDir(heldBase);
+  if (!dir) return;
+  requestDir(dir);
+  steerTargetYaw = DIR_TO_YAW[dir]; // la visuale insegue questa direzione, non piu' quella premuta a ripetizione
 }
 
 window.addEventListener("keydown", e => {
   if (currentScreen !== "game") return;
-  const dir = normalizeMoveKey(e.key);
-  if (!dir || heldMoveKeys.has(dir)) return; // ignora la ripetizione automatica del tasto tenuto premuto
-  heldMoveKeys.add(dir);
-  heldDir = dir;
+  const base = normalizeMoveKey(e.key);
+  if (!base || heldMoveKeys.has(base)) return; // ignora la ripetizione automatica del tasto tenuto premuto
+  heldMoveKeys.add(base);
+  heldBase = base;
   updateMovementDirection();
 });
 window.addEventListener("keyup", e => {
-  const dir = normalizeMoveKey(e.key);
-  if (!dir) return;
-  heldMoveKeys.delete(dir);
-  if (heldDir === dir){
+  const base = normalizeMoveKey(e.key);
+  if (!base) return;
+  heldMoveKeys.delete(base);
+  if (heldBase === base){
     // se restano altri tasti di movimento premuti, passa a uno di quelli
-    heldDir = heldMoveKeys.size ? heldMoveKeys.values().next().value : null;
-    if (heldDir) updateMovementDirection();
+    heldBase = heldMoveKeys.size ? heldMoveKeys.values().next().value : null;
+    if (heldBase) updateMovementDirection();
+    else steerTargetYaw = null; // nessun tasto premuto: la visuale resta libera, niente sterzata
   }
 });
 
 let yaw = 0, pitch = 0, locked = false;
-let mouseOverrideUntil = 0; // performance.now() finche' il mouse ha priorita' sulla sterzata automatica
 document.addEventListener("pointerlockchange", () => {
   locked = document.pointerLockElement && document.pointerLockElement.tagName === "CANVAS";
 });
@@ -1145,26 +1167,25 @@ document.addEventListener("mousemove", e => {
   yaw   -= e.movementX * 0.0022;
   pitch -= e.movementY * 0.0022;
   pitch = Math.max(-Math.PI/2+0.05, Math.min(Math.PI/2-0.05, pitch));
-  // il giocatore ha appena girato manualmente la visuale: lascia che
-  // resti libera per un attimo invece di "strapparla" subito indietro
-  // verso la direzione di marcia, poi la sterzata automatica riprende.
-  mouseOverrideUntil = performance.now() + 350;
+  // lo sguardo e' cambiato: se un tasto e' tenuto premuto, il "forward"/
+  // "left"/ecc. va reinterpretato rispetto al NUOVO sguardo, quindi la
+  // direzione di griglia (e il bersaglio della sterzata) va ricalcolata.
+  updateMovementDirection();
 });
 
-// Sterza dolcemente lo yaw verso la direzione di movimento corrente,
-// chiamata ogni frame dal render loop. Se non ci si sta muovendo, o se
-// il mouse ha appena preso il controllo, non tocca lo yaw.
+// Sterza dolcemente lo yaw verso la direzione di griglia agganciata
+// all'ultimo tasto premuto (steerTargetYaw), chiamata ogni frame dal
+// render loop. Se non c'e' nessun tasto di movimento premuto non tocca
+// lo yaw: lo sguardo resta libero.
 function steerCameraTowardsMovement(dt){
-  if (!heldDir) return;
-  if (performance.now() < mouseOverrideUntil) return;
-  const targetYaw = DIR_TO_YAW[heldDir];
+  if (steerTargetYaw === null) return;
   // porta la differenza nell'intervallo (-PI, PI] cosi' la sterzata
   // prende sempre la via piu' corta (mai un giro largo inutile).
-  let diff = targetYaw - yaw;
+  let diff = steerTargetYaw - yaw;
   diff = Math.atan2(Math.sin(diff), Math.cos(diff));
   const STEER_SPEED = 12; // rad/sec: sterzata rapida ma non istantanea
   const maxStep = STEER_SPEED * dt;
-  if (Math.abs(diff) <= maxStep) yaw = targetYaw;
+  if (Math.abs(diff) <= maxStep) yaw = steerTargetYaw;
   else yaw += Math.sign(diff) * maxStep;
 }
 
