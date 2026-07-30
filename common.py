@@ -69,7 +69,7 @@ RECONNECT_GRACE_SECONDS = 25.0
 # stanze dimenticate aperte accumulino codici e memoria all'infinito.
 LOBBY_IDLE_TIMEOUT_SECONDS = 900.0  # 15 minuti
 
-NORMAL_SPEED = 4.5          # celle al secondo
+NORMAL_SPEED = 3.4          # celle al secondo (ridotta da 4.5: il gioco era troppo veloce)
 ASSASSIN_SPEED_MULT = 1.1   # il super assassino (bonus 300 punti) e' 1.1x rispetto a 1.0 dei giocatori normali
 
 # ---- compensazione della latenza per le svolte (vedi Room._rewind_move

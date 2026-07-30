@@ -148,7 +148,7 @@
   <canvas id="minimap" width="240" height="240"></canvas>
 </div>
 <div id="toast"></div>
-<div id="hint" class="hidden">Click per guardarti intorno — WASD = movimento relativo allo sguardo — tasto sinistro = spara laser (se sbloccato)</div>
+<div id="hint" class="hidden">Click per guardarti intorno — WASD = movimento (la visuale sterza da sola nella direzione presa) — tasto sinistro = spara laser (se sbloccato)</div>
 <div id="deadBanner" class="hidden">SEI MORTO — attendi il respawn</div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
@@ -619,6 +619,164 @@ function spawnExplosion(wx, wz, colorHex){
   explosions.push({ mesh, start: performance.now() });
 }
 
+/* ============================================================
+   TEXTURE PROCEDURALE DI PIETRA per i cubetti dei muri: invece di un
+   materiale piatto in tinta unita, genera su <canvas> una mappa colore
+   (chiazze di tono piu' chiaro/scuro, macchie di sporco/logoramento,
+   crepe sottili) + una normal map ricavata dalla stessa mappa di
+   "altezza" (blocchi leggermente sbozzati, bordi smussati, crepe
+   incise) cosi' la luce le fa percepire come vero rilievo di pietra
+   invece che come texture stampata piatta. Generata UNA volta per
+   variante di colore del tema (non per cubetto: sarebbe troppo lento
+   e comunque invisibile alla distanza di gioco), poi ripetuta via UV
+   tiling su ogni cubetto - piccole differenze bastano a rompere la
+   ripetizione visiva perche' i cubetti sono gia' colorati "a chiazze".
+   ============================================================ */
+function makeStoneTextures(baseColorHex, seedStr){
+  const rng = mulberry32(hashSeed(seedStr));
+  const SIZE = 256;
+
+  const colorCanvas = document.createElement("canvas");
+  colorCanvas.width = colorCanvas.height = SIZE;
+  const cctx = colorCanvas.getContext("2d");
+
+  const heightCanvas = document.createElement("canvas");
+  heightCanvas.width = heightCanvas.height = SIZE;
+  const hctx = heightCanvas.getContext("2d");
+
+  const base = new THREE.Color(baseColorHex);
+  const toCss = (c) => `rgb(${Math.round(c.r*255)},${Math.round(c.g*255)},${Math.round(c.b*255)})`;
+
+  // fondo: colore base della variante
+  cctx.fillStyle = toCss(base);
+  cctx.fillRect(0, 0, SIZE, SIZE);
+  hctx.fillStyle = "#808080"; // grigio medio = altezza neutra
+  hctx.fillRect(0, 0, SIZE, SIZE);
+
+  // 1) grana di fondo: tanti puntini piccolissimi che rompono la
+  // piattezza del colore, come la superficie granulosa della pietra.
+  for (let i = 0; i < 2200; i++){
+    const x = rng()*SIZE, y = rng()*SIZE;
+    const r = 0.4 + rng()*1.1;
+    const shade = base.clone();
+    const delta = (rng()-0.5) * 0.16;
+    shade.offsetHSL(0, 0, delta);
+    cctx.fillStyle = toCss(shade);
+    cctx.globalAlpha = 0.5;
+    cctx.beginPath(); cctx.arc(x, y, r, 0, Math.PI*2); cctx.fill();
+    hctx.fillStyle = delta > 0 ? "#9a9a9a" : "#6a6a6a";
+    hctx.globalAlpha = 0.5;
+    hctx.beginPath(); hctx.arc(x, y, r, 0, Math.PI*2); hctx.fill();
+  }
+  cctx.globalAlpha = 1; hctx.globalAlpha = 1;
+
+  // 2) chiazze di logoramento/muschio/sporco: macchie morbide irregolari,
+  // piu' scure o leggermente verdastre, concentrate verso i bordi del
+  // blocco (dove la pietra si consuma/si sporca di piu').
+  const patchCount = 5 + Math.floor(rng()*5);
+  for (let i = 0; i < patchCount; i++){
+    const x = rng()*SIZE, y = rng()*SIZE;
+    const rad = SIZE*(0.08 + rng()*0.16);
+    const grad = cctx.createRadialGradient(x, y, 0, x, y, rad);
+    const wearShade = base.clone().offsetHSL((rng()-0.5)*0.03, -0.1, -0.22 - rng()*0.12);
+    grad.addColorStop(0, toCss(wearShade));
+    grad.addColorStop(1, "rgba(0,0,0,0)");
+    cctx.fillStyle = grad;
+    cctx.globalAlpha = 0.35 + rng()*0.25;
+    cctx.beginPath(); cctx.arc(x, y, rad, 0, Math.PI*2); cctx.fill();
+    // le chiazze di logoramento sono leggermente incavate: altezza piu' bassa
+    const hgrad = hctx.createRadialGradient(x, y, 0, x, y, rad);
+    hgrad.addColorStop(0, "rgba(70,70,70,0.6)");
+    hgrad.addColorStop(1, "rgba(128,128,128,0)");
+    hctx.fillStyle = hgrad;
+    hctx.beginPath(); hctx.arc(x, y, rad, 0, Math.PI*2); hctx.fill();
+  }
+  cctx.globalAlpha = 1;
+
+  // 3) crepe sottili: linee spezzate irregolari (random walk), scure
+  // nella color map e nettamente incavate nella height map, cosi' la
+  // normal map derivata le rende leggibili come vere fessure nella
+  // pietra e non come semplici graffi disegnati sopra.
+  const crackCount = 3 + Math.floor(rng()*3);
+  for (let c = 0; c < crackCount; c++){
+    let x = rng()*SIZE, y = rng()*SIZE;
+    let ang = rng()*Math.PI*2;
+    const segs = 8 + Math.floor(rng()*10);
+    const crackShade = base.clone().offsetHSL(0, 0, -0.35);
+    cctx.strokeStyle = toCss(crackShade);
+    cctx.lineWidth = 0.8 + rng()*1.2;
+    cctx.beginPath(); cctx.moveTo(x, y);
+    hctx.strokeStyle = "#303030";
+    hctx.lineWidth = cctx.lineWidth + 1;
+    hctx.beginPath(); hctx.moveTo(x, y);
+    for (let s = 0; s < segs; s++){
+      ang += (rng()-0.5) * 1.1;
+      x += Math.cos(ang) * (SIZE/segs) * (0.6+rng()*0.8);
+      y += Math.sin(ang) * (SIZE/segs) * (0.6+rng()*0.8);
+      cctx.lineTo(x, y);
+      hctx.lineTo(x, y);
+    }
+    cctx.globalAlpha = 0.55; cctx.stroke();
+    hctx.globalAlpha = 0.8; hctx.stroke();
+  }
+  cctx.globalAlpha = 1; hctx.globalAlpha = 1;
+
+  // 4) blocco "sbozzato": bordo leggermente piu' scuro/rialzato su tutto
+  // il perimetro, cosi' ogni cubetto si legge chiaramente come un blocco
+  // di pietra a se' stante e non come una superficie continua senza
+  // giunti (come farebbe una malta poco profonda tra un blocco e l'altro).
+  const edgeW = SIZE * 0.045;
+  const edgeGrad = cctx.createLinearGradient(0,0,edgeW,0);
+  const mortar = base.clone().offsetHSL(0,0,-0.4);
+  cctx.strokeStyle = toCss(mortar);
+  cctx.globalAlpha = 0.55;
+  cctx.lineWidth = edgeW;
+  cctx.strokeRect(edgeW/2, edgeW/2, SIZE-edgeW, SIZE-edgeW);
+  cctx.globalAlpha = 1;
+  hctx.strokeStyle = "#585858";
+  hctx.lineWidth = edgeW;
+  hctx.strokeRect(edgeW/2, edgeW/2, SIZE-edgeW, SIZE-edgeW);
+
+  // converte la height map in una normal map vera (sobel semplificato)
+  // cosi' l'illuminazione della scena reagisce davvero al rilievo
+  // invece di limitarsi a mostrare colori piu' scuri/chiari.
+  const hData = hctx.getImageData(0, 0, SIZE, SIZE).data;
+  const nCanvas = document.createElement("canvas");
+  nCanvas.width = nCanvas.height = SIZE;
+  const nctx = nCanvas.getContext("2d");
+  const nImg = nctx.createImageData(SIZE, SIZE);
+  const heightAt = (x,y) => {
+    const cx = Math.max(0, Math.min(SIZE-1, x)), cy = Math.max(0, Math.min(SIZE-1, y));
+    return hData[(cy*SIZE+cx)*4] / 255;
+  };
+  const strength = 2.2;
+  for (let y = 0; y < SIZE; y++){
+    for (let x = 0; x < SIZE; x++){
+      const hl = heightAt(x-1,y), hr = heightAt(x+1,y);
+      const hu = heightAt(x,y-1), hd = heightAt(x,y+1);
+      let nx = (hl - hr) * strength;
+      let ny = (hu - hd) * strength;
+      let nz = 1.0;
+      const len = Math.sqrt(nx*nx + ny*ny + nz*nz);
+      nx/=len; ny/=len; nz/=len;
+      const idx = (y*SIZE+x)*4;
+      nImg.data[idx]   = Math.round((nx*0.5+0.5)*255);
+      nImg.data[idx+1] = Math.round((ny*0.5+0.5)*255);
+      nImg.data[idx+2] = Math.round((nz*0.5+0.5)*255);
+      nImg.data[idx+3] = 255;
+    }
+  }
+  nctx.putImageData(nImg, 0, 0);
+
+  const colorTex = new THREE.CanvasTexture(colorCanvas);
+  colorTex.wrapS = colorTex.wrapT = THREE.RepeatWrapping;
+  colorTex.colorSpace = THREE.SRGBColorSpace;
+  const normalTex = new THREE.CanvasTexture(nCanvas);
+  normalTex.wrapS = normalTex.wrapT = THREE.RepeatWrapping;
+
+  return { map: colorTex, normalMap: normalTex };
+}
+
 function initThree(){
   scene = new THREE.Scene();
   camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.05, 100);
@@ -732,11 +890,20 @@ function applyMapData(msg){
   const writeIdx = new Array(nVariants).fill(0);
   for (let v=0; v<nVariants; v++){
     const variant = themeWallVariants[v];
+    // texture di pietra procedurale, seminata sul nome mappa + indice
+    // variante: stessa mappa => stessi blocchi di pietra ad ogni
+    // partita, ma ogni variante di colore ha la propria "cava" di pietra.
+    const stoneTex = makeStoneTextures(hexToInt(variant.wall), (mazeTheme.__mapName||"default")+":stone:"+v);
+    stoneTex.map.repeat.set(1, 1);
+    stoneTex.normalMap.repeat.set(1, 1);
     const mat = new THREE.MeshStandardMaterial({
-      color: hexToInt(variant.wall),
+      map: stoneTex.map,
+      normalMap: stoneTex.normalMap,
+      normalScale: new THREE.Vector2(1.1, 1.1),
       emissive: hexToInt(variant.edge),
-      emissiveIntensity: 0.15,
-      roughness: 0.85,
+      emissiveIntensity: 0.08,
+      roughness: 0.95,
+      metalness: 0.02,
     });
     const inst = countPerVariant[v] > 0
       ? new THREE.InstancedMesh(cubeGeo, mat, countPerVariant[v])
@@ -783,21 +950,74 @@ function applyMapData(msg){
 
 /* ---- costruisce un personaggio semplice (cilindro+sfere: niente
    CapsuleGeometry, non esiste nella versione r128 di three.js usata qui) ---- */
+/* ---- vero Pac-Man 3D: una sfera piena (la testa) + due "mascelle"
+   ricavate da due spicchi di sfera (SphereGeometry con phiStart/phiLength)
+   che ruotano per aprire e chiudere la bocca, al posto del vecchio
+   pupazzetto cilindro+coni che non c'entrava nulla con Pac-Man. Usa il
+   colore esatto scelto dal giocatore (nessuna mescolanza col giallo),
+   cosi' come i gadget (missili, mine) usano gia' il colore puro del
+   proprietario. ---- */
+
+const PACMAN_RADIUS = 0.34;
+const PACMAN_MOUTH_MAX = 0.62; // apertura massima della bocca, in radianti per lato
+
 function makeCharacterMesh(colorHex){
   const g = new THREE.Group();
-  const mat = new THREE.MeshStandardMaterial({ color:colorHex, emissive:colorHex, emissiveIntensity:0.12 });
-  const cyl = new THREE.Mesh(new THREE.CylinderGeometry(0.32,0.32,0.5,12), mat);
-  cyl.position.y = 0.56; g.add(cyl);
-  const top = new THREE.Mesh(new THREE.SphereGeometry(0.32,12,8), mat);
-  top.position.y = 0.81; g.add(top);
-  const bot = new THREE.Mesh(new THREE.SphereGeometry(0.32,12,8), mat);
-  bot.position.y = 0.31; g.add(bot);
-  const nose = new THREE.Mesh(new THREE.ConeGeometry(0.11,0.3,8),
-    new THREE.MeshStandardMaterial({ color:0xffffff, emissive:0x222222 }));
-  nose.rotation.x = Math.PI/2;
-  nose.position.set(0, 0.6, 0.4);
-  g.add(nose);
+  const mat = new THREE.MeshStandardMaterial({ color:colorHex, emissive:colorHex, emissiveIntensity:0.18 });
+
+  // testa: sfera piena come base, sopra si incollano le due mascelle che
+  // "mangiano" lo spazio della bocca aperta, cosi' non si vede mai un
+  // buco nero quando la bocca e' spalancata.
+  const head = new THREE.Mesh(new THREE.SphereGeometry(PACMAN_RADIUS, 20, 16), mat);
+  head.position.y = 0.62;
+  g.add(head);
+
+  // occhio: un solo occhio nero, come nella grafica classica di Pac-Man.
+  const eye = new THREE.Mesh(
+    new THREE.SphereGeometry(0.045, 8, 6),
+    new THREE.MeshStandardMaterial({ color:0x1a1208, emissive:0x000000 })
+  );
+  eye.position.set(0.1, 0.62 + PACMAN_RADIUS*0.55, -0.08);
+  g.add(eye);
+
+  // mascella superiore e inferiore: due spicchi di sfera (phiLength copre
+  // meta' giro, la fetta frontale mancante e' la bocca) che ruotano sul
+  // proprio asse per aprirsi/chiudersi. Il gruppo e' orientato cosi' che
+  // la bocca guardi in avanti (+z), come il vecchio "naso".
+  function makeJaw(sign){
+    const jawGeo = new THREE.SphereGeometry(
+      PACMAN_RADIUS + 0.002, 20, 10,
+      0, Math.PI,                          // phiStart, phiLength: mezza sfera (davanti)
+      sign > 0 ? 0 : Math.PI/2, Math.PI/2  // thetaStart/thetaLength: sopra o sotto l'equatore
+    );
+    const jaw = new THREE.Mesh(jawGeo, mat);
+    jaw.rotation.y = -Math.PI/2; // porta la "fetta" frontale a guardare +z
+    return jaw;
+  }
+  const jawTop = makeJaw(1);
+  jawTop.position.y = 0.62;
+  const jawBot = makeJaw(-1);
+  jawBot.position.y = 0.62;
+  g.add(jawTop, jawBot);
+
+  g.userData.jawTop = jawTop;
+  g.userData.jawBot = jawBot;
+  g.userData.mouthPhase = Math.random() * Math.PI * 2; // sfasa i personaggi tra loro
+  g.userData.isPacman = true;
   return g;
+}
+
+/* Apre/chiude la bocca di un Pac-Man con un angolo sinusoidale.
+   moving=false tiene la bocca chiusa (a riposo), come nel gioco originale
+   dove Pac-Man mastica solo mentre si sposta. */
+function animatePacmanMouth(group, dt, moving){
+  const jt = group.userData.jawTop, jb = group.userData.jawBot;
+  if (!jt || !jb) return;
+  if (moving) group.userData.mouthPhase += dt * 10; // velocita' di masticazione
+  const target = moving ? (Math.sin(group.userData.mouthPhase) * 0.5 + 0.5) * PACMAN_MOUTH_MAX : 0;
+  jt.rotation.x = -target;
+  jb.rotation.x = target;
+
 }
 
 /* ---- bonus 400 punti: missile guidato — stessa idea della versione 2D
@@ -843,17 +1063,16 @@ function makeMineMesh(colorHex){
 }
 
 /* ============================================================
-   MOVIMENTO: WASD relativo allo sguardo (yaw della camera), non piu'
-   fisso rispetto alla mappa. "W" e' sempre "avanti rispetto a dove sto
-   guardando", "A"/"D" sempre sinistra/destra rispetto allo sguardo,
-   "S" sempre indietro. Siccome pero' il server accetta solo le 4
-   direzioni di griglia (up/down/left/right), lo sguardo viene
-   "agganciato" (snap) alla direzione cardinale piu' vicina: es. se sto
-   guardando qualcosa tra nord e ovest ma piu' verso nord, "W" manda
-   "up". La direzione va ricalcolata ad ogni movimento del mouse (non
-   solo alla pressione del tasto): se tengo premuto "W" e giro la
-   visuale oltre i 45 gradi, il verso inviato al server deve cambiare
-   di conseguenza senza dover rilasciare e ripremere il tasto.
+   MOVIMENTO: WASD/frecce sono ora direzioni ASSOLUTE di griglia
+   (W=su, S=giu', A=sinistra, D=destra, indipendentemente da dove sto
+   guardando), come nel Pac-Man classico. La visuale (yaw della camera)
+   NON e' piu' l'unica cosa che decide dove si va: e' il contrario,
+   quando premo un tasto di movimento la visuale sterza automaticamente
+   fino ad allinearsi con la direzione presa dal personaggio (vedi
+   steerCameraTowardsMovement nel render loop), invece di scattare di
+   colpo. Il mouse resta comunque libero di guardarsi intorno quando non
+   ci si sta muovendo o per un attimo mentre ci si muove: la sterzata
+   automatica riprende non appena il mouse smette di muoversi.
    ============================================================ */
 let lastRequestedDir = null;
 function requestDir(dir){
@@ -861,12 +1080,11 @@ function requestDir(dir){
   sendMsg({ type:"move", direction:dir });
 }
 
-// Tasto fisico -> "verso" astratto relativo alla camera (non ancora una
-// direzione di griglia: quella si calcola in base allo yaw corrente).
+// Tasto fisico -> direzione di griglia assoluta diretta.
 function normalizeMoveKey(key){
   const map = {
-    w:"forward", W:"forward", ArrowUp:"forward",
-    s:"backward", S:"backward", ArrowDown:"backward",
+    w:"up", W:"up", ArrowUp:"up",
+    s:"down", S:"down", ArrowDown:"down",
     a:"left", A:"left", ArrowLeft:"left",
     d:"right", D:"right", ArrowRight:"right",
   };
@@ -874,58 +1092,51 @@ function normalizeMoveKey(key){
 }
 
 // Data una coppia (x,z) nel piano orizzontale, restituisce la direzione
-// di griglia il cui asse e' piu' allineato (snap ai 4 cardinali).
-// Convenzione del progetto: up=[0,-1] (z decresce), down=[0,1] (z
-// cresce), left=[-1,0] (x decresce), right=[1,0] (x cresce) — vedi
-// DIR_VEC e applyMapData (wx = x*CELL, wz = y*CELL).
+// di griglia il cui asse e' piu' allineato (snap ai 4 cardinali). Usata
+// dalla mira del laser per calcolare il "direction" cardinale di
+// fallback a partire dal vettore di mira libero. Convenzione del
+// progetto: up=[0,-1] (z decresce), down=[0,1] (z cresce), left=[-1,0]
+// (x decresce), right=[1,0] (x cresce) — vedi DIR_VEC e applyMapData
+// (wx = x*CELL, wz = y*CELL).
 function dirFromVector(x, z){
   return Math.abs(x) > Math.abs(z) ? (x > 0 ? "right" : "left")
                                     : (z > 0 ? "down" : "up");
 }
 
-// "Verso" astratto (forward/backward/left/right rispetto alla camera) ->
-// direzione di griglia effettiva, in base allo yaw corrente.
-function baseToGridDir(base){
-  const fx = -Math.sin(yaw), fz = -Math.cos(yaw); // avanti rispetto alla camera
-  const rx =  Math.cos(yaw), rz = -Math.sin(yaw); // destra rispetto alla camera
-  switch (base){
-    case "forward":  return dirFromVector(fx, fz);
-    case "backward": return dirFromVector(-fx, -fz);
-    case "right":    return dirFromVector(rx, rz);
-    case "left":     return dirFromVector(-rx, -rz);
-    default: return null;
-  }
-}
+// yaw "canonico" per ogni direzione di griglia, stessa convenzione usata
+// altrove nel file per (fx,fz) = -sin(yaw),-cos(yaw): up->yaw 0, right->
+// yaw -PI/2 (fx=-sin(yaw)=1), down->yaw PI, left->yaw PI/2.
+const DIR_TO_YAW = { up: 0, right: -Math.PI/2, down: Math.PI, left: Math.PI/2 };
 
-const heldMoveKeys = new Set(); // "forward"/"backward"/"left"/"right" attualmente premuti
-let heldBase = null;            // ultimo tasto premuto, ha la priorita'
+const heldMoveKeys = new Set(); // "up"/"down"/"left"/"right" attualmente premuti
+let heldDir = null;             // ultimo tasto premuto, ha la priorita'
 
 function updateMovementDirection(){
-  if (!heldBase) return;
-  const dir = baseToGridDir(heldBase);
-  if (dir) requestDir(dir);
+  if (!heldDir) return;
+  requestDir(heldDir);
 }
 
 window.addEventListener("keydown", e => {
   if (currentScreen !== "game") return;
-  const base = normalizeMoveKey(e.key);
-  if (!base || heldMoveKeys.has(base)) return; // ignora la ripetizione automatica del tasto tenuto premuto
-  heldMoveKeys.add(base);
-  heldBase = base;
+  const dir = normalizeMoveKey(e.key);
+  if (!dir || heldMoveKeys.has(dir)) return; // ignora la ripetizione automatica del tasto tenuto premuto
+  heldMoveKeys.add(dir);
+  heldDir = dir;
   updateMovementDirection();
 });
 window.addEventListener("keyup", e => {
-  const base = normalizeMoveKey(e.key);
-  if (!base) return;
-  heldMoveKeys.delete(base);
-  if (heldBase === base){
+  const dir = normalizeMoveKey(e.key);
+  if (!dir) return;
+  heldMoveKeys.delete(dir);
+  if (heldDir === dir){
     // se restano altri tasti di movimento premuti, passa a uno di quelli
-    heldBase = heldMoveKeys.size ? heldMoveKeys.values().next().value : null;
-    if (heldBase) updateMovementDirection();
+    heldDir = heldMoveKeys.size ? heldMoveKeys.values().next().value : null;
+    if (heldDir) updateMovementDirection();
   }
 });
 
 let yaw = 0, pitch = 0, locked = false;
+let mouseOverrideUntil = 0; // performance.now() finche' il mouse ha priorita' sulla sterzata automatica
 document.addEventListener("pointerlockchange", () => {
   locked = document.pointerLockElement && document.pointerLockElement.tagName === "CANVAS";
 });
@@ -934,8 +1145,28 @@ document.addEventListener("mousemove", e => {
   yaw   -= e.movementX * 0.0022;
   pitch -= e.movementY * 0.0022;
   pitch = Math.max(-Math.PI/2+0.05, Math.min(Math.PI/2-0.05, pitch));
-  updateMovementDirection(); // lo sguardo e' cambiato: se un tasto e' tenuto premuto, ricalcola il verso
+  // il giocatore ha appena girato manualmente la visuale: lascia che
+  // resti libera per un attimo invece di "strapparla" subito indietro
+  // verso la direzione di marcia, poi la sterzata automatica riprende.
+  mouseOverrideUntil = performance.now() + 350;
 });
+
+// Sterza dolcemente lo yaw verso la direzione di movimento corrente,
+// chiamata ogni frame dal render loop. Se non ci si sta muovendo, o se
+// il mouse ha appena preso il controllo, non tocca lo yaw.
+function steerCameraTowardsMovement(dt){
+  if (!heldDir) return;
+  if (performance.now() < mouseOverrideUntil) return;
+  const targetYaw = DIR_TO_YAW[heldDir];
+  // porta la differenza nell'intervallo (-PI, PI] cosi' la sterzata
+  // prende sempre la via piu' corta (mai un giro largo inutile).
+  let diff = targetYaw - yaw;
+  diff = Math.atan2(Math.sin(diff), Math.cos(diff));
+  const STEER_SPEED = 12; // rad/sec: sterzata rapida ma non istantanea
+  const maxStep = STEER_SPEED * dt;
+  if (Math.abs(diff) <= maxStep) yaw = targetYaw;
+  else yaw += Math.sign(diff) * maxStep;
+}
 
 /* ============================================================
    LASER (bonus 150 punti): a differenza della versione 2D non
@@ -1061,7 +1292,7 @@ function drawMinimap(players){
   const me = players.find(p => p.id === myId);
   if (me && me.alive !== false){
     const cx = offX + (me.x+0.5)*cell, cy = offY + (me.y+0.5)*cell;
-    // stessa convenzione di baseToGridDir/mousedown: (fx,fz) = avanti
+    // stessa convenzione di steerCameraTowardsMovement/mousedown: (fx,fz) = avanti
     const fx = -Math.sin(yaw), fz = -Math.cos(yaw);
     const ang = Math.atan2(fx, -fz); // angolo sul piano del canvas (0 = su)
     const size = Math.max(5, cell*0.6);
@@ -1337,6 +1568,10 @@ function animate(){
     rp.x += (rp.targetX - rp.x) * LERP;
     rp.z += (rp.targetZ - rp.z) * LERP;
     rp.group.position.set(rp.x, 0, rp.z);
+    // mastica solo se si sta ancora avvicinando alla cella target
+    // (altrimenti, fermo, la bocca resta chiusa come nel gioco originale)
+    const moving = Math.abs(rp.targetX - rp.x) > 0.01 || Math.abs(rp.targetZ - rp.z) > 0.01;
+    animatePacmanMouth(rp.group, dt, moving);
   });
   // bonus 150 punti: proiettili laser, stessa interpolazione morbida
   const LASER_LERP = Math.min(1, dt*14); // leggermente piu' reattivo: il proiettile e' veloce
@@ -1368,6 +1603,10 @@ function animate(){
     ex.mesh.scale.setScalar(1 + t*2.4);
     ex.mesh.material.opacity = Math.max(0, 0.9 * (1 - t));
   }
+
+  // sterza automaticamente la visuale verso la direzione in cui mi sto
+  // muovendo (WASD), a meno che il mouse non l'abbia appena presa in mano.
+  steerCameraTowardsMovement(dt);
 
   camera.rotation.order = "YXZ";
   camera.rotation.y = yaw;
