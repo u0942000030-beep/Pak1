@@ -940,6 +940,10 @@ let mineMeshes = {};     // id -> mesh bonus 200 punti: mine posate, statiche (n
 let turretMeshes = {};   // id -> THREE.Group con userData {halo, barrelPivot, core, ring, aim, currentAng} — bonus 600 punti: torrette automatiche permanenti
 let petMeshes = {};      // id -> {group, x, z, targetX, targetZ} — bonus 900 punti: pet fedele, mini Pac-Man che segue il proprietario (aim/aimDot vivono in group.userData)
 let mortarMeshes = {};   // id -> THREE.Group con userData {halo, mouth, core, aim} — bonus 1200 punti: mortai permanenti (ad arco, non ruotano come la torretta)
+let superbombMeshes = {}; // id -> THREE.Group con userData {halo, skull, fuseLeft} — bonus 1400 punti: bomboloni statici, esplodono da soli dopo SUPERBOMB_FUSE_SECONDS
+let balloonMeshes = {};   // id -> {group, x, z, targetX, targetZ} — bonus 1600 punti: mongolfiere mobili, vagano da sole sganciando bombe (userData.shadow/body vivono in group.userData)
+let blobMeshes = {};      // id -> {group, x, z, targetX, targetZ} — bonus 1800 punti: blob gelatinoso, fermo finche' non risvegliato (b.alive, bonus 2000 punti), poi vaga lasciando una scia velenosa
+let spikeWallMeshes = {};  // id -> THREE.Group — bonus 2200 punti: muri di spunzoni, fermi e permanenti (nessuna interpolazione, come le mine), rimossi solo da un evento esplicito (Tesla/fungo atomico)
 let bombMeshes = {};     // id -> THREE.Group con userData {shadow, body} — bonus 1200 punti: bombe di mortaio in volo, ricreate/aggiornate leggendo msg.bombs ad ogni state (stessa idea della 2D: nessun evento fire/end dedicato)
 let poisonZoneMeshes = {}; // id -> THREE.Mesh — nuvole velenose a terra (impatto mortaio, radius>=1) o scia del blob vivo (radius=0, bonus 2000)
 let playerColorHex = {}; // playerId -> colore primario (int), aggiornato da onState/onLobbyState:
@@ -1442,27 +1446,41 @@ function makeLevelUpSprite(){
 function makeTurretMesh(colorHex){
   const g = new THREE.Group();
 
+  // Fattore di allungamento verticale: porta la torretta dall'altezza
+  // originale (~0.23, un piccolo cannoncino da tavolo) fino all'altezza
+  // del personaggio (testa del giocatore: y=0.62 + PACMAN_RADIUS=0.34
+  // ~= 0.96). Si applica SOLO alle quote verticali (posizioni Y e
+  // altezze dei cilindri) e non ai raggi orizzontali ne' alla lunghezza
+  // della canna: la forma vista dall'alto resta IDENTICA in proporzione,
+  // e' solo "stirata" in verticale, come se il cannoncino fosse stato
+  // allungato su un tornio senza toccarne il diametro.
+  const H = 0.96 / 0.23;
+
   const halo = new THREE.Mesh(
     new THREE.CylinderGeometry(0.32, 0.32, 0.02, 16),
     new THREE.MeshBasicMaterial({ color: colorHex, transparent:true, opacity:0.22 })
   );
-  halo.position.y = 0.01;
+  halo.position.y = 0.01; // resta a terra: nessun allungamento, e' solo l'alone del pavimento
   g.add(halo);
 
   const plate = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.24, 0.26, 0.14, 8),
+    new THREE.CylinderGeometry(0.24, 0.26, 0.14 * H, 8),
     new THREE.MeshStandardMaterial({ color: colorHex, transparent:true, opacity:0.95 })
   );
-  plate.position.y = 0.09;
+  plate.position.y = 0.09 * H;
   g.add(plate);
 
+  // La canna resta ORIZZONTALE (ruotata di 90 gradi): la sua "altezza"
+  // nel cilindro sorgente e' in realta' la lunghezza orizzontale finale,
+  // quindi NON va allungata - solo sollevata alla nuova quota del
+  // barrelPivot, insieme al resto della piastra.
   const barrel = new THREE.Mesh(
     new THREE.CylinderGeometry(0.035, 0.045, 0.34, 8),
     new THREE.MeshStandardMaterial({ color: colorHex })
   );
   barrel.rotation.z = Math.PI / 2;
   const barrelPivot = new THREE.Group();
-  barrelPivot.position.y = 0.16;
+  barrelPivot.position.y = 0.16 * H;
   barrel.position.set(0.17, 0, 0);
   barrelPivot.add(barrel);
   g.add(barrelPivot);
@@ -1471,7 +1489,7 @@ function makeTurretMesh(colorHex){
     new THREE.SphereGeometry(0.065, 8, 6),
     new THREE.MeshStandardMaterial({ color:0xffffff, emissive:0xffffff, emissiveIntensity:1.2 })
   );
-  core.position.y = 0.16;
+  core.position.y = 0.16 * H;
   g.add(core);
 
   const ring = new THREE.Mesh(
@@ -1479,11 +1497,12 @@ function makeTurretMesh(colorHex){
     new THREE.MeshBasicMaterial({ color: colorHex, transparent:true, opacity:0.7 })
   );
   ring.rotation.x = Math.PI / 2;
-  ring.position.y = 0.09;
+  ring.position.y = 0.09 * H;
   ring.visible = false;
   g.add(ring);
 
   const levelUpSprite = makeLevelUpSprite();
+  levelUpSprite.position.y = 0.5 * H;
   g.add(levelUpSprite);
 
   g.userData.halo = halo;
@@ -1546,7 +1565,18 @@ function makeMortarMesh(colorHex){
   const g = new THREE.Group();
   const WOOD = 0x8a5a34, WOOD_DARK = 0x5e3b21, METAL = 0xcaa25a;
 
-  // Alone morbido a terra.
+  // Fattore di allungamento verticale: porta il mortaio dall'altezza
+  // originale (~0.37, un tronco da tavolo) fino all'altezza del
+  // personaggio (testa del giocatore: y=0.62 + PACMAN_RADIUS=0.34
+  // ~= 0.96). Si applica SOLO alle quote verticali (posizioni Y e
+  // altezze dei cilindri, incluso l'allungamento delle gambe del
+  // treppiede) e mai ai raggi orizzontali: la forma vista dall'alto
+  // resta IDENTICA in proporzione, e' solo "stirata" in verticale, come
+  // se il tronco fosse stato allungato su un tornio senza toccarne il
+  // diametro.
+  const H = 0.96 / 0.37;
+
+  // Alone morbido a terra: resta a terra, nessun allungamento.
   const halo = new THREE.Mesh(
     new THREE.CylinderGeometry(0.36, 0.36, 0.02, 16),
     new THREE.MeshBasicMaterial({ color: colorHex, transparent:true, opacity:0.18 })
@@ -1555,11 +1585,14 @@ function makeMortarMesh(colorHex){
   g.add(halo);
 
   // Treppiede: tre gambe tozze di legno scuro, orientate a 120 gradi.
+  // Solo la LUNGHEZZA della gamba (il suo cilindro) si allunga; il
+  // raggio (spessore) resta invariato, cosi' le gambe diventano piu'
+  // slanciate invece che piu' larghe.
   const legMat = new THREE.MeshStandardMaterial({ color: WOOD_DARK });
   for (let i = 0; i < 3; i++){
-    const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.03, 0.26, 6), legMat);
+    const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.03, 0.26 * H, 6), legMat);
     const a = i * (Math.PI * 2 / 3);
-    leg.position.set(Math.cos(a) * 0.14, 0.1, Math.sin(a) * 0.14);
+    leg.position.set(Math.cos(a) * 0.14, 0.1 * H, Math.sin(a) * 0.14);
     leg.rotation.z = Math.cos(a) * 0.5;
     leg.rotation.x = Math.sin(a) * 0.5;
     g.add(leg);
@@ -1567,32 +1600,32 @@ function makeMortarMesh(colorHex){
 
   // Base rotonda di legno.
   const base = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.24, 0.26, 0.16, 12),
+    new THREE.CylinderGeometry(0.24, 0.26, 0.16 * H, 12),
     new THREE.MeshStandardMaterial({ color: WOOD })
   );
-  base.position.y = 0.2;
+  base.position.y = 0.2 * H;
   g.add(base);
 
   // Fascia metallica nel colore del proprietario, attorno alla bocca.
   const band = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.19, 0.19, 0.05, 12),
+    new THREE.CylinderGeometry(0.19, 0.19, 0.05 * H, 12),
     new THREE.MeshStandardMaterial({ color: colorHex })
   );
-  band.position.y = 0.29;
+  band.position.y = 0.29 * H;
   g.add(band);
   const metalRing = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.16, 0.16, 0.03, 12),
+    new THREE.CylinderGeometry(0.16, 0.16, 0.03 * H, 12),
     new THREE.MeshStandardMaterial({ color: METAL })
   );
-  metalRing.position.y = 0.31;
+  metalRing.position.y = 0.31 * H;
   g.add(metalRing);
 
   // Bocca scura vista dall'alto (il "respiro" e' animato scalando questo mesh).
   const mouth = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.13, 0.13, 0.04, 12),
+    new THREE.CylinderGeometry(0.13, 0.13, 0.04 * H, 12),
     new THREE.MeshStandardMaterial({ color: WOOD_DARK })
   );
-  mouth.position.y = 0.33;
+  mouth.position.y = 0.33 * H;
   g.add(mouth);
 
   // Nucleo: scuro a riposo, rosso pulsante quando ha agganciato un bersaglio.
@@ -1600,13 +1633,400 @@ function makeMortarMesh(colorHex){
     new THREE.SphereGeometry(0.05, 8, 6),
     new THREE.MeshStandardMaterial({ color:0x3a2213, emissive:0x3a2213, emissiveIntensity:0.4 })
   );
-  core.position.y = 0.35;
+  core.position.y = 0.35 * H;
   g.add(core);
 
   g.userData.halo = halo;
   g.userData.mouth = mouth;
   g.userData.core = core;
   g.userData.aim = null; // presente solo per coerenza col pattern torretta (il mortaio non ruota mai una canna)
+  return g;
+}
+
+/* ---- bonus 1400 punti: bombolone — stessa idea della 2D (drawSuperbombs:
+   sfera scura con strisce verticali nel colore del proprietario e un
+   teschio bianco sopra, per restare visivamente coerente col disegno
+   della successiva mongolfiera). E' STATICO (nessuna interpolazione,
+   come le mine): esplode da solo SUPERBOMB_FUSE_SECONDS dopo il
+   piazzamento (server-authoritative, vedi fuse_left in onState). Qui il
+   "lampeggio" dell'innesco (teschio che si accende/spegne sempre piu'
+   in fretta man mano che il fusibile si esaurisce) e' animato nel
+   render loop leggendo userData.fuseLeft, esattamente come la bocca del
+   mortaio "respira" leggendo il proprio stato. ---- */
+const SUPERBOMB_FUSE_SECONDS = 2.0; // deve restare identica a SUPERBOMB_FUSE_SECONDS in common.py
+const SUPERBOMB_RADIUS_CELLS = 8;   // deve restare identica a SUPERBOMB_RADIUS_CELLS in common.py
+function makeSuperbombMesh(colorHex){
+  const g = new THREE.Group();
+
+  // Alone morbido a terra nel colore del proprietario (stessa idea di
+  // halo in makeMineMesh/makeMortarMesh).
+  const halo = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.34, 0.34, 0.02, 16),
+    new THREE.MeshBasicMaterial({ color: colorHex, transparent:true, opacity:0.22 })
+  );
+  halo.position.y = 0.01;
+  g.add(halo);
+
+  // Corpo sferico scuro, grande quanto una casella.
+  const R = 0.32;
+  const body = new THREE.Mesh(
+    new THREE.SphereGeometry(R, 14, 10),
+    new THREE.MeshStandardMaterial({ color: 0x2a2a2e })
+  );
+  body.position.y = R + 0.02;
+  g.add(body);
+
+  // Strisce verticali nel colore del proprietario, applicate come sottili
+  // listelli disposti attorno alla sfera (stesso effetto delle strisce
+  // clippate nella 2D, ma qui semplici mesh sovrapposte al corpo).
+  const stripeMat = new THREE.MeshStandardMaterial({ color: colorHex });
+  for (let i = -2; i <= 2; i++){
+    const stripe = new THREE.Mesh(new THREE.BoxGeometry(0.09, R * 2 * 0.92, 0.04), stripeMat);
+    const ang = i * 0.34;
+    stripe.position.set(Math.sin(ang) * R * 0.97, R + 0.02, Math.cos(ang) * R * 0.97);
+    stripe.rotation.y = ang;
+    g.add(stripe);
+  }
+
+  // Teschio bianco al centro (lato rivolto verso l'esterno), stesso
+  // disegno concettuale della 2D: cranio + occhi scuri + naso + denti,
+  // costruito con mesh piatte incollate sulla superficie della sfera per
+  // restare leggibile senza bisogno di una texture dedicata.
+  const skull = new THREE.Group();
+  const skullMat = new THREE.MeshBasicMaterial({ color: 0xf2f2f0 });
+  const skullDarkMat = new THREE.MeshBasicMaterial({ color: 0x1a1a1a });
+  const cranium = new THREE.Mesh(new THREE.CircleGeometry(0.135, 14), skullMat);
+  skull.add(cranium);
+  const eyeL = new THREE.Mesh(new THREE.CircleGeometry(0.028, 8), skullDarkMat);
+  eyeL.position.set(-0.05, 0.02, 0.001);
+  skull.add(eyeL);
+  const eyeR = new THREE.Mesh(new THREE.CircleGeometry(0.028, 8), skullDarkMat);
+  eyeR.position.set(0.05, 0.02, 0.001);
+  skull.add(eyeR);
+  const noseShape = new THREE.Shape();
+  noseShape.moveTo(-0.018, 0.0); noseShape.lineTo(0, -0.045); noseShape.lineTo(0.018, 0.0); noseShape.closePath();
+  const nose = new THREE.Mesh(new THREE.ShapeGeometry(noseShape), skullDarkMat);
+  nose.position.set(0, -0.01, 0.001);
+  skull.add(nose);
+  for (let i = -1; i <= 1; i++){
+    const tooth = new THREE.Mesh(new THREE.PlaneGeometry(0.02, 0.03), skullDarkMat);
+    tooth.position.set(i * 0.035, -0.075, 0.001);
+    skull.add(tooth);
+  }
+  skull.position.set(0, R + 0.02 + 0.02, R * 0.98);
+  g.add(skull);
+
+  g.userData.halo = halo;
+  g.userData.skull = skull;
+  g.userData.fuseLeft = SUPERBOMB_FUSE_SECONDS; // aggiornato ad ogni state (vedi onState)
+  return g;
+}
+
+/* ---- bonus 1600 punti: mongolfiera — stessa idea della 2D (drawBalloons:
+   pallone scuro con strisce nel colore del proprietario, teschio bianco e
+   cesto di vimini appeso sotto). A DIFFERENZA del bombolone (statico), la
+   mongolfiera VAGA da sola su tutta la mappa (server-authoritative, vedi
+   update_balloons in main.py) sganciando bombe istantanee ogni 3 secondi:
+   qui si vola sollevata rispetto al pavimento, con un'ombra a terra che
+   indica il punto esatto in cui cadrebbe la prossima bomba - stessa
+   convenzione delle bombe di mortaio in volo (makeBombMesh), ma qui il
+   corpo resta sempre alla stessa altezza (nessun arco), con un leggero
+   "bobbing" verticale per farla sembrare sospesa nell'aria invece che
+   ferma. Il movimento orizzontale usa lo stesso lerp gia' collaudato per
+   pet/missili (vedi onState/animate), non serve interpolazione dedicata. ---- */
+const BALLOON_BOMB_RADIUS_CELLS = 4; // deve restare identica a BALLOON_BOMB_RADIUS_CELLS in common.py
+const BALLOON_LIFT_HEIGHT = 1.6;     // altezza fissa di volo (unita' di mondo, non caselle)
+function makeBalloonMesh(colorHex){
+  const g = new THREE.Group();
+
+  // Ombra a terra: ellisse scura piatta, sempre allineata in X/Z col
+  // pallone ma a y=0 (stessa idea dell'ombra delle bombe di mortaio).
+  const shadow = new THREE.Mesh(
+    new THREE.CircleGeometry(0.3, 14),
+    new THREE.MeshBasicMaterial({ color:0x000000, transparent:true, opacity:0.32 })
+  );
+  shadow.rotation.x = -Math.PI / 2;
+  shadow.position.y = 0.01;
+  g.add(shadow);
+  // La scala X/Z leggermente schiacciata rende l'ombra un'ellisse invece
+  // di un cerchio perfetto, come nella 2D (ellipse 12x6).
+  shadow.scale.set(1, 0.5, 1);
+
+  // Corpo sollevato (pallone + cesto): un sotto-gruppo separato cosi' il
+  // "bobbing" verticale nel render loop sposta solo lui, mai l'ombra.
+  const body = new THREE.Group();
+  body.position.y = BALLOON_LIFT_HEIGHT;
+  g.add(body);
+
+  // Cesto di vimini appeso sotto il pallone, con le corde di collegamento.
+  const basket = new THREE.Mesh(
+    new THREE.BoxGeometry(0.22, 0.16, 0.22),
+    new THREE.MeshStandardMaterial({ color: 0x8a5a34 })
+  );
+  basket.position.y = -0.42;
+  body.add(basket);
+  const ropeMat = new THREE.MeshBasicMaterial({ color: 0x5e3b21 });
+  [[-0.09,-0.09],[0.09,-0.09],[-0.09,0.09],[0.09,0.09]].forEach(([dx,dz]) => {
+    const rope = new THREE.Mesh(new THREE.CylinderGeometry(0.006, 0.006, 0.24, 4), ropeMat);
+    rope.position.set(dx, -0.22, dz);
+    body.add(rope);
+  });
+
+  // Alone morbido nel colore del proprietario, dietro il pallone.
+  const halo = new THREE.Mesh(
+    new THREE.SphereGeometry(0.42, 12, 8),
+    new THREE.MeshBasicMaterial({ color: colorHex, transparent:true, opacity:0.16 })
+  );
+  body.add(halo);
+
+  // Involucro del pallone: corpo scuro con strisce verticali nel colore
+  // del proprietario (stesso schema di makeSuperbombMesh, ma allungato
+  // verticalmente come un vero pallone aerostatico).
+  const R = 0.3;
+  const envelope = new THREE.Mesh(
+    new THREE.SphereGeometry(R, 14, 12),
+    new THREE.MeshStandardMaterial({ color: 0x2a2a2e })
+  );
+  envelope.scale.set(1, 1.25, 1);
+  body.add(envelope);
+  const stripeMat = new THREE.MeshStandardMaterial({ color: colorHex });
+  for (let i = -2; i <= 2; i++){
+    const stripe = new THREE.Mesh(new THREE.BoxGeometry(0.085, R * 2 * 1.25 * 0.9, 0.04), stripeMat);
+    const ang = i * 0.34;
+    stripe.position.set(Math.sin(ang) * R * 0.97, 0, Math.cos(ang) * R * 0.97);
+    stripe.rotation.y = ang;
+    body.add(stripe);
+  }
+
+  // Teschio bianco sul pallone: stesso disegno di makeSuperbombMesh,
+  // riportato qui pari pari per coerenza visiva tra i due gadget.
+  const skull = new THREE.Group();
+  const skullMat = new THREE.MeshBasicMaterial({ color: 0xf2f2f0 });
+  const skullDarkMat = new THREE.MeshBasicMaterial({ color: 0x1a1a1a });
+  const cranium = new THREE.Mesh(new THREE.CircleGeometry(0.135, 14), skullMat);
+  skull.add(cranium);
+  const eyeL = new THREE.Mesh(new THREE.CircleGeometry(0.028, 8), skullDarkMat);
+  eyeL.position.set(-0.05, 0.02, 0.001);
+  skull.add(eyeL);
+  const eyeR = new THREE.Mesh(new THREE.CircleGeometry(0.028, 8), skullDarkMat);
+  eyeR.position.set(0.05, 0.02, 0.001);
+  skull.add(eyeR);
+  const noseShape = new THREE.Shape();
+  noseShape.moveTo(-0.018, 0.0); noseShape.lineTo(0, -0.045); noseShape.lineTo(0.018, 0.0); noseShape.closePath();
+  const nose = new THREE.Mesh(new THREE.ShapeGeometry(noseShape), skullDarkMat);
+  nose.position.set(0, -0.01, 0.001);
+  skull.add(nose);
+  for (let i = -1; i <= 1; i++){
+    const tooth = new THREE.Mesh(new THREE.PlaneGeometry(0.02, 0.03), skullDarkMat);
+    tooth.position.set(i * 0.035, -0.075, 0.001);
+    skull.add(tooth);
+  }
+  skull.position.set(0, R * 0.35, R * 1.1);
+  body.add(skull);
+
+  g.userData.shadow = shadow;
+  g.userData.body = body;
+  return g;
+}
+
+/* ---- bonus 1800 punti: blob gelatinoso — stessa idea della 2D
+   (drawBlobs: massa grumosa viola informe, base larga come una pozza,
+   NIENTE occhi, solo sopracciglia aggrottate e bocca a zanne per
+   un'espressione aggressiva). E' STATICO finche' non viene risvegliato
+   (bonus 2000 punti, b.alive): da quel momento vaga sulla mappa
+   lasciando una scia velenosa (gia' gestita in onState via
+   msg.poison_zones, radius 0) e "respira" piu' vistosamente. Qui i
+   "bozzi" sono sfere leggermente sovrapposte invece dei cerchi 2D uniti
+   via canvas - stesso principio, forma informe invece di un profilo
+   liscio - e il "respiro"/wob si applica scalando l'intero gruppo nel
+   render loop invece di ridisegnare ogni frame. ---- */
+function makeBlobMesh(colorHex){
+  const g = new THREE.Group();
+
+  // Alone morbido nel colore del proprietario.
+  const halo = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.4, 0.4, 0.02, 16),
+    new THREE.MeshBasicMaterial({ color: colorHex, transparent:true, opacity:0.16 })
+  );
+  halo.position.y = 0.01;
+  g.add(halo);
+
+  // Pozza d'ombra/melma a terra, piu' larga del corpo.
+  const puddle = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.36, 0.36, 0.02, 16),
+    new THREE.MeshBasicMaterial({ color:0x241030, transparent:true, opacity:0.5 })
+  );
+  puddle.position.y = 0.015;
+  puddle.scale.set(1, 1, 0.7);
+  g.add(puddle);
+
+  // Corpo: sotto-gruppo separato cosi' il "respiro" (wob) nel render
+  // loop scala solo lui, mai l'ombra/alone a terra.
+  const body = new THREE.Group();
+  g.add(body);
+
+  // Sagoma grumosa: sfere di raggio diverso leggermente sovrapposte
+  // (stessa idea dei lumps 2D), colore viola melma scuro con contorno
+  // sottile nel colore del proprietario.
+  const bodyMat = new THREE.MeshStandardMaterial({ color: 0x5b2f86 });
+  const lumps = [
+    { dx: 0,     dy: 0.10, dz: 0,     r: 0.30 }, // base larga
+    { dx: -0.17, dy: 0.16, dz: -0.05, r: 0.19 },
+    { dx: 0.18,  dy: 0.17, dz: 0.05,  r: 0.18 },
+    { dx: -0.07, dy: 0.28, dz: 0.02,  r: 0.17 },
+    { dx: 0.10,  dy: 0.26, dz: -0.03, r: 0.15 },
+    { dx: 0,     dy: 0.20, dz: 0.08,  r: 0.20 },
+  ];
+  lumps.forEach(l => {
+    const mesh = new THREE.Mesh(new THREE.SphereGeometry(l.r, 10, 8), bodyMat);
+    mesh.position.set(l.dx, l.dy, l.dz);
+    body.add(mesh);
+  });
+  // Contorno visivo: un guscio leggermente piu' grande nel colore del
+  // proprietario, disegnato in wireframe sottile sopra i lumps centrali
+  // (stesso ruolo dello stroke() nella 2D, senza dover unire le geometrie).
+  const rim = new THREE.Mesh(
+    new THREE.SphereGeometry(0.31, 10, 8),
+    new THREE.MeshBasicMaterial({ color: colorHex, wireframe:true, transparent:true, opacity:0.5 })
+  );
+  rim.position.set(0, 0.20, 0);
+  body.add(rim);
+
+  // NIENTE occhi: sopracciglia aggrottate (due listelli inclinati verso
+  // il centro) sopra una bocca scura a zanne.
+  const browMat = new THREE.MeshBasicMaterial({ color: 0x1a1020 });
+  const browL = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.035, 0.02), browMat);
+  browL.position.set(-0.09, 0.30, 0.24);
+  browL.rotation.z = 0.5;
+  body.add(browL);
+  const browR = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.035, 0.02), browMat);
+  browR.position.set(0.09, 0.30, 0.24);
+  browR.rotation.z = -0.5;
+  body.add(browR);
+
+  const mouth = new THREE.Mesh(
+    new THREE.CircleGeometry(0.14, 12),
+    new THREE.MeshBasicMaterial({ color: 0x1a1020 })
+  );
+  mouth.position.set(0, 0.19, 0.26);
+  body.add(mouth);
+  const fangMat = new THREE.MeshBasicMaterial({ color: 0xf2eaff });
+  for (let i = -1; i <= 1; i++){
+    const fangTop = new THREE.Mesh(new THREE.ConeGeometry(0.028, 0.06, 4), fangMat);
+    fangTop.position.set(i * 0.07, 0.24, 0.265);
+    fangTop.rotation.x = Math.PI;
+    body.add(fangTop);
+    const fangBottom = new THREE.Mesh(new THREE.ConeGeometry(0.028, 0.06, 4), fangMat);
+    fangBottom.position.set(i * 0.07, 0.14, 0.265);
+    body.add(fangBottom);
+  }
+
+  g.userData.body = body;
+  g.userData.halo = halo;
+  g.userData.alive = false; // aggiornato ad ogni state (b.alive, bonus 2000 punti)
+  return g;
+}
+
+/* ---- bonus 2200 punti: muro di spunzoni — stessa idea della 2D
+   (drawSpikeWalls: blocco grande esattamente quanto una casella, nel
+   colore del proprietario con strisce piu' scure e teschio bianco al
+   centro, come bombolone/mongolfiera, ma con SPUNZONI ACUMINATI che
+   sporgono da tutti e quattro i lati). E' PERMANENTE per tutto il round
+   (solo Tesla e fungo atomico lo abbattono, vedi spike_wall_expired):
+   qui non serve nessuna animazione di scadenza, il blocco resta fermo e
+   identico finche' non arriva l'evento di distruzione. Alto quanto un
+   muro normale della mappa (WALL_H), cosi' si confonde bene col resto
+   del labirinto pur restando riconoscibile dagli spunzoni e dal
+   colore. ---- */
+function makeSpikeWallMesh(colorHex){
+  const g = new THREE.Group();
+  const colDark = new THREE.Color(colorHex).multiplyScalar(0.55).getHex();
+  const H = WALL_H; // stessa altezza dei muri normali della mappa
+  const HALF = CELL / 2 - 0.06; // leggero margine, come i muri "smussati" della 2D
+
+  // Corpo del blocco: nel colore del proprietario, con strisce verticali
+  // piu' scure (stesso schema di bombolone/mongolfiera/blob, ma qui e'
+  // il colore del giocatore a dominare invece del viola/nero).
+  const body = new THREE.Mesh(
+    new THREE.BoxGeometry(HALF * 2, H, HALF * 2),
+    new THREE.MeshStandardMaterial({ color: colorHex, transparent:true, opacity:0.86 })
+  );
+  body.position.y = H / 2;
+  g.add(body);
+  const stripeMat = new THREE.MeshStandardMaterial({ color: colDark });
+  for (let i = -2; i <= 2; i++){
+    const stripe = new THREE.Mesh(new THREE.BoxGeometry(HALF * 0.24, H * 0.98, 0.03), stripeMat);
+    stripe.position.set(i * HALF * 0.34, H / 2, HALF - 0.02);
+    g.add(stripe);
+    const stripeBack = stripe.clone();
+    stripeBack.position.z = -(HALF - 0.02);
+    g.add(stripeBack);
+  }
+
+  // Spunzoni acuminati: 3 punte per lato, coni grigio-pietra che
+  // sporgono FUORI dal blocco su tutti e quattro i lati orizzontali,
+  // a media altezza (stessa idea della 2D, qui in 3D con veri coni
+  // invece di triangoli piatti).
+  const spikeMat = new THREE.MeshStandardMaterial({ color: 0xcfcfd4 });
+  const spikeLen = CELL * 0.22, spikeR = CELL * 0.075;
+  const spikeY = H * 0.55;
+  for (let i = 0; i < 3; i++){
+    const off = (i - 1) * (CELL * 0.33);
+    // lato +Z e -Z
+    const spikeFront = new THREE.Mesh(new THREE.ConeGeometry(spikeR, spikeLen, 6), spikeMat);
+    spikeFront.rotation.x = Math.PI / 2;
+    spikeFront.position.set(off, spikeY, HALF + spikeLen / 2);
+    g.add(spikeFront);
+    const spikeBack = new THREE.Mesh(new THREE.ConeGeometry(spikeR, spikeLen, 6), spikeMat);
+    spikeBack.rotation.x = -Math.PI / 2;
+    spikeBack.position.set(off, spikeY, -(HALF + spikeLen / 2));
+    g.add(spikeBack);
+    // lato +X e -X
+    const spikeRight = new THREE.Mesh(new THREE.ConeGeometry(spikeR, spikeLen, 6), spikeMat);
+    spikeRight.rotation.z = -Math.PI / 2;
+    spikeRight.position.set(HALF + spikeLen / 2, spikeY, off);
+    g.add(spikeRight);
+    const spikeLeft = new THREE.Mesh(new THREE.ConeGeometry(spikeR, spikeLen, 6), spikeMat);
+    spikeLeft.rotation.z = Math.PI / 2;
+    spikeLeft.position.set(-(HALF + spikeLen / 2), spikeY, off);
+    g.add(spikeLeft);
+  }
+
+  // Teschio bianco al centro del blocco (stesso disegno di
+  // bombolone/mongolfiera/blob), su entrambe le facce frontale e
+  // posteriore per restare leggibile da qualunque lato ci si avvicini.
+  function makeSkull(){
+    const skull = new THREE.Group();
+    const skullMat = new THREE.MeshBasicMaterial({ color: 0xf2f2f0 });
+    const skullDarkMat = new THREE.MeshBasicMaterial({ color: 0x1a1a1a });
+    const cranium = new THREE.Mesh(new THREE.CircleGeometry(0.24, 14), skullMat);
+    skull.add(cranium);
+    const eyeL = new THREE.Mesh(new THREE.CircleGeometry(0.05, 8), skullDarkMat);
+    eyeL.position.set(-0.09, 0.03, 0.001);
+    skull.add(eyeL);
+    const eyeR = new THREE.Mesh(new THREE.CircleGeometry(0.05, 8), skullDarkMat);
+    eyeR.position.set(0.09, 0.03, 0.001);
+    skull.add(eyeR);
+    const noseShape = new THREE.Shape();
+    noseShape.moveTo(-0.032, 0.0); noseShape.lineTo(0, -0.08); noseShape.lineTo(0.032, 0.0); noseShape.closePath();
+    const nose = new THREE.Mesh(new THREE.ShapeGeometry(noseShape), skullDarkMat);
+    nose.position.set(0, -0.02, 0.001);
+    skull.add(nose);
+    for (let i = -1; i <= 1; i++){
+      const tooth = new THREE.Mesh(new THREE.PlaneGeometry(0.035, 0.05), skullDarkMat);
+      tooth.position.set(i * 0.06, -0.135, 0.001);
+      skull.add(tooth);
+    }
+    return skull;
+  }
+  const skullFront = makeSkull();
+  skullFront.position.set(0, H * 0.5, HALF + 0.005);
+  g.add(skullFront);
+  const skullBack = makeSkull();
+  skullBack.position.set(0, H * 0.5, -(HALF + 0.005));
+  skullBack.rotation.y = Math.PI;
+  g.add(skullBack);
+
   return g;
 }
 
@@ -1812,15 +2232,23 @@ window.addEventListener("keydown", e => {
 });
 
 /* ============================================================
-   CATENA MINE -> MORTAIO (bonus 200 poi 1200): stesso tasto "1" della
-   versione 2D. Il tasto "1" sgancia prima le mine finche' ne restano
-   (mines_left > 0), poi - solo quando sono finite o il bonus mina non
-   e' mai stato sbloccato - passa a "place_mortar" per il gradino
-   successivo della catena (mortaio, poi bombolone/mongolfiera/blob una
-   volta portati anche quelli in 3D). Il client sceglie solo QUALE
-   messaggio inviare in base al proprio stato noto (myState): il server
-   resta comunque l'autorita' su cosa e' davvero disponibile, esattamente
-   come nella 2D (vedi dispatch del tasto "1" in main.py).
+   CATENA MINE -> MORTAIO -> BOMBOLONE -> MONGOLFIERA -> BLOB -> BLOB
+   VIVO -> MURO DI SPUNZONI (bonus 200, 1200, 1400, 1600, 1800, 2000,
+   2200): stesso tasto "1" della versione 2D. Il tasto "1" sgancia prima
+   le mine finche' ne restano (mines_left > 0), poi - solo quando sono
+   finite o il bonus mina non e' mai stato sbloccato - manda sempre
+   "place_mortar" per il gradino successivo della catena: e' il SERVER
+   a decidere se questo significa schierare il mortaio, piazzare un
+   bombolone, far librare la mongolfiera, piazzare/risvegliare il blob o
+   piantare il muro di spunzoni (a seconda di cosa e' gia' stato fatto),
+   esattamente come nella 2D (vedi dispatch di "place_mortar" in
+   main.py). Il client non deve distinguere i casi: gli arrivano gia'
+   come eventi diversi (mortar_place / superbomb_place / balloon_launch
+   / blob_place / blob_animate / spike_wall_place). Il muro di spunzoni
+   e' PERMANENTE per tutto il round: solo un fulmine di Tesla o il fungo
+   atomico lo abbattono (spike_wall_expired). La trappola territoriale,
+   quando verra' portata anche lei in 3D, si aggiungera' da sola alla
+   stessa catena senza toccare questo dispatch.
    ============================================================ */
 window.addEventListener("keydown", e => {
   if (currentScreen !== "game") return;
@@ -1991,16 +2419,37 @@ function onState(msg){
       } else {
         hudMissile.classList.add("hidden");
       }
-      // Catena del tasto "1" (bonus 200 mine -> 1200 mortaio -> ...): una
-      // sola riga HUD che segue l'anello ATTUALMENTE attivo, stessa idea
-      // della colonna "1" nella 2D (mineChainStep) - il numero del tasto
-      // resta sempre "1", solo il testo/anello cambia.
+      // Catena del tasto "1" (bonus 200 mine -> 1200 mortaio -> 1400
+      // bombolone -> 1600 mongolfiera -> 1800 blob -> 2000 risveglio
+      // blob -> 2200 muro di spunzoni -> ...): una sola riga HUD che
+      // segue l'anello ATTUALMENTE attivo, stessa idea della colonna "1"
+      // nella 2D (mineChainStep) - il numero del tasto resta sempre "1",
+      // solo il testo/anello cambia. Il risveglio del blob resta il
+      // passo attivo SOLO se il blob e' ancora sulla mappa (stessa
+      // logica di mineChainStep: se distrutto prima, il server salta
+      // questo passo).
       const hudMines = document.getElementById("hudMines");
+      const myBlobStillThere = (msg.blobs||[]).some(bb => bb.owner === myId);
       if (p.mines && p.mines_left > 0){
         hudMines.textContent = "mine: " + p.mines_left + " (tasto 1)";
         hudMines.classList.remove("hidden");
       } else if (p.mortar && !p.mortar_placed){
         hudMines.textContent = "mortaio: premi 1 per schierarlo";
+        hudMines.classList.remove("hidden");
+      } else if (p.superbomb && p.superbomb_left > 0){
+        hudMines.textContent = "bomboloni: " + p.superbomb_left + " (tasto 1)";
+        hudMines.classList.remove("hidden");
+      } else if (p.balloon && !p.balloon_launched){
+        hudMines.textContent = "mongolfiera: premi 1 per farla librare";
+        hudMines.classList.remove("hidden");
+      } else if (p.blob && !p.blob_placed){
+        hudMines.textContent = "blob: premi 1 per piazzarlo";
+        hudMines.classList.remove("hidden");
+      } else if (p.blob_alive_bonus && !p.blob_alive_used && myBlobStillThere){
+        hudMines.textContent = "blob vivo: premi 1 per risvegliarlo";
+        hudMines.classList.remove("hidden");
+      } else if (p.spike_wall && !p.spike_wall_placed){
+        hudMines.textContent = "muro di spunzoni: premi 1 per piazzarlo";
         hudMines.classList.remove("hidden");
       } else {
         hudMines.classList.add("hidden");
@@ -2204,6 +2653,99 @@ function onState(msg){
     if (!seenMortars.has(id)){ scene.remove(mortarMeshes[id]); delete mortarMeshes[id]; }
   });
 
+  // bonus 1400 punti: bomboloni. Fermi (nessuna interpolazione, come le
+  // mine): qui si aggiorna solo il fusibile residuo (fuse_left, letto dal
+  // render loop per far lampeggiare il teschio sempre piu' in fretta man
+  // mano che si avvicina allo zero, stessa idea della bocca del mortaio
+  // che "respira") - l'esplosione vera e propria arriva come evento
+  // dedicato (superbomb_explode) che rimuove la mesh e crea il boato.
+  const seenSuperbombs = new Set();
+  (msg.superbombs||[]).forEach(sb => {
+    seenSuperbombs.add(sb.id);
+    let entry = superbombMeshes[sb.id];
+    if (!entry){
+      const hex = playerColorHex[sb.owner] !== undefined ? playerColorHex[sb.owner] : 0xff3b3b;
+      const group = makeSuperbombMesh(hex);
+      group.position.set(sb.x*CELL + CELL/2, 0, sb.y*CELL + CELL/2);
+      scene.add(group);
+      entry = superbombMeshes[sb.id] = group;
+    }
+    entry.userData.fuseLeft = (typeof sb.fuse_left === "number") ? sb.fuse_left : SUPERBOMB_FUSE_SECONDS;
+  });
+  Object.keys(superbombMeshes).forEach(id => {
+    if (!seenSuperbombs.has(id)){ scene.remove(superbombMeshes[id]); delete superbombMeshes[id]; }
+  });
+
+  // bonus 1600 punti: mongolfiere. Si muovono liberamente su tutta la
+  // mappa (nessun corridoio, come i missili/pet): stesso schema di lerp
+  // verso target gia' collaudato per remotePlayers/pet, invece del
+  // "dead reckoning" della 2D. L'ombra a terra segue lo stesso x/z del
+  // pallone (nessun offset), coerente col fatto che la mongolfiera non
+  // ha un arco di volo come le bombe di mortaio.
+  const seenBalloons = new Set();
+  (msg.balloons||[]).forEach(bl => {
+    seenBalloons.add(bl.id);
+    const wx = bl.x*CELL + CELL/2, wz = bl.y*CELL + CELL/2;
+    let entry = balloonMeshes[bl.id];
+    if (!entry){
+      const hex = playerColorHex[bl.owner] !== undefined ? playerColorHex[bl.owner] : 0xff9d3b;
+      const group = makeBalloonMesh(hex);
+      group.position.set(wx, 0, wz);
+      scene.add(group);
+      entry = balloonMeshes[bl.id] = { group, x:wx, z:wz, targetX:wx, targetZ:wz };
+    }
+    entry.targetX = wx; entry.targetZ = wz;
+  });
+  Object.keys(balloonMeshes).forEach(id => {
+    if (!seenBalloons.has(id)){ scene.remove(balloonMeshes[id].group); delete balloonMeshes[id]; }
+  });
+
+  // bonus 1800 punti: blob gelatinoso. Fermo finche' non viene
+  // risvegliato (b.alive, bonus 2000 punti): da quel momento si muove
+  // come un giocatore/pet, stesso schema di lerp gia' collaudato. La
+  // scia velenosa che lascia dietro di se' arriva separatamente come
+  // msg.poison_zones (radius 0, gia' gestito piu' sotto): qui basta
+  // riflettere posizione e stato vivo/fermo.
+  const seenBlobs = new Set();
+  (msg.blobs||[]).forEach(bb => {
+    seenBlobs.add(bb.id);
+    const wx = bb.x*CELL + CELL/2, wz = bb.y*CELL + CELL/2;
+    let entry = blobMeshes[bb.id];
+    if (!entry){
+      const hex = playerColorHex[bb.owner] !== undefined ? playerColorHex[bb.owner] : 0x8a4fc9;
+      const group = makeBlobMesh(hex);
+      group.position.set(wx, 0, wz);
+      scene.add(group);
+      entry = blobMeshes[bb.id] = { group, x:wx, z:wz, targetX:wx, targetZ:wz };
+    }
+    entry.targetX = wx; entry.targetZ = wz;
+    entry.group.userData.alive = !!bb.alive;
+  });
+  Object.keys(blobMeshes).forEach(id => {
+    if (!seenBlobs.has(id)){ scene.remove(blobMeshes[id].group); delete blobMeshes[id]; }
+  });
+
+  // bonus 2200 punti: muri di spunzoni. Fermi e permanenti (nessuna
+  // interpolazione, come le mine): qui serve solo crearli se mancano
+  // (es. ci si e' uniti a una partita gia' iniziata) e rimuovere quelli
+  // abbattuti nel caso l'evento "spike_wall_expired" fosse andato
+  // perso - la distruzione normale arriva pero' gia' come evento
+  // dedicato (vedi onGameEvent), non da qui.
+  const seenSpikeWalls = new Set();
+  (msg.spike_walls||[]).forEach(w => {
+    seenSpikeWalls.add(w.id);
+    if (!spikeWallMeshes[w.id]){
+      const hex = playerColorHex[w.owner] !== undefined ? playerColorHex[w.owner] : 0xc9c9c9;
+      const mesh = makeSpikeWallMesh(hex);
+      mesh.position.set(w.x*CELL + CELL/2, 0, w.y*CELL + CELL/2);
+      scene.add(mesh);
+      spikeWallMeshes[w.id] = mesh;
+    }
+  });
+  Object.keys(spikeWallMeshes).forEach(id => {
+    if (!seenSpikeWalls.has(id)){ scene.remove(spikeWallMeshes[id]); delete spikeWallMeshes[id]; }
+  });
+
   // bonus 1200 punti: bombe di mortaio in volo. NON seguono i corridoi
   // come laser/missili: il server manda gia' x/y (posizione a terra,
   // l'"ombra") e frac (0..1, progresso del volo) gia' interpolati (vedi
@@ -2301,6 +2843,11 @@ function onGameEvent(msg){
         pet: "PET FEDELE SBLOCCATO! premi 8 per evocarlo \u00b7 ti segue e attacca chi si avvicina",
         robot: "EVOLUZIONE SBLOCCATA! premi 9 per evolvere la torretta, se \u00e8 ancora viva",
         mortar: "MORTAIO SBLOCCATO! raggio 15 caselle \u00b7 premi 1 per schierarlo \u00b7 scavalca i muri",
+        superbomb: "BOMBOLONE SBLOCCATO! 2 bomboloni \u00b7 esplosione raggio 8 caselle \u00b7 premi 1 (dopo il mortaio) per piazzarli",
+        balloon: "MONGOLFIERA SBLOCCATA! vaga sulla mappa e sgancia bombe \u00b7 premi 1 (dopo il bombolone) per farla librare",
+        blob: "BLOB SBLOCCATO! blocca la strada e mangia chi passa \u00b7 premi 1 (dopo la mongolfiera) per piazzarlo \u00b7 si rimuove solo sparandogli",
+        blob_alive: "BLOB VIVO SBLOCCATO! premi 1 (dopo averlo piazzato) per risvegliarlo \u00b7 vaga sulla mappa lasciando una scia velenosa e mangia chi gli \u00e8 vicino",
+        spike_wall: "MURO DI SPUNZONI SBLOCCATO! premi 1 (a fine catena) per piazzarlo sulla tua cella \u00b7 un singolo blocco, grande come un muro normale \u00b7 PERMANENTE per tutto il round \u00b7 solo tu e i tuoi gadget lo attraversate, chiunque altro ci sbatta muore",
       };
       const label = bonusLabels[msg.bonus] || ("Bonus sbloccato: " + msg.bonus);
       if (msg.player === myId) showToast(label);
@@ -2480,6 +3027,105 @@ function onGameEvent(msg){
       playMortarImpact();
       break;
     }
+    case "superbomb_place": {
+      // Bonus 1400 punti: la mesh vera e propria viene creata dal prossimo
+      // onState (blocco msg.superbombs) - qui serve solo il feedback per
+      // chi l'ha piazzato, stesso comportamento di mortar_place/mine_place.
+      if (msg.player === myId) showToast("Bombolone piazzato! Esplode tra poco.");
+      playSuperbombPlace();
+      break;
+    }
+    case "superbomb_explode": {
+      // Boato piu' grosso del gioco (raggio SUPERBOMB_RADIUS_CELLS = 8
+      // caselle): qui basta l'effetto visivo/sonoro nel punto d'impatto,
+      // e' il server l'unica autorita' su chi viene colpito dall'onda
+      // d'urto (i "kill"/vite perse arrivano come eventi separati, stessa
+      // idea della 2D).
+      spawnExplosion(msg.x*CELL+CELL/2, msg.y*CELL+CELL/2, 0xff3b3b);
+      playSuperbombExplode();
+      const sm = superbombMeshes[msg.id];
+      if (sm){ scene.remove(sm); delete superbombMeshes[msg.id]; }
+      break;
+    }
+    case "balloon_launch": {
+      // Bonus 1600 punti: la mesh vera e propria viene creata dal prossimo
+      // onState (blocco msg.balloons) - qui serve solo il feedback per chi
+      // l'ha lanciata. Da questo momento vaga da sola su tutta la mappa
+      // sganciando bombe ogni 3 secondi, senza altro input dal giocatore.
+      if (msg.player === myId) showToast("Mongolfiera in volo! Sgancia bombe ogni 3 secondi vagando su tutta la mappa.");
+      playBalloonLaunch();
+      break;
+    }
+    case "balloon_bomb_drop": {
+      // Bomba sganciata dalla mongolfiera (bonus 1600 punti): nessuna
+      // miccia, esplode ISTANTANEAMENTE nel punto esatto in cui si trova
+      // (raggio BALLOON_BOMB_RADIUS_CELLS = 4 caselle). Le strutture
+      // avversarie colpite arrivano come eventi separati (mine_destroyed/
+      // turret_destroyed/ecc. con cause "balloon"), stessa idea del
+      // bombolone: qui basta l'effetto visivo/sonoro nel punto d'impatto.
+      const balHex = playerColorHex[msg.by] !== undefined ? playerColorHex[msg.by] : 0xffb347;
+      spawnExplosion(msg.x*CELL+CELL/2, msg.y*CELL+CELL/2, balHex);
+      playBalloonBomb();
+      break;
+    }
+    case "blob_place": {
+      // Bonus 1800 punti: la mesh vera e propria viene creata dal
+      // prossimo onState (blocco msg.blobs) - qui serve solo il feedback
+      // per chi l'ha piazzato, stesso comportamento di mortar_place.
+      if (msg.player === myId) showToast("Blob piazzato! Blocca la strada finche' non gli spari.");
+      playBlobPlace();
+      break;
+    }
+    case "blob_animate": {
+      // Il blob si e' risvegliato (bonus 2000 punti): da ora vaga sulla
+      // mappa lasciando una scia velenosa (msg.poison_zones, gia'
+      // gestito in onState) e mangia anche chi gli e' solo adiacente.
+      // Lo stato "vivo" vero e proprio arriva gia' col prossimo onState
+      // (bb.alive), qui basta il feedback sonoro/toast.
+      if (msg.player === myId) showToast("Blob risvegliato! Ora vaga sulla mappa lasciando una scia velenosa.");
+      playBlobAnimate();
+      break;
+    }
+    case "blob_destroyed": {
+      // Il blob (bonus 1800 punti) e' stato distrutto da un laser o da un
+      // missile guidato: l'unico modo per rimuoverlo dalla strada. La
+      // mesh viene rimossa qui; se l'evento arriva prima che la mesh
+      // esista ancora (race condition di rete rara) non succede nulla di
+      // grave, il prossimo onState la terrebbe comunque fuori dal set
+      // "seenBlobs" e la ripulirebbe al giro successivo.
+      spawnExplosion(msg.x*CELL+CELL/2, msg.y*CELL+CELL/2, 0x7cff5a);
+      playBlobDestroyed();
+      if (msg.by === myId) showToast("Blob avversario distrutto!");
+      if (msg.id !== undefined){
+        const bm = blobMeshes[msg.id];
+        if (bm){ scene.remove(bm.group); delete blobMeshes[msg.id]; }
+      }
+      break;
+    }
+    case "spike_wall_place": {
+      // Bonus 2200 punti: la mesh vera e propria viene creata dal
+      // prossimo onState (blocco msg.spike_walls) - qui serve solo il
+      // feedback per chi l'ha piazzato, stesso comportamento di
+      // mortar_place/mine_place.
+      if (msg.player === myId) showToast("Muro di spunzoni piazzato! E' permanente: solo tu e i tuoi gadget potete attraversarlo.");
+      playSpikeWallPlace();
+      break;
+    }
+    case "spike_wall_expired": {
+      // Il muro si sgretola (abbattuto da un fulmine di Tesla o dal
+      // fungo atomico, vedi cause in main.py): piccola frana di detriti
+      // nel punto in cui si trovava, stessa idea della 2D. La mesh viene
+      // rimossa qui; se l'evento arriva prima che la mesh esista ancora
+      // (race condition di rete rara) il prossimo onState la terrebbe
+      // comunque fuori dal set "seenSpikeWalls" e la ripulirebbe.
+      spawnExplosion(msg.x*CELL+CELL/2, msg.y*CELL+CELL/2, 0x8a8a86);
+      playSpikeWallCrumble();
+      if (msg.id !== undefined){
+        const sw = spikeWallMeshes[msg.id];
+        if (sw){ scene.remove(sw); delete spikeWallMeshes[msg.id]; }
+      }
+      break;
+    }
   }
 }
 
@@ -2598,6 +3244,47 @@ function animate(){
     g.userData.core.material.color.setHex(tracking ? 0xff5b5b : 0x3a2213);
     g.userData.core.material.emissive.setHex(tracking ? 0xff5b5b : 0x3a2213);
     g.userData.halo.material.opacity = tracking ? 0.30 : 0.18;
+  });
+  // bonus 1400 punti: bomboloni. Fermi (nessuna interpolazione, come le
+  // mine): l'unica animazione e' il teschio che lampeggia sempre piu' in
+  // fretta man mano che il fusibile residuo si avvicina allo zero,
+  // esattamente come nella 2D (drawSuperbombs: blinkPeriod scende da
+  // ~500ms a ~110ms sotto mezzo secondo residuo).
+  const nowSuperbomb = performance.now();
+  Object.values(superbombMeshes).forEach(g => {
+    const fuseFrac = Math.max(0, Math.min(1, g.userData.fuseLeft / SUPERBOMB_FUSE_SECONDS));
+    const blinkPeriod = 110 + fuseFrac * 390;
+    const lit = Math.floor(nowSuperbomb / blinkPeriod) % 2 === 0;
+    g.userData.skull.visible = lit;
+  });
+  // bonus 1600 punti: mongolfiere. Si muovono liberamente sulla mappa con
+  // lo stesso lerp gia' usato per pet/remotePlayers (vedi sopra); in piu'
+  // il corpo sospeso (pallone+cesto, separato dall'ombra a terra) oscilla
+  // dolcemente su e giu' per sembrare sospeso nell'aria, stessa idea del
+  // "bob" della 2D (Math.sin(now/900 + ...)*4), qui in unita' di mondo.
+  Object.values(balloonMeshes).forEach(bm => {
+    bm.x += (bm.targetX - bm.x) * LERP;
+    bm.z += (bm.targetZ - bm.z) * LERP;
+    bm.group.position.set(bm.x, 0, bm.z);
+    const bob = Math.sin(nowSuperbomb / 900 + (bm.x + bm.z) * 0.05) * 0.08;
+    bm.group.userData.body.position.y = BALLOON_LIFT_HEIGHT + bob;
+  });
+  // bonus 1800 punti: blob gelatinoso. Fermo finche' non risvegliato
+  // (userData.alive, bonus 2000 punti): usa lo stesso lerp orizzontale
+  // di pet/mongolfiera quando si muove, e un "respiro" che scala
+  // dolcemente il corpo - piu' vistoso e rapido quando e' vivo E si sta
+  // muovendo davvero, stessa idea del wob della 2D (Math.sin(now/150)
+  // quando in moto, altrimenti now/260 piu' lento).
+  Object.values(blobMeshes).forEach(bm => {
+    const dx = bm.targetX - bm.x, dz = bm.targetZ - bm.z;
+    const moving = bm.group.userData.alive && (Math.abs(dx) > 0.003 || Math.abs(dz) > 0.003);
+    bm.x += dx * LERP;
+    bm.z += dz * LERP;
+    bm.group.position.set(bm.x, 0, bm.z);
+    const wobPeriod = moving ? 150 : 260;
+    const wobAmount = moving ? 0.05 : 0.03;
+    const wob = 1 + Math.sin(nowSuperbomb / wobPeriod) * wobAmount;
+    bm.group.userData.body.scale.set(wob, wob, wob);
   });
   // esplosioni (missile_end/missile_reflect, in futuro anche mine/superbomb):
   // si espandono e sfumano in ~350ms, poi si rimuovono da sole.
