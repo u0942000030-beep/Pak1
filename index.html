@@ -146,6 +146,19 @@ let ws = null;
 let myId = null, roomCode = null, myName = "Player", iAmHost = false;
 let joinMode = false;
 
+/* ---- precompila il campo "Server" con l'indirizzo da cui la pagina e'
+   stata caricata (location.hostname), cosi' su Render/qualsiasi hosting
+   il campo e' gia' corretto senza doverlo scrivere a mano. Se la pagina
+   e' aperta come file locale (file://, hostname vuoto) resta il
+   placeholder 127.0.0.1. La porta resta vuota di proposito: su hosting
+   HTTPS (Render ecc.) il traffico passa su 443/WSS, non su una porta
+   custom come 8765 (quella serve solo per il server avviato in locale). ---- */
+window.addEventListener("DOMContentLoaded", () => {
+  if (location.hostname) {
+    document.getElementById("inpIp").value = location.hostname;
+  }
+});
+
 let maze = [], mazeW = 0, mazeH = 0, mazeTheme = null;
 
 function sendMsg(obj){ if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj)); }
