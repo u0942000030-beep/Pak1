@@ -174,7 +174,7 @@ class Player:
         self.assassin_left = 0.0       # secondi rimanenti da modalita' ninja attiva
         self.ninja_used = False        # True dopo l'unica attivazione consentita per round
         self.prot_left = 0.0           # invulnerabilita' temporanea dopo un respawn
-        self.has_laser = False         # bonus 150 punti: laser frontale (arma principale). Resta sbloccato per TUTTA la partita una volta ottenuto (non scade piu'); spara solo quando un nemico e' entro LASER_RANGE_CELLS caselle (vedi update_lasers)
+        self.has_laser = False         # bonus 150 punti: laser frontale (arma principale). Resta sbloccato per TUTTA la partita una volta ottenuto (non scade piu'); in versione 3D spara solo su comando esplicito del giocatore (tasto destro del mouse, vedi try_fire_laser)
         self.laser_cd = 0.0            # countdown al prossimo colpo di laser
         self.has_bounce = False        # (non piu' assegnato da alcun bonus, resta sempre False)
         self.has_mines = False         # bonus 200 punti: puo' sganciare mine
@@ -2180,44 +2180,54 @@ class Room:
 
     def update_lasers(self):
         """Bonus 150 punti: arma principale, sbloccata UNA VOLTA e attiva
-        per TUTTA la partita da quel momento (non scade piu'). Ogni
-        LASER_INTERVAL_SECONDS (1 secondo) parte un singolo colpo
-        (proiettile) dal lato frontale del personaggio, con la stessa
-        identica meccanica di sempre (spawn_laser) - ma SOLO quando almeno
-        un avversario vivo si trova entro LASER_RANGE_CELLS caselle
-        (distanza Manhattan), esattamente come il raggio d'azione della
-        torretta (vedi update_turrets). Se nessuno e' abbastanza vicino resta
-        carico (cd fermo a zero) e spara ISTANTANEAMENTE appena qualcuno
-        entra nel raggio, invece di sprecare colpi a vuoto o di accumulare
-        colpi arretrati. Il super assassino (300 punti, invisibile agli
-        altri) NON spara: il proiettile e' visibile a tutti e rivelerebbe
-        subito la sua posizione, vanificando l'invisibilita'. Allo stesso
-        modo, chi e' intrappolato dalla trappola di un avversario
-        (trapped_left > 0) non spara: e' completamente bloccato, laser
-        compreso, finche' non torna libero di muoversi."""
+        per TUTTA la partita da quel momento (non scade piu'). A differenza
+        della versione 2D, il laser NON spara piu' in automatico per
+        prossimita': e' il giocatore a decidere quando sparare (tasto
+        destro del mouse, vedi try_fire_laser/mtype "fire_laser" lato
+        server e il listener "mousedown" lato client). Questo metodo si
+        occupa solo di scalare il cooldown ad ogni tick, cosi' che
+        try_fire_laser possa verificarlo prima di consentire un nuovo
+        colpo (stessa cadenza LASER_INTERVAL_SECONDS di prima, ma a
+        richiesta invece che automatica)."""
         for p in list(self.players.values()):
-            if not p.alive or not p.has_laser or p.is_assassin or p.trapped_left > 0:
-                continue
-            nearest = self.nearest_alive(p.x, p.y, self.hostile_exclude(p.id))
-            in_range = (
-                nearest is not None
-                and abs(nearest.x - p.x) + abs(nearest.y - p.y) <= LASER_RANGE_CELLS
-            )
-            p.laser_cd -= TICK_DT
             if p.laser_cd > 0:
-                continue
-            if not in_range:
-                p.laser_cd = 0.0
-                continue
-            p.laser_cd = LASER_INTERVAL_SECONDS
-            self.spawn_laser(p)
+                p.laser_cd -= TICK_DT
+                if p.laser_cd < 0:
+                    p.laser_cd = 0.0
 
-    def spawn_laser(self, shooter):
+    def try_fire_laser(self, shooter, direction=None):
+        """Spara un colpo di laser su richiesta esplicita del giocatore
+        (tasto destro del mouse, mira libera con la visuale 3D). Sostituisce
+        l'auto-fire di prossimita' della versione 2D: qui il colpo parte
+        SEMPRE nella direzione indicata dal client (il punto rosso al
+        centro dello schermo), non piu' verso il nemico piu' vicino. Il
+        server resta comunque l'autorita' su cooldown e condizioni di
+        sblocco, esattamente come le altre armi a comando manuale
+        (try_fire_missile, try_place_mine, ecc.)."""
+        if not shooter.alive or not shooter.has_laser:
+            return
+        if shooter.is_assassin:
+            # invisibile agli altri: sparare rivelerebbe la posizione e
+            # vanificherebbe l'invisibilita', come nella versione 2D.
+            return
+        if shooter.trapped_left > 0:
+            return
+        if shooter.laser_cd > 0:
+            return
+        dx, dy = DIRECTIONS.get(direction, DIRECTIONS.get(shooter.facing, (1, 0)))
+        shooter.laser_cd = LASER_INTERVAL_SECONDS
+        self.spawn_laser(shooter, dx, dy, direction or shooter.facing)
+
+    def spawn_laser(self, shooter, dx=None, dy=None, facing=None):
         """Crea un nuovo proiettile laser (singolo colpo) che parte dalla
-        cella dello sparatore e viaggia nella sua direzione frontale. Il
-        proiettile vero e proprio avanza poi, un tick alla volta, dentro
+        cella dello sparatore e viaggia nella direzione indicata (di norma
+        la mira del giocatore al momento dello sparo; se non fornita,
+        ricade sulla direzione frontale del personaggio). Il proiettile
+        vero e proprio avanza poi, un tick alla volta, dentro
         move_lasers()."""
-        dx, dy = DIRECTIONS.get(shooter.facing, (1, 0))
+        if dx is None or dy is None:
+            dx, dy = DIRECTIONS.get(shooter.facing, (1, 0))
+        facing = facing or shooter.facing
         laser = {
             "id": uuid.uuid4().hex[:8],
             "owner": shooter.id,
@@ -2229,7 +2239,7 @@ class Room:
         self.lasers.append(laser)
         self.push_event({
             "kind": "laser_fire", "id": laser["id"], "shooter": shooter.id,
-            "x": shooter.x, "y": shooter.y, "dir": shooter.facing,
+            "x": shooter.x, "y": shooter.y, "dir": facing,
         })
 
     def move_lasers(self):
@@ -6743,6 +6753,19 @@ async def handle_client(ws):
                 if not room or not player:
                     continue
                 room.try_fire_missile(player)
+
+            elif mtype == "fire_laser":
+                # Bonus 150 punti: arma principale, ora a comando manuale
+                # (tasto destro del mouse in versione 3D, mirando col
+                # punto rosso al centro dello schermo). Il client manda la
+                # direzione cardinale piu' vicina allo sguardo corrente
+                # (snap agli assi della griglia, stessa logica gia' usata
+                # per il movimento WASD relativo alla camera); il server
+                # resta comunque l'autorita' su cooldown e sblocco.
+                if not room or not player:
+                    continue
+                direction = msg.get("direction")
+                room.try_fire_laser(player, direction if direction in DIRECTIONS else None)
 
             elif mtype == "activate_trap":
                 # Bonus 500 punti: pressione del tasto "4" lato client

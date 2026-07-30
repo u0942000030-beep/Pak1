@@ -112,7 +112,7 @@
   <div id="hudLives">vite: 0</div>
 </div>
 <div id="toast"></div>
-<div id="hint" class="hidden">Click per guardarti intorno — WASD = Nord/Sud/Ovest/Est fissi (come nel gioco originale) — mouse = solo sguardo</div>
+<div id="hint" class="hidden">Click per guardarti intorno — WASD = movimento relativo allo sguardo — tasto destro = spara laser (se sbloccato)</div>
 <div id="deadBanner" class="hidden">SEI MORTO — attendi il respawn</div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
@@ -491,9 +491,11 @@ function hexToInt(h){ return parseInt((h||"#333333").replace("#",""), 16); }
 
 let scene, camera, renderer, torch;
 let wallMeshGroup = null;
+let floorMeshGroup = null;
 let pelletMeshes = {};   // "x,y" -> THREE.Mesh
 let powerPelletCells = new Set();
 let remotePlayers = {};  // id -> {group, targetX, targetZ, colorHex}
+let laserMeshes = {};    // id -> {mesh, x, z, targetX, targetZ} bonus 150 punti: proiettili laser in volo
 
 function initThree(){
   scene = new THREE.Scene();
@@ -532,15 +534,51 @@ function applyMapData(msg){
   scene.fog = new THREE.Fog(bgColor, 6, 34);
   torch.color = new THREE.Color(hexToInt(mazeTheme.glow || "#ff5a4d"));
 
-  // pavimento
-  const floor = new THREE.Mesh(
+  // pavimento: una cella per ogni casella percorribile della mappa (non
+  // un unico piano uniforme), a scacchiera con due tonalità derivate dal
+  // colore di sfondo del tema, cosi' la griglia di gioco si legge anche
+  // guardando in basso e il pavimento non sembra un piano vuoto e piatto.
+  if (floorMeshGroup) scene.remove(floorMeshGroup);
+  const floorColorA = bgColor;
+  const floorColorB = hexToInt(lightenHex(mazeTheme.bg || "#0d0202", 0.05));
+  const floorGeo = new THREE.PlaneGeometry(CELL, CELL);
+  const floorMatA = new THREE.MeshStandardMaterial({ color:floorColorA, roughness:1 });
+  const floorMatB = new THREE.MeshStandardMaterial({ color:floorColorB, roughness:1 });
+  let countA = 0, countB = 0;
+  for (let y=0;y<mazeH;y++){
+    for (let x=0;x<mazeW;x++){
+      if (isWall(x,y)) continue;
+      if ((x+y) % 2 === 0) countA++; else countB++;
+    }
+  }
+  const floorInstA = countA > 0 ? new THREE.InstancedMesh(floorGeo, floorMatA, countA) : null;
+  const floorInstB = countB > 0 ? new THREE.InstancedMesh(floorGeo, floorMatB, countB) : null;
+  const floorDummy = new THREE.Object3D();
+  floorDummy.rotation.x = -Math.PI/2;
+  let wA = 0, wB = 0;
+  for (let y=0;y<mazeH;y++){
+    for (let x=0;x<mazeW;x++){
+      if (isWall(x,y)) continue;
+      floorDummy.position.set(x*CELL+CELL/2, 0, y*CELL+CELL/2);
+      floorDummy.updateMatrix();
+      if ((x+y) % 2 === 0){ floorInstA.setMatrixAt(wA++, floorDummy.matrix); }
+      else { floorInstB.setMatrixAt(wB++, floorDummy.matrix); }
+    }
+  }
+  floorMeshGroup = new THREE.Group();
+  floorMeshGroup.name = "__floor";
+  if (floorInstA) floorMeshGroup.add(floorInstA);
+  if (floorInstB) floorMeshGroup.add(floorInstB);
+  // base piena sotto ai muri (evita buchi/fondo nero nelle celle non
+  // percorribili quando la telecamera guarda tra i cubetti dei muri)
+  const floorBase = new THREE.Mesh(
     new THREE.PlaneGeometry(mazeW*CELL, mazeH*CELL),
-    new THREE.MeshStandardMaterial({ color:bgColor, roughness:1 })
+    new THREE.MeshStandardMaterial({ color:floorColorA, roughness:1 })
   );
-  floor.rotation.x = -Math.PI/2;
-  floor.position.set(mazeW*CELL/2, 0, mazeH*CELL/2);
-  floor.name = "__floor";
-  scene.add(floor);
+  floorBase.rotation.x = -Math.PI/2;
+  floorBase.position.set(mazeW*CELL/2, -0.01, mazeH*CELL/2);
+  floorMeshGroup.add(floorBase);
+  scene.add(floorMeshGroup);
 
   // muri: pila di CUBETTI (lato = CELL, proporzioni 1:1:1) invece di un
   // unico parallelepipedo, colorati "a chiazze" con le 4 varianti della
@@ -735,6 +773,29 @@ document.addEventListener("mousemove", e => {
   updateMovementDirection(); // lo sguardo e' cambiato: se un tasto e' tenuto premuto, ricalcola il verso
 });
 
+/* ============================================================
+   LASER (bonus 150 punti): a differenza della versione 2D non
+   spara piu' in automatico quando un nemico e' vicino. E' il
+   giocatore a decidere quando sparare, con il tasto destro del
+   mouse, mirando con il punto rosso (crosshair) gia' al centro
+   dello schermo. La direzione inviata al server e' quella di
+   griglia piu' allineata allo sguardo attuale (stesso snap ai 4
+   cardinali gia' usato per il movimento, vedi dirFromVector):
+   il server accetta solo le 4 direzioni di griglia, non un
+   angolo libero.
+   ============================================================ */
+document.addEventListener("contextmenu", e => {
+  if (currentScreen === "game") e.preventDefault(); // niente menu del browser durante il gioco
+});
+document.addEventListener("mousedown", e => {
+  if (currentScreen !== "game" || !locked) return;
+  if (e.button !== 2) return; // solo tasto destro
+  e.preventDefault();
+  const fx = -Math.sin(yaw), fz = -Math.cos(yaw); // direzione in cui sto guardando (piano orizzontale)
+  const dir = dirFromVector(fx, fz);
+  sendMsg({ type:"fire_laser", direction: dir });
+});
+
 function enterGame(){
   showScreen("game");
   if (renderer) renderer.domElement.addEventListener("click", () => renderer.domElement.requestPointerLock());
@@ -790,6 +851,21 @@ function onState(msg){
   Object.keys(remotePlayers).forEach(id => {
     if (!seen.has(id)){ scene.remove(remotePlayers[id].group); delete remotePlayers[id]; }
   });
+
+  // bonus 150 punti: aggiorna il bersaglio di interpolazione di ogni
+  // proiettile laser attivo con l'ultima posizione confermata dal server
+  // (la creazione/rimozione restano gestite dagli eventi laser_fire/
+  // laser_end in onGameEvent, qui si aggiorna solo il movimento fluido).
+  const seenLasers = new Set();
+  (msg.lasers||[]).forEach(lz => {
+    seenLasers.add(lz.id);
+    const entry = laserMeshes[lz.id];
+    if (!entry) return; // laser_fire non ancora arrivato/processato: aspetta il prossimo state
+    entry.targetX = lz.x*CELL + CELL/2;
+    entry.targetZ = lz.y*CELL + CELL/2;
+    const ang = { "1,0":Math.PI/2, "-1,0":-Math.PI/2, "0,1":Math.PI, "0,-1":0 }[lz.dir[0]+","+lz.dir[1]];
+    if (ang !== undefined) entry.mesh.rotation.y = ang;
+  });
 }
 
 function onGameEvent(msg){
@@ -820,6 +896,41 @@ function onGameEvent(msg){
     case "bonus":
       if (msg.player === myId) showToast("Bonus sbloccato: " + msg.bonus);
       break;
+    case "laser_fire": {
+      // bonus 150 punti: nuovo colpo di laser sparato (dal server, in
+      // risposta al comando manuale del giocatore). Crea un piccolo
+      // "proiettile" luminoso che il render loop muove morbidamente
+      // verso la posizione confermata a ogni "event" successivo.
+      const wx = msg.x*CELL + CELL/2, wz = msg.y*CELL + CELL/2;
+      const geo = new THREE.CylinderGeometry(0.06, 0.06, 0.5, 6);
+      const mat = new THREE.MeshStandardMaterial({
+        color: 0xff5a4d, emissive: 0xff5a4d, emissiveIntensity: 1.4,
+      });
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.position.set(wx, 0.65, wz);
+      const ang = { right:Math.PI/2, left:-Math.PI/2, down:Math.PI, up:0 }[msg.dir];
+      if (ang !== undefined) mesh.rotation.y = ang;
+      mesh.rotation.x = Math.PI/2; // il cilindro punta lungo z di default
+      scene.add(mesh);
+      laserMeshes[msg.id] = { mesh, x:wx, z:wz, targetX:wx, targetZ:wz, dir: msg.dir };
+      break;
+    }
+    case "laser_bounce":
+    case "laser_reflect": {
+      // il proiettile ha cambiato direzione (rimbalzo su un muro, o
+      // respinto da una corazza laser): aggiorna solo il bersaglio di
+      // interpolazione, l'orientamento visivo si aggiusta da solo col
+      // prossimo "laser_fire"-like update se serve, altrimenti resta
+      // comunque leggibile come lampo luminoso.
+      const lz = laserMeshes[msg.id];
+      if (lz){ const wx = msg.x*CELL+CELL/2, wz = msg.y*CELL+CELL/2; lz.targetX = wx; lz.targetZ = wz; }
+      break;
+    }
+    case "laser_end": {
+      const lz = laserMeshes[msg.id];
+      if (lz){ scene.remove(lz.mesh); delete laserMeshes[msg.id]; }
+      break;
+    }
   }
 }
 
@@ -847,6 +958,13 @@ function animate(){
     rp.x += (rp.targetX - rp.x) * LERP;
     rp.z += (rp.targetZ - rp.z) * LERP;
     rp.group.position.set(rp.x, 0, rp.z);
+  });
+  // bonus 150 punti: proiettili laser, stessa interpolazione morbida
+  const LASER_LERP = Math.min(1, dt*14); // leggermente piu' reattivo: il proiettile e' veloce
+  Object.values(laserMeshes).forEach(lz => {
+    lz.x += (lz.targetX - lz.x) * LASER_LERP;
+    lz.z += (lz.targetZ - lz.z) * LASER_LERP;
+    lz.mesh.position.set(lz.x, 0.65, lz.z);
   });
 
   camera.rotation.order = "YXZ";
