@@ -41,6 +41,22 @@
   #lobbyList li { padding:6px 8px; font-size:12px; border-bottom:1px solid #2a1010; display:flex; justify-content:space-between; }
   #lobbyList li .tag { color:#ff8a6e; font-size:10px; }
 
+  /* ---- scelta colore in lobby (copiata dalla versione 2D) ----
+     Il primo click su uno swatch sceglie il colore PRIMARIO (corpo), il
+     secondo click il colore di DETTAGLIO (contorno/denti/occhio); un terzo
+     click su un colore gia' scelto lo rimuove. Solo il primario deve
+     restare univoco tra i giocatori (validato anche lato server). */
+  .color-grid{ display:flex; gap:8px; flex-wrap:wrap; margin:10px 0 14px; }
+  .color-swatch-btn{
+    width:36px; height:36px; border-radius:50%; border:2px solid transparent; cursor:pointer;
+    position:relative; padding:0;
+  }
+  .color-swatch-btn[data-taken="1"]{ opacity:0.25; cursor:not-allowed; }
+  .color-swatch-btn[data-mine="1"]{ border-color:#fff; box-shadow:0 0 12px currentColor; }
+  .color-swatch-btn[data-cname="nero"]{ box-shadow:inset 0 0 0 2px rgba(255,255,255,0.35); }
+  .color-swatch-btn[data-cname="nero"][data-mine="1"]{ box-shadow:inset 0 0 0 2px rgba(255,255,255,0.35), 0 0 12px currentColor; }
+  .color-swatch-btn[data-cname="nero"]:disabled{ box-shadow:inset 0 0 0 2px rgba(255,255,255,0.15); }
+
   /* ---- HUD in partita ---- */
   #crosshair {
     position:fixed; top:50%; left:50%; width:6px; height:6px;
@@ -67,6 +83,19 @@
     position:fixed; top:40%; left:50%; transform:translate(-50%,-50%); z-index:8;
     color:#ff4136; font-size:26px; letter-spacing:3px; text-shadow:0 0 12px #000;
   }
+
+  /* ---- minimappa (in alto a destra durante la partita) ----
+     Mostra il labirinto dall'alto, il giocatore locale (freccia bianca
+     orientata come lo sguardo) e gli avversari vivi (pallini colorati,
+     stesso colore del loro personaggio) cosi' ci si orienta a colpo
+     d'occhio senza doversi girare con la telecamera. */
+  #minimapWrap {
+    position:fixed; top:12px; right:12px; z-index:5;
+    background:#00000070; border:1px solid #4a141460; border-radius:6px;
+    padding:6px; box-shadow:0 0 12px #00000080;
+  }
+  #minimap { display:block; border-radius:3px; }
+
 </style>
 </head>
 <body>
@@ -99,6 +128,8 @@
   <div class="panel">
     <h1>Lobby — <span id="lobbyCode">----</span></h1>
     <ul id="lobbyList"></ul>
+    <label>Scegli colore (primario + dettaglio opzionale)</label>
+    <div class="color-grid" id="colorGrid"></div>
     <button id="btnStart" class="btn-main">Avvia partita</button>
     <div id="lobbyHint" style="font-size:11px;color:#c8a898;margin-top:10px;"></div>
   </div>
@@ -112,6 +143,9 @@
   <div id="hudLives">vite: 0</div>
   <div id="hudMissile" class="hidden" style="color:#8fd3ff;"></div>
   <div id="hudMines" class="hidden" style="color:#2bff5c;"></div>
+</div>
+<div id="minimapWrap" class="hidden">
+  <canvas id="minimap" width="160" height="160"></canvas>
 </div>
 <div id="toast"></div>
 <div id="hint" class="hidden">Click per guardarti intorno — WASD = movimento relativo allo sguardo — tasto sinistro = spara laser (se sbloccato)</div>
@@ -135,8 +169,14 @@ const COLOR_HEX = {
   ciano:"#22e6ff", magenta:"#ff2b9e", grigio:"#c7d0d8", marrone:"#b5651d",
   blu_notte:"#5b6bff", corallo:"#ff5a36", nero:"#000000",
 };
+// Il nero e' selezionabile SOLO come colore secondario (dettaglio/contorno):
+// come colore primario (corpo) sarebbe pressoche' invisibile sullo sfondo
+// scuro dell'arena. Deve restare in sincronia con SECONDARY_ONLY_COLORS in
+// common.py (validazione server), vedi anche toggleMyColor/renderColorGrid.
+const SECONDARY_ONLY_COLORS = ["nero"];
+const COLOR_NAMES = Object.keys(COLOR_HEX);
 const CELL = 2;       // dimensione di una cella nel mondo 3D
-const WALL_H = 3.2;
+const WALL_H = 1.6;
 const EYE_HEIGHT = 1.15;
 
 /* ============================================================
@@ -402,6 +442,7 @@ function showScreen(name){
   document.getElementById("screenLobby").classList.toggle("hidden", name !== "lobby");
   document.getElementById("crosshair").classList.toggle("hidden", name !== "game");
   document.getElementById("hud").classList.toggle("hidden", name !== "game");
+  document.getElementById("minimapWrap").classList.toggle("hidden", name !== "game");
   document.getElementById("hint").classList.toggle("hidden", name !== "game");
 }
 
@@ -412,10 +453,13 @@ function handleMessage(msg){
       applyMapData(msg);
       document.getElementById("hudRoom").textContent = roomCode;
       document.getElementById("lobbyCode").textContent = roomCode;
-      // Auto-selezione colore/personaggio: il prototipo salta la UI di
-      // scelta colore/personaggio di index.html, ne sceglie uno libero
-      // in automatico cosi' si puo' entrare in game piu' in fretta.
-      sendMsg({ type:"select_color", colors:[myAutoColor()] });
+      // Colore di default automatico (cosi' si puo' entrare subito senza
+      // dover per forza cliccare uno swatch), ma resta un punto di
+      // partenza: il giocatore puo' cambiarlo liberamente dalla griglia
+      // colore in lobby (vedi toggleMyColor/renderColorGrid), esattamente
+      // come nella versione 2D.
+      myColors = [myAutoColor()];
+      sendMsg({ type:"select_color", colors: myColors });
       sendMsg({ type:"select_character", character:"classic" });
       showScreen("lobby");
       break;
@@ -446,16 +490,76 @@ function handleMessage(msg){
 }
 
 let lobbyPlayersCache = [];
+let myColors = []; // fino a 2: [0]=primario (corpo), [1]=dettaglio (contorno/denti/occhio)
 function myAutoColor(){
   const taken = new Set(lobbyPlayersCache.map(p => (p.colors||[])[0]).filter(Boolean));
   const pool = ["giallo","azzurro","verde","rosa","arancione","viola","lime","corallo"];
   return pool.find(c => !taken.has(c)) || "bianco";
 }
 
+// Puoi scegliere fino a 2 colori: il primo click sceglie il PRIMARIO
+// (corpo), il secondo click il colore di DETTAGLIO (contorno/denti/occhio a
+// seconda del personaggio). Ricliccare un colore gia' scelto lo rimuove.
+// Solo il colore primario deve restare univoco tra i giocatori (verificato
+// anche lato server); il dettaglio si puo' condividere. Il nero
+// (SECONDARY_ONLY_COLORS) e' selezionabile SOLO come colore di dettaglio,
+// mai come primario (sarebbe praticamente invisibile sullo sfondo scuro).
+function toggleMyColor(cname){
+  const idx = myColors.indexOf(cname);
+  if (idx !== -1){
+    myColors.splice(idx, 1);
+    // Se rimuovendo il primario resta il nero come unico colore, non puo'
+    // scivolare in posizione primaria: si toglie anche lui.
+    if (myColors.length === 1 && SECONDARY_ONLY_COLORS.indexOf(myColors[0]) !== -1){
+      myColors = [];
+    }
+  } else if (SECONDARY_ONLY_COLORS.indexOf(cname) !== -1 && myColors.length === 0){
+    // Il nero non puo' essere il primo colore scelto (sarebbe il primario).
+    showToast("Il nero e' selezionabile solo come colore di dettaglio: scegli prima un colore primario.");
+    return;
+  } else if (myColors.length < 2){
+    myColors.push(cname);
+  } else {
+    myColors[1] = cname; // sostituisce il colore di dettaglio, tiene il primario
+  }
+  sendMsg({ type: "select_color", colors: myColors });
+}
+
+function renderColorGrid(players){
+  const grid = document.getElementById("colorGrid");
+  grid.innerHTML = "";
+  const takenPrimaryBy = {};
+  players.forEach(p => { if (p.colors && p.colors[0]) takenPrimaryBy[p.colors[0]] = p.id; });
+  COLOR_NAMES.forEach(cname => {
+    const btn = document.createElement("button");
+    btn.className = "color-swatch-btn";
+    btn.style.background = COLOR_HEX[cname];
+    btn.style.color = COLOR_HEX[cname];
+    btn.dataset.cname = cname;
+    const myIdx = myColors.indexOf(cname);
+    const takenByOther = takenPrimaryBy[cname] && takenPrimaryBy[cname] !== myId && myIdx === -1;
+    // Il nero non e' selezionabile finche' non e' gia' stato scelto un
+    // colore primario (vedi toggleMyColor).
+    const blockedAsPrimary = SECONDARY_ONLY_COLORS.indexOf(cname) !== -1 && myIdx === -1 && myColors.length === 0;
+    btn.dataset.taken = takenByOther ? "1" : "0";
+    btn.dataset.mine = myIdx === 0 ? "1" : "0";
+    if (myIdx === 1){
+      btn.style.outline = "2px dashed #fff";
+      btn.style.outlineOffset = "2px";
+    }
+    const onlyDetailNote = SECONDARY_ONLY_COLORS.indexOf(cname) !== -1 ? " (solo dettaglio)" : "";
+    btn.title = cname + onlyDetailNote + (myIdx === 0 ? " (primario)" : myIdx === 1 ? " (dettaglio)" : "");
+    btn.disabled = !!takenByOther || blockedAsPrimary;
+    btn.addEventListener("click", () => toggleMyColor(cname));
+    grid.appendChild(btn);
+  });
+}
+
 function onLobbyState(msg){
   lobbyPlayersCache = msg.players;
   const me = msg.players.find(p => p.id === myId);
   iAmHost = !!(me && me.host);
+  if (me && me.colors) myColors = me.colors.slice(); // resta sincronizzato col server (es. dopo rejoin)
   const list = document.getElementById("lobbyList");
   list.innerHTML = "";
   msg.players.forEach(p => {
@@ -469,6 +573,7 @@ function onLobbyState(msg){
   document.getElementById("lobbyHint").textContent = iAmHost
     ? "Sei l'host: premi Avvia quando siete pronti."
     : "In attesa che l'host avvii la partita\u2026";
+  renderColorGrid(msg.players);
 }
 document.getElementById("btnStart").addEventListener("click", () => sendMsg({ type:"start_game" }));
 
@@ -839,18 +944,25 @@ document.addEventListener("mousemove", e => {
    mouse, mirando con il punto rosso (crosshair) gia' al centro
    dello schermo. Nessuna cadenza di fuoco: ogni click fa partire
    subito un nuovo colpo (vedi try_fire_laser lato server). La
-   direzione inviata al server e' quella di griglia piu' allineata
-   allo sguardo attuale (stesso snap ai 4 cardinali gia' usato per
-   il movimento, vedi dirFromVector): il server accetta solo le 4
-   direzioni di griglia, non un angolo libero.
+   direzione inviata al server e' ora il vettore di mira LIBERO
+   (campo "aim", normalizzato) preso direttamente dallo sguardo
+   attuale: il proiettile parte esattamente verso dove si sta
+   guardando, comprese le diagonali e qualsiasi angolo intermedio,
+   non piu' solo le 4 direzioni cardinali. Il campo "direction"
+   cardinale (via dirFromVector) resta inviato in piu' solo come
+   fallback per compatibilita'.
    ============================================================ */
 document.addEventListener("mousedown", e => {
   if (currentScreen !== "game" || !locked) return;
   if (e.button !== 0) return; // solo tasto sinistro
   e.preventDefault();
   const fx = -Math.sin(yaw), fz = -Math.cos(yaw); // direzione in cui sto guardando (piano orizzontale)
+  // Manda il vettore di mira LIBERO (non piu' agganciato ai 4 cardinali):
+  // cosi' il proiettile viaggia esattamente dove sto guardando, comprese
+  // le diagonali e qualunque angolo intermedio. "direction" cardinale
+  // resta inviata solo come fallback/compatibilita'.
   const dir = dirFromVector(fx, fz);
-  sendMsg({ type:"fire_laser", direction: dir });
+  sendMsg({ type:"fire_laser", direction: dir, aim: [fx, fz] });
 });
 
 /* ============================================================
@@ -897,6 +1009,75 @@ function exitGame(){
    ping lo rende necessario).
    ============================================================ */
 let myRenderX = 0, myRenderZ = 0, myInited = false;
+
+/* ============================================================
+   MINIMAPPA: vista dall'alto del labirinto in un angolo dello
+   schermo (in alto a destra), per non perdere l'orientamento e
+   tenere d'occhio dove sono gli avversari senza dover girare la
+   telecamera. Ridisegnata ad ogni "state" ricevuto dal server: il
+   labirinto (muri) e' statico e va ridisegnato solo quando cambia
+   la mappa, ma per semplicita' e robustezza si ridisegna tutto ad
+   ogni update (il costo e' trascurabile, il canvas e' piccolo).
+   ============================================================ */
+const minimapCanvas = document.getElementById("minimap");
+const minimapCtx = minimapCanvas.getContext("2d");
+let lastPlayersForMinimap = []; // ultimo elenco giocatori ricevuto dal server, riusato per
+                                 // ridisegnare la minimappa ad ogni frame (freccia sempre fluida
+                                 // anche tra un "state" e l'altro, la mira cambia col mouse).
+
+function drawMinimap(players){
+  if (!maze.length || !mazeW || !mazeH) return;
+  const W = minimapCanvas.width, H = minimapCanvas.height;
+  const cell = Math.min(W / mazeW, H / mazeH);
+  const offX = (W - cell * mazeW) / 2, offY = (H - cell * mazeH) / 2;
+
+  minimapCtx.clearRect(0, 0, W, H);
+  minimapCtx.fillStyle = "#0a0303";
+  minimapCtx.fillRect(0, 0, W, H);
+
+  // muri del labirinto
+  minimapCtx.fillStyle = "#5a2a2a";
+  for (let y = 0; y < mazeH; y++){
+    const row = maze[y];
+    for (let x = 0; x < mazeW; x++){
+      if (row[x] === "#"){
+        minimapCtx.fillRect(offX + x*cell, offY + y*cell, cell + 0.5, cell + 0.5);
+      }
+    }
+  }
+
+  // avversari vivi: pallino nel loro colore
+  players.forEach(p => {
+    if (p.id === myId || p.alive === false) return;
+    const hex = COLOR_HEX[(p.colors||[])[0]] || "#5ab8ff";
+    minimapCtx.fillStyle = hex;
+    minimapCtx.beginPath();
+    minimapCtx.arc(offX + (p.x+0.5)*cell, offY + (p.y+0.5)*cell, Math.max(2.5, cell*0.35), 0, Math.PI*2);
+    minimapCtx.fill();
+  });
+
+  // giocatore locale: freccia bianca orientata come lo sguardo (yaw),
+  // sempre disegnata per ultima cosi' resta sopra tutto il resto.
+  const me = players.find(p => p.id === myId);
+  if (me && me.alive !== false){
+    const cx = offX + (me.x+0.5)*cell, cy = offY + (me.y+0.5)*cell;
+    // stessa convenzione di baseToGridDir/mousedown: (fx,fz) = avanti
+    const fx = -Math.sin(yaw), fz = -Math.cos(yaw);
+    const ang = Math.atan2(fx, -fz); // angolo sul piano del canvas (0 = su)
+    const size = Math.max(5, cell*0.6);
+    minimapCtx.save();
+    minimapCtx.translate(cx, cy);
+    minimapCtx.rotate(ang);
+    minimapCtx.fillStyle = "#ffffff";
+    minimapCtx.beginPath();
+    minimapCtx.moveTo(0, -size);
+    minimapCtx.lineTo(size*0.6, size*0.6);
+    minimapCtx.lineTo(-size*0.6, size*0.6);
+    minimapCtx.closePath();
+    minimapCtx.fill();
+    minimapCtx.restore();
+  }
+}
 
 function onState(msg){
   if ((msg.phase === "countdown" || msg.phase === "playing") && currentScreen !== "game"){
@@ -955,6 +1136,9 @@ function onState(msg){
     if (!seen.has(id)){ scene.remove(remotePlayers[id].group); delete remotePlayers[id]; }
   });
 
+  drawMinimap(msg.players);
+  lastPlayersForMinimap = msg.players;
+
   // bonus 150 punti: aggiorna il bersaglio di interpolazione di ogni
   // proiettile laser attivo con l'ultima posizione confermata dal server
   // (la creazione/rimozione restano gestite dagli eventi laser_fire/
@@ -966,8 +1150,10 @@ function onState(msg){
     if (!entry) return; // laser_fire non ancora arrivato/processato: aspetta il prossimo state
     entry.targetX = lz.x*CELL + CELL/2;
     entry.targetZ = lz.y*CELL + CELL/2;
-    const ang = { "1,0":Math.PI/2, "-1,0":-Math.PI/2, "0,1":Math.PI, "0,-1":0 }[lz.dir[0]+","+lz.dir[1]];
-    if (ang !== undefined) entry.mesh.rotation.y = ang;
+    // Il proiettile ora puo' viaggiare in qualsiasi angolo (non solo i 4
+    // cardinali): l'orientamento visivo si calcola con atan2 sul vettore
+    // dx/dz reale invece di una tabella fissa a 4 valori.
+    entry.mesh.rotation.y = Math.atan2(lz.dir[0], lz.dir[1]);
   });
 
   // bonus 400 punti: missile guidato. Il server manda gia' x/y continui
@@ -1178,6 +1364,11 @@ function animate(){
   camera.rotation.x = pitch;
   camera.position.set(myRenderX, EYE_HEIGHT, myRenderZ);
   torch.position.set(myRenderX, 2, myRenderZ);
+
+  // minimappa: ridisegnata anche qui (non solo ad ogni "state" di rete)
+  // cosi' la freccia del giocatore ruota morbidamente insieme allo sguardo
+  // invece di scattare solo quando arriva un nuovo pacchetto dal server.
+  drawMinimap(lastPlayersForMinimap);
 
   renderer.render(scene, camera);
 }

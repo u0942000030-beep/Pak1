@@ -2202,7 +2202,7 @@ class Room:
                 if p.laser_cd < 0:
                     p.laser_cd = 0.0
 
-    def try_fire_laser(self, shooter, direction=None):
+    def try_fire_laser(self, shooter, direction=None, aim=None):
         """Spara un colpo di laser su richiesta esplicita del giocatore
         (tasto sinistro del mouse, mira libera con la visuale 3D). Sostituisce
         l'auto-fire di prossimita' della versione 2D: qui il colpo parte
@@ -2210,7 +2210,14 @@ class Room:
         centro dello schermo), non piu' verso il nemico piu' vicino. Nessuna
         cadenza di fuoco: ogni chiamata (= ogni pressione del tasto) fa
         partire un colpo immediatamente, l'unico limite e' lo sblocco del
-        bonus e le condizioni sotto (vivo, non invisibile, non intrappolato)."""
+        bonus e le condizioni sotto (vivo, non invisibile, non intrappolato).
+
+        'aim' e' il vettore di mira LIBERO (qualsiasi angolo, non solo i 4
+        cardinali) mandato dal client: [fx, fz] presi direttamente dallo
+        sguardo del giocatore (yaw della camera), cosi' il colpo parte
+        esattamente dove sta guardando, comprese le diagonali. 'direction'
+        cardinale resta come fallback per client vecchi o se 'aim' manca/e'
+        invalido (es. vettore nullo)."""
         if not shooter.alive or not shooter.has_laser:
             return
         if shooter.is_assassin:
@@ -2219,31 +2226,60 @@ class Room:
             return
         if shooter.trapped_left > 0:
             return
-        dx, dy = DIRECTIONS.get(direction, DIRECTIONS.get(shooter.facing, (1, 0)))
+        dx, dy = self._resolve_aim_vector(aim, direction, shooter.facing)
         self.spawn_laser(shooter, dx, dy, direction or shooter.facing)
 
+    @staticmethod
+    def _resolve_aim_vector(aim, direction=None, facing=None):
+        """Normalizza un vettore di mira libero (qualsiasi angolo, comprese
+        le diagonali) a partire da 'aim' ([fx, fz] mandato dal client). Se
+        'aim' manca o non e' valido (lunghezza nulla, tipi sbagliati, ecc.),
+        ricade sulla vecchia direzione cardinale ('direction'/'facing'),
+        cosi' client vecchi o richieste malformate continuano a funzionare
+        come prima invece di far fallire lo sparo."""
+        if aim is not None:
+            try:
+                ax, ay = float(aim[0]), float(aim[1])
+            except (TypeError, ValueError, IndexError):
+                ax = ay = 0.0
+            length = math.hypot(ax, ay)
+            if length > 1e-6:
+                return ax / length, ay / length
+        dx, dy = DIRECTIONS.get(direction, DIRECTIONS.get(facing, (1, 0)))
+        return float(dx), float(dy)
+
     def spawn_laser(self, shooter, dx=None, dy=None, facing=None):
-        """Crea un nuovo proiettile laser (singolo colpo) che parte dalla
-        cella dello sparatore e viaggia nella direzione indicata (di norma
-        la mira del giocatore al momento dello sparo; se non fornita,
-        ricade sulla direzione frontale del personaggio). Il proiettile
-        vero e proprio avanza poi, un tick alla volta, dentro
+        """Crea un nuovo proiettile laser (singolo colpo) che parte dal
+        centro della cella dello sparatore e viaggia in linea retta nella
+        direzione indicata: un vettore LIBERO, normalizzato, che puo'
+        puntare in qualsiasi angolo (non piu' solo i 4 cardinali), cosi' il
+        colpo segue esattamente la mira del giocatore, diagonali comprese.
+        Se non fornita, ricade sulla direzione frontale del personaggio. Il
+        proiettile vero e proprio avanza poi, un tick alla volta, dentro
         move_lasers()."""
         if dx is None or dy is None:
+            dx, dy = DIRECTIONS.get(shooter.facing, (1, 0))
+        length = math.hypot(dx, dy)
+        if length > 1e-6:
+            dx, dy = dx / length, dy / length
+        else:
             dx, dy = DIRECTIONS.get(shooter.facing, (1, 0))
         facing = facing or shooter.facing
         laser = {
             "id": uuid.uuid4().hex[:8],
             "owner": shooter.id,
-            "x": shooter.x, "y": shooter.y,   # cella intera corrente
+            # Posizione continua (float), a differenza delle celle intere
+            # usate da molte altre entita' del gioco: parte dal CENTRO
+            # della cella dello sparatore cosi' il percorso in diagonale
+            # e' visivamente corretto fin dal primo istante.
+            "x": shooter.x + 0.5, "y": shooter.y + 0.5,
             "dx": dx, "dy": dy,
-            "move_accum": 0.0,
             "bounce_left": None,  # None finche' non ha ancora rimbalzato
         }
         self.lasers.append(laser)
         self.push_event({
             "kind": "laser_fire", "id": laser["id"], "shooter": shooter.id,
-            "x": shooter.x, "y": shooter.y, "dir": facing,
+            "x": laser["x"], "y": laser["y"], "dir": facing,
         })
 
     def move_lasers(self):
@@ -2252,16 +2288,35 @@ class Room:
         vecchio raggio istantaneo) e si estingue sul primo muro incontrato,
         a meno che lo sparatore abbia sbloccato il rimbalzo (bonus 150
         punti): in quel caso rimbalza in una direzione libera scelta a caso
-        e prosegue per altre LASER_BOUNCE_DISTANCE celle prima di sparire."""
+        e prosegue per altre LASER_BOUNCE_DISTANCE celle prima di sparire.
+
+        A differenza della vecchia versione (che avanzava una cella intera
+        alla volta, solo lungo i 4 assi cardinali), il proiettile qui si
+        muove in COORDINATE CONTINUE lungo un vettore libero (dx, dy)
+        qualsiasi, comprese le diagonali: la distanza percorsa nel tick
+        viene suddivisa in tanti micro-passi non piu' lunghi di mezza cella,
+        cosi' non puo' mai "saltare" attraverso un muro sottile ne' mancare
+        una cella con dentro una vittima, indipendentemente dall'angolo di
+        tiro."""
         if not self.lasers:
             return
+        step_dist = LASER_PROJECTILE_SPEED * TICK_DT
+        # Numero di micro-passi per questo tick: mai piu' lunghi di 0.4
+        # celle l'uno, cosi' anche in diagonale (dove un passo "diagonale"
+        # copre piu' spazio in linea d'aria) non si scavalca mai un muro
+        # ne' una cella-vittima.
+        n_steps = max(1, math.ceil(step_dist / 0.4))
+        micro = step_dist / n_steps
         survivors = []
         for lz in self.lasers:
-            lz["move_accum"] += LASER_PROJECTILE_SPEED * TICK_DT
             destroyed = False
-            while lz["move_accum"] >= 1.0 and not destroyed:
-                nx, ny = lz["x"] + lz["dx"], lz["y"] + lz["dy"]
-                if is_wall(self.maze, self.maze_w, self.maze_h, nx, ny):
+            last_cell = (int(math.floor(lz["x"])), int(math.floor(lz["y"])))
+            for _ in range(n_steps):
+                if destroyed:
+                    break
+                nx, ny = lz["x"] + lz["dx"] * micro, lz["y"] + lz["dy"] * micro
+                ncx, ncy = int(math.floor(nx)), int(math.floor(ny))
+                if is_wall(self.maze, self.maze_w, self.maze_h, ncx, ncy):
                     shooter = self.players.get(lz["owner"])
                     can_bounce = (
                         shooter is not None and shooter.has_bounce
@@ -2270,13 +2325,17 @@ class Room:
                     if not can_bounce:
                         destroyed = True
                         break
-                    # Sceglie una direzione libera a caso (diversa da quella
-                    # che ha appena portato al muro, se possibile).
+                    # Sceglie una direzione cardinale libera a caso (diversa
+                    # da quella che ha appena portato al muro, se
+                    # possibile), riparte dal centro della cella corrente
+                    # cosi' il rimbalzo resta pulito anche arrivando in
+                    # diagonale contro il muro.
+                    cx, cy = last_cell
                     options = []
                     for ddx, ddy in DIRECTIONS.values():
                         if (ddx, ddy) == (-lz["dx"], -lz["dy"]):
                             continue  # evita di tornare indietro sui propri passi
-                        tx, ty = lz["x"] + ddx, lz["y"] + ddy
+                        tx, ty = cx + ddx, cy + ddy
                         if not is_wall(self.maze, self.maze_w, self.maze_h, tx, ty):
                             options.append((ddx, ddy))
                     if not options:
@@ -2285,28 +2344,51 @@ class Room:
                         destroyed = True
                         break
                     lz["dx"], lz["dy"] = random.choice(options)
+                    lz["x"], lz["y"] = cx + 0.5, cy + 0.5
                     first_bounce = lz["bounce_left"] is None
                     if first_bounce:
                         lz["bounce_left"] = LASER_BOUNCE_DISTANCE
-                        self.push_event({
-                            "kind": "laser_bounce", "id": lz["id"],
-                            "x": lz["x"], "y": lz["y"],
-                        })
-                    continue  # riprova subito nella nuova direzione, stesso tick
+                    else:
+                        lz["bounce_left"] -= 1
+                    self.push_event({
+                        "kind": "laser_bounce", "id": lz["id"],
+                        "x": lz["x"], "y": lz["y"],
+                    })
+                    if lz["bounce_left"] is not None and lz["bounce_left"] <= 0:
+                        destroyed = True
+                        break
+                    continue  # riprova nel prossimo micro-passo, stesso tick
                 # Bonus 2200 punti: un muro di spunzoni AVVERSARIO ferma il
                 # proiettile esattamente come un muro vero (niente rimbalzo:
                 # gli spunzoni lo "infilzano"). I proiettili del PROPRIETARIO
                 # del muro invece lo attraversano liberamente.
-                if self.spike_wall_blocking(nx, ny, lz["owner"]) is not None:
+                if self.spike_wall_blocking(ncx, ncy, lz["owner"]) is not None:
                     destroyed = True
                     break
-                # Cella libera: avanza di una cella.
-                lz["move_accum"] -= 1.0
                 lz["x"], lz["y"] = nx, ny
+                entered_new_cell = (ncx, ncy) != last_cell
+                last_cell = (ncx, ncy)
+                if not entered_new_cell:
+                    # Ancora nella stessa cella di prima: nessuna nuova
+                    # collisione da controllare in questo micro-passo.
+                    continue
                 if lz["bounce_left"] is not None:
+                    # Dopo il primo rimbalzo, il raggio percorribile residuo
+                    # si consuma una cella alla volta, come nella versione
+                    # originale (LASER_BOUNCE_DISTANCE celle dopo l'urto).
                     lz["bounce_left"] -= 1
+                    if lz["bounce_left"] <= 0:
+                        destroyed = True
+                        victims = [
+                            q for q in self.player_grid.at_cell(ncx, ncy)
+                            if q.alive and self.is_enemy_ids(q.id, lz["owner"])
+                            and q.ghost_left <= 0 and q.prot_left <= 0
+                        ]
+                        for v in victims:
+                            self.kill_player(v, "laser", lz["owner"])
+                        break
                 victims = [
-                    q for q in self.player_grid.at_cell(nx, ny)
+                    q for q in self.player_grid.at_cell(ncx, ncy)
                     if q.alive and self.is_enemy_ids(q.id, lz["owner"])
                     and q.ghost_left <= 0 and q.prot_left <= 0
                 ]
@@ -2324,9 +2406,9 @@ class Room:
                         lz["owner"] = armored[0].id
                         self.push_event({
                             "kind": "laser_reflect", "id": lz["id"],
-                            "x": nx, "y": ny, "by": armored[0].id,
+                            "x": ncx, "y": ncy, "by": armored[0].id,
                         })
-                        continue  # riprova subito nella direzione invertita, stesso tick
+                        continue  # riprova nel prossimo micro-passo, direzione invertita
                     for v in victims:
                         self.kill_player(v, "laser", lz["owner"])
                     destroyed = True
@@ -2336,7 +2418,7 @@ class Room:
                 # trova sulla sua strada, cosi' come un giocatore.
                 pet_victims = [
                     pet for pet in self.pets
-                    if self.is_enemy_ids(pet["owner"], lz["owner"]) and pet["x"] == nx and pet["y"] == ny
+                    if self.is_enemy_ids(pet["owner"], lz["owner"]) and pet["x"] == ncx and pet["y"] == ncy
                 ]
                 if pet_victims:
                     for pet in pet_victims:
@@ -2348,17 +2430,11 @@ class Room:
                 # pietra, come un muro.
                 golem_victims = [
                     g for g in self.golems
-                    if self.is_enemy_ids(g["owner"], lz["owner"]) and g["x"] == nx and g["y"] == ny
+                    if self.is_enemy_ids(g["owner"], lz["owner"]) and g["x"] == ncx and g["y"] == ncy
                 ]
                 if golem_victims:
                     for g in golem_victims:
                         self.damage_golem(g, lz["owner"], "laser")
-                    destroyed = True
-                    break
-                # Bonus 1800 punti: il blob gelatinoso e' immune al laser
-                # (sia amico che avversario) - l'UNICO modo per rimuoverlo
-                # dalla strada resta il bombolone (vedi explode_superbomb).
-                if lz["bounce_left"] is not None and lz["bounce_left"] <= 0:
                     destroyed = True
                     break
             if destroyed:
@@ -3046,15 +3122,18 @@ class Room:
             laser = {
                 "id": uuid.uuid4().hex[:8],
                 "owner": t["owner"],
-                "x": t["x"], "y": t["y"],
-                "dx": dx, "dy": dy,
-                "move_accum": 0.0,
+                # Centro-cella, stesso formato in coordinate continue usato
+                # da spawn_laser/move_lasers (vedi try_fire_laser): le
+                # torrette continuano a sparare solo lungo i 4 cardinali
+                # per design, ma la struttura dati e' unificata.
+                "x": t["x"] + 0.5, "y": t["y"] + 0.5,
+                "dx": float(dx), "dy": float(dy),
                 "bounce_left": None,
             }
             self.lasers.append(laser)
             self.push_event({
                 "kind": "laser_fire", "id": laser["id"], "shooter": t["owner"],
-                "x": t["x"], "y": t["y"], "dir": dir_name, "turret": True,
+                "x": laser["x"], "y": laser["y"], "dir": dir_name, "turret": True,
             })
 
     # ---- bonus 1200 punti: mortaio (tasto "1") ----
@@ -6113,15 +6192,18 @@ class Room:
                     laser = {
                         "id": uuid.uuid4().hex[:8],
                         "owner": pet["owner"],
-                        "x": pet["x"], "y": pet["y"],
-                        "dx": dx, "dy": dy,
-                        "move_accum": 0.0,
+                        # Centro-cella, stesso formato in coordinate continue
+                        # usato da spawn_laser/move_lasers: il pet continua a
+                        # sparare solo lungo i 4 cardinali per design, ma la
+                        # struttura dati e' unificata.
+                        "x": pet["x"] + 0.5, "y": pet["y"] + 0.5,
+                        "dx": float(dx), "dy": float(dy),
                         "bounce_left": None,
                     }
                     self.lasers.append(laser)
                     self.push_event({
                         "kind": "laser_fire", "id": laser["id"], "shooter": pet["owner"],
-                        "x": pet["x"], "y": pet["y"], "dir": dir_name, "pet": True,
+                        "x": laser["x"], "y": laser["y"], "dir": dir_name, "pet": True,
                     })
 
     def check_win(self):
@@ -6759,17 +6841,27 @@ async def handle_client(ws):
                 room.try_fire_missile(player)
 
             elif mtype == "fire_laser":
-                # Bonus 150 punti: arma principale, ora a comando manuale
-                # (tasto destro del mouse in versione 3D, mirando col
-                # punto rosso al centro dello schermo). Il client manda la
-                # direzione cardinale piu' vicina allo sguardo corrente
-                # (snap agli assi della griglia, stessa logica gia' usata
-                # per il movimento WASD relativo alla camera); il server
-                # resta comunque l'autorita' su cooldown e sblocco.
+                # Bonus 150 punti: arma principale, a comando manuale
+                # (tasto sinistro del mouse in versione 3D, mirando col
+                # punto rosso al centro dello schermo). Il client manda ora
+                # il vettore di mira LIBERO ("aim": [fx, fz], preso
+                # direttamente dallo sguardo/yaw corrente), cosi' il colpo
+                # parte in qualunque angolo — comprese le diagonali — e non
+                # piu' solo lungo i 4 assi cardinali della griglia. La
+                # vecchia "direction" cardinale resta letta come fallback
+                # se "aim" manca o e' invalido. Il server resta comunque
+                # l'autorita' su cooldown e sblocco.
                 if not room or not player:
                     continue
                 direction = msg.get("direction")
-                room.try_fire_laser(player, direction if direction in DIRECTIONS else None)
+                aim = msg.get("aim")
+                if not (isinstance(aim, (list, tuple)) and len(aim) == 2):
+                    aim = None
+                room.try_fire_laser(
+                    player,
+                    direction if direction in DIRECTIONS else None,
+                    aim,
+                )
 
             elif mtype == "activate_trap":
                 # Bonus 500 punti: pressione del tasto "4" lato client
