@@ -414,6 +414,7 @@ document.getElementById("tabJoin").addEventListener("click", () => {
   document.getElementById("btnConnect").textContent = "Unisciti alla stanza";
 });
 document.getElementById("btnConnect").addEventListener("click", () => {
+  ensureAudio(); // sblocca l'audio alla prima interazione dell'utente (richiesto dai browser)
   const errEl = document.getElementById("connectError");
   errEl.textContent = "";
   const ip = (document.getElementById("inpIp").value || "127.0.0.1").trim();
@@ -577,6 +578,319 @@ function onLobbyState(msg){
 }
 document.getElementById("btnStart").addEventListener("click", () => sendMsg({ type:"start_game" }));
 
+/* =========================================================================
+   AUDIO (sintetizzato, nessun file esterno)
+   ========================================================================= */
+let audioCtx = null;
+
+function ensureAudio(){
+  if (!audioCtx){
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return;
+    audioCtx = new Ctx();
+  }
+  if (audioCtx.state === "suspended") audioCtx.resume();
+}
+
+function tone(freq, duration, type, gainPeak, startDelay){
+  if (!audioCtx) return;
+  type = type || "square"; gainPeak = gainPeak || 0.15; startDelay = startDelay || 0;
+  const t0 = audioCtx.currentTime + startDelay;
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.type = type;
+  osc.frequency.setValueAtTime(freq, t0);
+  gain.gain.setValueAtTime(0.0001, t0);
+  gain.gain.linearRampToValueAtTime(gainPeak, t0 + 0.012);
+  gain.gain.exponentialRampToValueAtTime(0.0001, t0 + duration);
+  osc.connect(gain).connect(audioCtx.destination);
+  osc.start(t0);
+  osc.stop(t0 + duration + 0.03);
+}
+
+function sweep(freqStart, freqEnd, duration, type, gainPeak){
+  if (!audioCtx) return;
+  type = type || "square"; gainPeak = gainPeak || 0.15;
+  const t0 = audioCtx.currentTime;
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.type = type;
+  osc.frequency.setValueAtTime(freqStart, t0);
+  osc.frequency.exponentialRampToValueAtTime(Math.max(freqEnd, 1), t0 + duration);
+  gain.gain.setValueAtTime(0.0001, t0);
+  gain.gain.linearRampToValueAtTime(gainPeak, t0 + 0.008);
+  gain.gain.exponentialRampToValueAtTime(0.0001, t0 + duration);
+  osc.connect(gain).connect(audioCtx.destination);
+  osc.start(t0);
+  osc.stop(t0 + duration + 0.03);
+}
+
+function noiseBurst(duration, gainPeak){
+  if (!audioCtx) return;
+  gainPeak = gainPeak || 0.2;
+  const n = Math.max(1, Math.floor(audioCtx.sampleRate * duration));
+  const buffer = audioCtx.createBuffer(1, n, audioCtx.sampleRate);
+  const data = buffer.getChannelData(0);
+  for (let i = 0; i < n; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / n);
+  const src = audioCtx.createBufferSource();
+  src.buffer = buffer;
+  const gain = audioCtx.createGain();
+  gain.gain.setValueAtTime(gainPeak, audioCtx.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + duration);
+  src.connect(gain).connect(audioCtx.destination);
+  src.start();
+}
+
+// "Waka-waka": nel gioco originale il suono di masticazione alterna due note
+// leggermente diverse ad ogni pallino. Prima questa funzione era definita
+// ma non veniva mai richiamata da nessuna parte: i pallini sparivano in
+// silenzio. Ora e' agganciata a onState() ogni volta che il proprio
+// giocatore passa su un pallino non ancora mangiato.
+let chompToggle = false;
+function playChomp(){
+  chompToggle = !chompToggle;
+  if (chompToggle) sweep(430, 130, 0.075, "square", 0.11);
+  else sweep(300, 90, 0.075, "square", 0.11);
+}
+// Bip secco ad ogni cambio direzione richiesto: da' un riscontro sonoro
+// immediato al tasto premuto, indipendentemente da quando il server riesce
+// davvero ad applicare la svolta (vedi coda next_direction lato server).
+function playTurn(){ tone(520, 0.035, "square", 0.05); }
+// Pozione terremoto (bonus 3400 punti): doppio bip di "mirino attivo"...
+function playPotionAim(){ tone(860, 0.06, "square", 0.10); tone(1160, 0.07, "square", 0.10, 0.08); }
+// ...fischio del lancio ad arco della boccetta...
+function playPotionThrow(){ sweep(760, 240, 0.28, "triangle", 0.13); }
+// ...e boato/rombo di terra che si spacca all'impatto (rumore + toni
+// bassissimi, come un vero terremoto in miniatura).
+// Attacco aereo (bonus 4000 punti): mirino attivo, passaggio del jet e
+// tappeto di bombe lungo la fila.
+function playAirstrikeAim(){ tone(980, 0.06, "square", 0.1); tone(740, 0.07, "square", 0.1, 0.08); }
+function playAirstrikeJet(){ sweep(120, 900, 1.1, "sawtooth", 0.12); noiseBurst(0.8, 0.08); }
+function playAirstrikeBoom(){ noiseBurst(0.16, 0.18); tone(75, 0.18, "sine", 0.14); }
+// Fungo madre magnetico (bonus 3800 punti): ronzio profondo alla
+// trasformazione e risucchio breve quando inghiotte qualcosa.
+function playMegaHum(){ sweep(50, 160, 0.7, "sine", 0.18); tone(80, 0.8, "sine", 0.12, 0.1); }
+function playMegaSuck(){ sweep(600, 90, 0.22, "sine", 0.11); }
+// Golem spaccapietra (bonus 3600 punti): tonfo di macigno al piazzamento...
+function playGolemThud(){ noiseBurst(0.25, 0.2); tone(70, 0.35, "sine", 0.22); }
+// ...ruggito roccioso del risveglio...
+function playGolemRoar(){ sweep(70, 180, 0.5, "sawtooth", 0.16); noiseBurst(0.4, 0.14); }
+// ...colpo secco di roccia quando viene ferito...
+function playGolemHit(){ noiseBurst(0.08, 0.16); tone(220, 0.07, "square", 0.10); }
+// ...sbriciolamento quando crolla...
+function playGolemCrumble(){
+  noiseBurst(0.6, 0.26);
+  tone(140, 0.2, "sawtooth", 0.14);
+  tone(95, 0.25, "sawtooth", 0.14, 0.15);
+  tone(60, 0.4, "sine", 0.18, 0.3);
+}
+// ...e morso pietroso quando divora un gadget.
+function playGolemChomp(){ tone(120, 0.08, "square", 0.13); tone(85, 0.1, "square", 0.13, 0.09); }
+function playQuakeRumble(){
+  noiseBurst(0.9, 0.28);
+  tone(62, 0.9, "sawtooth", 0.20);
+  tone(46, 1.2, "sine", 0.26, 0.08);
+  tone(38, 1.0, "sine", 0.18, 0.35);
+}
+function playEliminate(){
+  tone(311, 0.18, "sawtooth", 0.16, 0.00);
+  tone(277, 0.18, "sawtooth", 0.16, 0.16);
+  tone(233, 0.30, "sawtooth", 0.16, 0.32);
+}
+function playVictory(){
+  [392, 523, 659, 784].forEach(function(f, i){ tone(f, 0.22, "square", 0.14, i * 0.12); });
+}
+function playGameOver(){
+  tone(220, 0.30, "sawtooth", 0.14, 0);
+  tone(160, 0.45, "sawtooth", 0.14, 0.28);
+}
+// Fine countdown iniziale: prima era un sweep acuto verso il basso +
+// rumore bianco (tipo sirena d'allarme), giudicato troppo fastidioso.
+// Sostituito con un "tic-tac" da orologio: due click secchi e puliti, uno
+// acuto (tic) e uno leggermente piu' grave (tac).
+// Singolo "tic" secco, richiamato una volta per ogni secondo del countdown
+// iniziale (vedi onState): da' la sensazione di un vero orologio che
+// scandisce l'attesa, invece del silenzio fino allo scatto finale.
+function playClockTick(){
+  tone(1800, 0.02, "square", 0.07);
+}
+// Arpeggio brillante quando SI raggiunge un proprio traguardo-bonus,
+// preceduto da un piccolo "ding" acuto tipo moneta digitale raccolta: da'
+// subito la sensazione di "hai sbloccato/guadagnato qualcosa" ancora prima
+// che parta la melodia.
+function playBonus(){
+  tone(1568, 0.05, "square", 0.14, 0);
+  tone(2093, 0.09, "square", 0.15, 0.045);
+  [523, 659, 784, 1047].forEach(function(f, i){ tone(f, 0.14, "square", 0.13, 0.11 + i * 0.06); });
+}
+// Evocazione del pet fedele (bonus 900 punti): un cinguettio a 3 note
+// rapide e acute, tipo verso di un piccolo animaletto/giocattolo digitale
+// (stile Tamagotchi) che "prende vita" accanto al giocatore.
+function playPetSpawn(){
+  tone(660, 0.05, "square", 0.11, 0);
+  tone(880, 0.05, "square", 0.12, 0.055);
+  tone(1175, 0.08, "square", 0.13, 0.11);
+}
+// Evoluzione della torretta in robot (bonus 1000 punti, tasto 9): sequenza
+// di bip meccanici che salgono di tono, tipo macchinario che si "assembla"
+// e si accende, chiusa da un tono piu' lungo e ruvido (sawtooth) che da'
+// il senso del "corpo" meccanico appena completato.
+function playRobotEvolve(){
+  [220, 330, 440, 660].forEach(function(f, i){ tone(f, 0.06, "square", 0.13, i * 0.05); });
+  tone(880, 0.12, "sawtooth", 0.1, 0.22);
+}
+// Distruzione del robot (torretta evoluta): stessa base sonora della
+// torretta normale (esplosione + tono grave) con in piu' un "glitch"
+// meccanico finale, bip discendenti rapidi, per far capire che si trattava
+// di una macchina che cammina e non di un semplice impianto fisso.
+function playRobotDestroy(){
+  noiseBurst(0.18, 0.15);
+  tone(150, 0.14, "sawtooth", 0.12, 0.02);
+  [500, 380, 260, 140].forEach(function(f, i){ tone(f, 0.045, "square", 0.1, 0.1 + i * 0.04); });
+}
+// Schieramento del mortaio (bonus 1200 punti, tasto 0): un "thunk" grave e
+// metallico, come una pesante base che tocca terra.
+function playMortarPlace(){
+  tone(140, 0.16, "square", 0.14, 0);
+  tone(90, 0.2, "sawtooth", 0.12, 0.05);
+}
+// Lancio di una bomba di mortaio: "thump" sordo e attutito (sparo indiretto,
+// niente colpo secco come il laser), seguito da un fischio leggero che
+// accompagna la bomba mentre sale in volo.
+function playMortarFire(){
+  tone(110, 0.1, "sine", 0.16, 0);
+  sweep(700, 1400, 0.35, "sine", 0.03);
+}
+// Impatto/esplosione della bomba: boato basso con rumore bianco, molto piu'
+// pesante di un'eliminazione normale, per rendere la sensazione di un colpo
+// d'area caduto dall'alto.
+function playMortarImpact(){
+  noiseBurst(0.32, 0.22);
+  tone(80, 0.32, "sawtooth", 0.18, 0);
+  tone(55, 0.4, "sine", 0.14, 0.04);
+}
+// Piazzamento del bombolone (bonus 1400 punti, tasto 0 dopo il mortaio): un
+// "beep" di armamento elettronico, ripetuto e via via piu' insistente, come
+// l'innesco di un ordigno che si sta caricando.
+function playSuperbombPlace(){
+  tone(440, 0.05, "square", 0.13, 0);
+  tone(440, 0.05, "square", 0.13, 0.18);
+  tone(440, 0.05, "square", 0.13, 0.36);
+}
+// Esplosione del bombolone: il boato piu' grosso del gioco (raggio 8
+// caselle), rumore bianco lungo e un basso doppio profondo, per rendere la
+// scala molto piu' grande di un normale impatto di mortaio.
+function playSuperbombExplode(){
+  noiseBurst(0.5, 0.28);
+  tone(60, 0.5, "sawtooth", 0.22, 0);
+  tone(40, 0.6, "sine", 0.18, 0.05);
+  tone(90, 0.35, "square", 0.12, 0.02);
+}
+// Lancio della mongolfiera (bonus 1600 punti, tasto 0 dopo il bombolone):
+// un "fiato" caldo e crescente, come il bruciatore che gonfia il pallone e
+// lo fa staccare da terra.
+// Piazzamento del fungo atomico: piccolo "pop" organico, volutamente
+// innocuo e discreto (e' una trappola nascosta, non deve farsi notare).
+function playMushroomPlace(){
+  tone(300, 0.06, "sine", 0.10, 0);
+  tone(430, 0.08, "sine", 0.10, 0.07);
+}
+// GROSSO BOATO del fungo atomico: il piu' devastante del gioco (raggio 10
+// caselle), piu' grosso perfino del bombolone: doppio strato di rumore
+// bianco lungo e tre bassi profondi a scalare, come un tuono che rotola.
+function playNukeBoom(){
+  noiseBurst(0.9, 0.34);
+  noiseBurst(0.5, 0.22);
+  tone(60, 0.7, "sine", 0.30, 0);
+  tone(45, 0.9, "sine", 0.26, 0.12);
+  tone(34, 1.1, "sine", 0.22, 0.28);
+}
+function playBalloonLaunch(){
+  sweep(140, 320, 0.4, "sine", 0.12);
+  tone(220, 0.12, "square", 0.08, 0.1);
+}
+// Sgancio/esplosione della bomba della mongolfiera: piu' rapida e secca
+// dell'impatto di mortaio (nessun arco, cade e scoppia subito), ma piu'
+// piccola del boato del bombolone (raggio 4 contro 8 caselle).
+function playBalloonBomb(){
+  noiseBurst(0.24, 0.2);
+  tone(95, 0.22, "sawtooth", 0.16, 0);
+  tone(65, 0.28, "sine", 0.13, 0.03);
+}
+// Piazzamento del blob gelatinoso (bonus 1800 punti, tasto 1 dopo la
+// mongolfiera): un "plop" viscido e basso, come una massa gelatinosa che si
+// posa a terra colando.
+function playBlobPlace(){
+  tone(180, 0.1, "sine", 0.14, 0);
+  sweep(220, 90, 0.3, "sine", 0.1);
+}
+// Distruzione del blob colpito da un laser o da un missile: uno "squish"
+// umido e secco, piu' corto e stridulo di un'eliminazione normale.
+function playBlobDestroyed(){
+  noiseBurst(0.16, 0.14);
+  sweep(500, 140, 0.18, "sawtooth", 0.1);
+  tone(90, 0.12, "sine", 0.08, 0.02);
+}
+// Risveglio del blob (bonus 2000 punti, tasto 1 dopo il blob fermo): un
+// "risucchio" viscido e crescente seguito da un ringhio basso, come se la
+// massa gelatinosa si staccasse da terra e si animasse per mettersi in
+// moto - distinto dal "plop" secco del semplice piazzamento.
+function playBlobAnimate(){
+  sweep(90, 260, 0.28, "sine", 0.13);
+  tone(70, 0.3, "sawtooth", 0.12, 0.08);
+  noiseBurst(0.12, 0.08);
+}
+// Piazzamento del muro di spunzoni (bonus 2200 punti, tasto 1 a fine
+// catena): un "botto di roccia che sbatte a terra" - rumore secco e
+// granuloso + due toni molto gravi, come un masso pesante che si assesta,
+// chiuso da un piccolo click acuto (gli spunzoni che scattano fuori).
+function playSpikeWallPlace(){
+  noiseBurst(0.2, 0.2);
+  tone(85, 0.22, "sawtooth", 0.17, 0);
+  tone(55, 0.3, "sine", 0.14, 0.05);
+  tone(1400, 0.03, "square", 0.07, 0.2);
+}
+// Schianto di un giocatore contro il muro di spunzoni: piu' violento del
+// piazzamento - un impatto di roccia pieno (rumore lungo + boato grave)
+// con un "crack" acuto sopra, per rendere l'urto letale contro le punte.
+function playSpikeWallCrash(){
+  noiseBurst(0.3, 0.24);
+  tone(70, 0.3, "sawtooth", 0.18, 0);
+  tone(45, 0.4, "sine", 0.14, 0.04);
+  tone(900, 0.05, "square", 0.1, 0.02);
+}
+// Sgretolamento del muro allo scadere del minuto: piccola frana di
+// sassolini, rumore breve che scende + bip discendenti tipo detriti.
+function playSpikeWallCrumble(){
+  noiseBurst(0.22, 0.13);
+  [300, 220, 150, 100].forEach(function(f, i){ tone(f, 0.05, "square", 0.07, i * 0.05); });
+}
+// Colpo di laser: sweep acuto e secco verso il basso.
+function playLaser(){
+  sweep(1200, 260, 0.16, "square", 0.14);
+  tone(180, 0.10, "sawtooth", 0.10, 0.02);
+}
+// Teletrasporto attraverso un portale: piccolo "whoosh" ascendente.
+function playTeleport(){
+  sweep(240, 760, 0.18, "sine", 0.12);
+}
+
+// Suoni per missile guidato e mine (bonus 400/200 punti): non esistevano
+// nella versione precedente del gioco, ricostruiti con le stesse
+// primitive sintetizzate (tone/sweep/noiseBurst) per restare coerenti
+// con lo stile sonoro degli altri effetti.
+function playMissileFire(){ sweep(300, 900, 0.22, "sawtooth", 0.13); }
+function playMissileBoom(){ noiseBurst(0.14, 0.16); tone(90, 0.16, "sine", 0.13); }
+function playMinePlace(){ tone(200, 0.05, "square", 0.09); tone(320, 0.05, "square", 0.09, 0.05); }
+function playMineBoom(){ noiseBurst(0.18, 0.2); tone(70, 0.2, "sine", 0.16); }
+
+// La sirena del countdown iniziale e' stata RIMOSSA perche' fastidiosa. Le
+// due funzioni restano come "no-op" cosi' i punti del codice che le
+// chiamavano continuano a funzionare senza modifiche, ma non producono piu'
+// alcun suono. Restano attivi tutti gli altri effetti sonori (masticazione,
+// vittoria, eliminazione, ecc.).
+function startSiren(){ /* sirena rimossa: no-op */ }
+
 function onRoundEnd(msg){
   exitGame();
   const rows = Object.keys(msg.scores||{}).map(id => ({
@@ -584,6 +898,7 @@ function onRoundEnd(msg){
   })).sort((a,b)=>b.pts-a.pts);
   document.getElementById("lobbyHint").textContent = "Round finito. Classifica: " +
     rows.map((r,i)=> (i+1)+". "+r.name+" ("+r.pts+"pt)").join(" \u00b7 ");
+  if (rows.length){ if (rows[0].id === myId) playVictory(); else playGameOver(); }
   showScreen("lobby");
 }
 
@@ -784,10 +1099,10 @@ function initThree(){
   renderer.setSize(window.innerWidth, window.innerHeight);
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   document.body.appendChild(renderer.domElement);
-  scene.add(new THREE.AmbientLight(0x402020, 0.55));
-  torch = new THREE.PointLight(0xffffff, 1.4, 9, 2);
+  scene.add(new THREE.AmbientLight(0xffffff, 1.1));
+  torch = new THREE.PointLight(0xffffff, 2.2, 16, 1.6);
   scene.add(torch);
-  scene.add(new THREE.HemisphereLight(0x553030, 0x0a0202, 0.4));
+  scene.add(new THREE.HemisphereLight(0xbfc8ff, 0x3a2a20, 0.9));
   window.addEventListener("resize", () => {
     camera.aspect = window.innerWidth/window.innerHeight;
     camera.updateProjectionMatrix();
@@ -811,7 +1126,7 @@ function applyMapData(msg){
   const bgColor    = hexToInt(mazeTheme.bg    || "#0d0202");
   const pelletColor= hexToInt(mazeTheme.pellet|| "#ffb35c");
   scene.background = new THREE.Color(bgColor);
-  scene.fog = new THREE.Fog(bgColor, 6, 34);
+  scene.fog = new THREE.Fog(bgColor, 10, 40);
   torch.color = new THREE.Color(hexToInt(mazeTheme.glow || "#ff5a4d"));
 
   // pavimento: una cella per ogni casella percorribile della mappa (non
@@ -1079,7 +1394,7 @@ function makeMineMesh(colorHex){
    ============================================================ */
 let lastRequestedDir = null;
 function requestDir(dir){
-  if (dir !== lastRequestedDir) lastRequestedDir = dir;
+  if (dir !== lastRequestedDir){ playTurn(); lastRequestedDir = dir; }
   sendMsg({ type:"move", direction:dir });
 }
 
@@ -1450,6 +1765,7 @@ function onGameEvent(msg){
         const m = pelletMeshes[key];
         if (m){ scene.remove(m); delete pelletMeshes[key]; }
       });
+      if ((msg.cells||[]).length) playChomp();
       break;
     case "pellet_respawn":
       (msg.cells||[]).forEach(c => {
@@ -1466,9 +1782,11 @@ function onGameEvent(msg){
       break;
     case "kill":
       showToast(msg.victim === myId ? "Sei stato eliminato!" : "Un giocatore \u00e8 stato eliminato");
+      playEliminate();
       break;
     case "bonus":
       if (msg.player === myId) showToast("Bonus sbloccato: " + msg.bonus);
+      playBonus();
       break;
     case "laser_fire": {
       // bonus 150 punti: nuovo colpo di laser sparato (dal server, in
@@ -1492,6 +1810,7 @@ function onGameEvent(msg){
       mesh.position.set(wx, EYE_HEIGHT, wz);
       scene.add(mesh);
       laserMeshes[msg.id] = { mesh, x:wx, z:wz, targetX:wx, targetZ:wz, dir: msg.dir };
+      playLaser();
       break;
     }
     case "laser_bounce":
@@ -1520,6 +1839,7 @@ function onGameEvent(msg){
       mesh.position.set(wx, 0.55, wz);
       scene.add(mesh);
       missileMeshes[msg.id] = { mesh, x:wx, z:wz, targetX:wx, targetZ:wz };
+      playMissileFire();
       break;
     }
     case "missile_reflect": {
@@ -1528,18 +1848,21 @@ function onGameEvent(msg){
       // (stesso comportamento della versione 2D), quindi qui e' solo un
       // lampo visivo in piu'.
       spawnExplosion(msg.x*CELL+CELL/2, msg.y*CELL+CELL/2, 0x4dffe8);
+      playMissileBoom();
       break;
     }
     case "missile_end": {
       spawnExplosion(msg.x*CELL+CELL/2, msg.y*CELL+CELL/2, 0x8fd3ff);
       const mz = missileMeshes[msg.id];
       if (mz){ scene.remove(mz.mesh); delete missileMeshes[msg.id]; }
+      playMissileBoom();
       break;
     }
     case "mine_place": {
       // La mesh vera e propria viene creata dal prossimo onState (blocco
       // msg.mines) - qui serve solo il feedback per chi l'ha piazzata.
       if (msg.player === myId) showToast("Mina posata (" + msg.left + " rimaste)");
+      playMinePlace();
       break;
     }
     case "mine_boom": {
@@ -1548,6 +1871,7 @@ function onGameEvent(msg){
       spawnExplosion(msg.x*CELL+CELL/2, msg.y*CELL+CELL/2, 0xff9d1f);
       const mm = mineMeshes[msg.id];
       if (mm){ scene.remove(mm); delete mineMeshes[msg.id]; }
+      playMineBoom();
       break;
     }
     case "mine_destroyed": {
@@ -1557,6 +1881,7 @@ function onGameEvent(msg){
       // x/y (la mina sparisce e basta, senza "botto" visivo).
       if (msg.x !== undefined && msg.y !== undefined){
         spawnExplosion(msg.x*CELL+CELL/2, msg.y*CELL+CELL/2, 0x8fe0ff);
+        playMineBoom();
       }
       const mm = mineMeshes[msg.id];
       if (mm){ scene.remove(mm); delete mineMeshes[msg.id]; }
