@@ -145,7 +145,7 @@
   <div id="hudMines" class="hidden" style="color:#2bff5c;"></div>
 </div>
 <div id="minimapWrap" class="hidden">
-  <canvas id="minimap" width="160" height="160"></canvas>
+  <canvas id="minimap" width="240" height="240"></canvas>
 </div>
 <div id="toast"></div>
 <div id="hint" class="hidden">Click per guardarti intorno — WASD = movimento relativo allo sguardo — tasto sinistro = spara laser (se sbloccato)</div>
@@ -1148,8 +1148,10 @@ function onState(msg){
     seenLasers.add(lz.id);
     const entry = laserMeshes[lz.id];
     if (!entry) return; // laser_fire non ancora arrivato/processato: aspetta il prossimo state
-    entry.targetX = lz.x*CELL + CELL/2;
-    entry.targetZ = lz.y*CELL + CELL/2;
+    // lz.x/lz.y sono coordinate di griglia CONTINUE (non celle intere da
+    // centrare, vedi move_lasers in main.py): si scalano solo per CELL.
+    entry.targetX = lz.x*CELL;
+    entry.targetZ = lz.y*CELL;
     // Il proiettile ora puo' viaggiare in qualsiasi angolo (non solo i 4
     // cardinali): l'orientamento visivo si calcola con atan2 sul vettore
     // dx/dz reale invece di una tabella fissa a 4 valori.
@@ -1221,13 +1223,21 @@ function onGameEvent(msg){
       // risposta al comando manuale del giocatore). Crea un piccolo
       // "proiettile" luminoso che il render loop muove morbidamente
       // verso la posizione confermata a ogni "event" successivo.
-      const wx = msg.x*CELL + CELL/2, wz = msg.y*CELL + CELL/2;
+      // IMPORTANTE: il server ora manda gia' msg.x/msg.y in coordinate di
+      // GRIGLIA GIA' CENTRATE (cella_intera + 0.5, vedi spawn_laser in
+      // main.py), non piu' celle intere: va quindi solo scalato per CELL,
+      // senza sommare di nuovo CELL/2 (altrimenti il punto di partenza si
+      // sposta di mezza cella e il colpo non nasce dal crosshair/centro).
+      const wx = msg.x*CELL, wz = msg.y*CELL;
       const geo = new THREE.SphereGeometry(0.1, 10, 8);
       const mat = new THREE.MeshStandardMaterial({
         color: 0xff5a4d, emissive: 0xff5a4d, emissiveIntensity: 1.4,
       });
       const mesh = new THREE.Mesh(geo, mat);
-      mesh.position.set(wx, 0.65, wz);
+      // Altezza allineata a EYE_HEIGHT (livello occhi/camera): cosi' il
+      // colpo nasce visivamente dal crosshair al centro dello schermo,
+      // non da un punto piu' basso che sembrava "scentrato".
+      mesh.position.set(wx, EYE_HEIGHT, wz);
       scene.add(mesh);
       laserMeshes[msg.id] = { mesh, x:wx, z:wz, targetX:wx, targetZ:wz, dir: msg.dir };
       break;
@@ -1240,7 +1250,7 @@ function onGameEvent(msg){
       // prossimo "laser_fire"-like update se serve, altrimenti resta
       // comunque leggibile come lampo luminoso.
       const lz = laserMeshes[msg.id];
-      if (lz){ const wx = msg.x*CELL+CELL/2, wz = msg.y*CELL+CELL/2; lz.targetX = wx; lz.targetZ = wz; }
+      if (lz){ const wx = msg.x*CELL, wz = msg.y*CELL; lz.targetX = wx; lz.targetZ = wz; }
       break;
     }
     case "laser_end": {
@@ -1333,7 +1343,7 @@ function animate(){
   Object.values(laserMeshes).forEach(lz => {
     lz.x += (lz.targetX - lz.x) * LASER_LERP;
     lz.z += (lz.targetZ - lz.z) * LASER_LERP;
-    lz.mesh.position.set(lz.x, 0.65, lz.z);
+    lz.mesh.position.set(lz.x, EYE_HEIGHT, lz.z);
   });
   // bonus 400 punti: missile guidato, stessa interpolazione dei laser
   Object.values(missileMeshes).forEach(mz => {
