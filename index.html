@@ -1160,15 +1160,21 @@ function spawnExplosion(wx, wz, colorHex){
 }
 
 // Bonus 2800 punti (arbusto spinoso): una casella di rovi, costruita come
-// un piccolo intreccio di rami spinosi che si aprono a raggiera dal
-// centro, nel colore del proprietario. Stessa idea della 2D (6 rami +
-// spine + nocciolo centrale), qui come geometria 3D vera invece che
-// disegno 2D. La scala del gruppo (0 -> 1) pilota la crescita nel render
-// loop, leggendo userData.birth.
-function makeBushCellMesh(hex){
+// un intreccio di rami spinosi che nasce dal centro. A differenza della
+// vecchia raggiera isolata, ogni casella ora conosce le direzioni verso
+// le celle vicine gia' collegate dell'ARBUSTO STESSO (linkDirs, calcolate
+// dal chiamante in base a b.cells): un ramo "grosso" e piu' alto viene
+// spinto lungo ognuna di quelle direzioni, cosi' i rami di celle adiacenti
+// si toccano/oltrepassano il confine di cella e danno l'idea di un unico
+// cespuglio che si allunga verso l'esterno, non di tanti cespuglietti
+// separati. I rami restanti (fino a 6 in totale) riempiono le direzioni
+// libere per dare volume, piu' corti. Stessa idea della 2D (rami+spine+
+// nocciolo centrale) ma ora "diretta" invece che a raggiera fissa.
+function makeBushCellMesh(hex, linkDirs){
   const g = new THREE.Group();
   const colDark = new THREE.Color(hex).multiplyScalar(0.55);
   const colDarker = new THREE.Color(hex).multiplyScalar(0.32);
+  linkDirs = linkDirs || [];
 
   // Terriccio/ombra alla base.
   const base = new THREE.Mesh(
@@ -1179,60 +1185,194 @@ function makeBushCellMesh(hex){
   base.position.y = 0.015;
   g.add(base);
 
-  // 6 rami spinosi a raggiera, ognuno un cilindro sottile inclinato verso
-  // l'esterno e leggermente verso l'alto, con una piccola spina (cono) in
-  // punta - stessa idea dei rami+aculei della 2D, in volume.
+  // Rami spinosi: uno per ogni direzione di collegamento (verso il
+  // "genitore" e/o verso vicini gia' cresciuti), piu' lunghi/alti e
+  // spinti fino a sconfinare leggermente nella cella vicina (arrivano
+  // oltre CELL/2), cosi' l'intreccio appare continuo. Le direzioni
+  // rimanenti, fino a un totale di 6, vengono riempite con rametti piu'
+  // corti solo per dare volume al cespuglio.
+  const NBRANCHES = 6;
+  const TAU = Math.PI*2;
+  const usedAngles = linkDirs.map(d => Math.atan2(d.dz, d.dx));
+  const angles = usedAngles.slice();
+  for (let k = angles.length; k < NBRANCHES; k++){
+    // riempie gli spazi vuoti distribuendo gli angoli restanti, con un
+    // piccolo jitter deterministico per non sembrare troppo regolare.
+    const ang = (k/NBRANCHES) * TAU + ((k*53)%17)/17 * 0.6;
+    angles.push(ang);
+  }
+
   const branches = [];
   const branchMat = new THREE.MeshStandardMaterial({ color: hex });
   const spineMat = new THREE.MeshStandardMaterial({ color: 0xe8e8e2 });
-  for (let k = 0; k < 6; k++){
-    const ang = (k/6) * Math.PI*2;
-    const len = CELL * (0.34 + 0.22*((k*53)%17)/17);
-    const branch = new THREE.Mesh(new THREE.CylinderGeometry(0.014, 0.03, len, 5), branchMat);
-    branch.position.set(Math.cos(ang)*len/2, len*0.28, Math.sin(ang)*len/2);
+  angles.forEach((ang, k) => {
+    const isLink = k < usedAngles.length;
+    // rami di collegamento: piu' lunghi (arrivano oltre il bordo cella
+    // verso il vicino) e leggermente piu' alti, per fondersi con l'altra
+    // casella dell'arbusto; rami di riempimento: corti come prima.
+    const len = isLink
+      ? CELL * (0.62 + 0.16*((k*53)%17)/17)
+      : CELL * (0.30 + 0.16*((k*53)%17)/17);
+    const tilt = isLink ? -0.32 : -0.5; // rami di collegamento piu' "tesi", meno spioventi
+    const branch = new THREE.Mesh(new THREE.CylinderGeometry(isLink?0.018:0.014, isLink?0.036:0.03, len, 5), branchMat);
+    branch.position.set(Math.cos(ang)*len/2, len*0.30, Math.sin(ang)*len/2);
     branch.rotation.z = Math.PI/2 - ang;
-    branch.rotation.x = -0.5;
+    branch.rotation.x = tilt;
     g.add(branch);
-    const spine = new THREE.Mesh(new THREE.ConeGeometry(0.02, 0.09, 5), spineMat);
-    spine.position.set(Math.cos(ang)*len, len*0.5, Math.sin(ang)*len);
+    const spine = new THREE.Mesh(new THREE.ConeGeometry(isLink?0.024:0.02, isLink?0.1:0.09, 5), spineMat);
+    spine.position.set(Math.cos(ang)*len, len*0.54, Math.sin(ang)*len);
     spine.rotation.z = Math.PI/2 - ang;
     g.add(spine);
     branches.push({ branch, spine, ang });
-  }
+  });
 
   // Nocciolo centrale.
   const core = new THREE.Mesh(
-    new THREE.SphereGeometry(0.09, 8, 6),
+    new THREE.SphereGeometry(0.1, 8, 6),
     new THREE.MeshStandardMaterial({ color: colDarker, emissive: hex, emissiveIntensity: 0.15 })
   );
-  core.position.y = 0.09;
+  core.position.y = 0.11;
   g.add(core);
 
   g.userData = { branches, core, birth: performance.now() };
   return g;
 }
 
-// Bonus 3000 punti (fungo atomico): fungo porcino statico, nel colore del
-// proprietario invece che marrone (stessa scelta della 2D), con gambo
-// bulboso e cappella liscia bombata. Costruito una sola volta per
+// Bonus 3000 punti (fungo atomico): fungo PORCINO vero e realistico, nel
+// colore del proprietario solo sulla cappella (il gambo resta color
+// porcino naturale, come un porcino vero), con gambo bulboso rastremato
+// (piu' largo alla base, si stringe verso la cappella), cappella a cupola
+// con bordo leggermente ripiegato in basso e una zona porosa (i "tubuli")
+// visibile sotto il bordo. Ogni esemplare e' diverso: la forma, la
+// dimensione e l'inclinazione del gambo variano in base a un seed
+// deterministico (seedVal, derivato dall'id/posizione dal chiamante, cosi'
+// resta identico per tutti i client che vedono lo stesso fungo). In rari
+// casi (twin=true, deciso dal chiamante con la stessa logica del seed)
+// nasce un fungo gemello a due teste: un secondo gambo/cappella piu'
+// piccolo che si stacca dalla base comune. Costruito una sola volta per
 // esemplare, poi solo scalato/ruotato leggermente per un lieve ondeggiare.
-function makeMushroomMesh(hex, mega){
+function makeMushroomMesh(hex, mega, seedVal, twin){
   const g = new THREE.Group();
   const s = mega ? 1.9 : 1;
+  seedVal = seedVal || 0;
+  // PRNG deterministico piccolo (mulberry32-style) per variare ogni fungo
+  // in modo stabile senza dipendere da Math.random().
+  let seedState = (seedVal >>> 0) || 1;
+  function rnd(){
+    seedState |= 0; seedState = (seedState + 0x6D2B79F5) | 0;
+    let t = Math.imul(seedState ^ (seedState >>> 15), 1 | seedState);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  }
 
-  const stem = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.09*s, 0.14*s, 0.34*s, 10),
-    new THREE.MeshStandardMaterial({ color: 0xefe2c8 })
-  );
-  stem.position.y = 0.17*s;
-  g.add(stem);
+  const stemColor = 0xe9dcc0; // color porcino naturale (avorio/crema), NON il colore del player
+  const stemShadeMat = new THREE.MeshStandardMaterial({ color: stemColor, roughness:0.9 });
+  const poreMat = new THREE.MeshStandardMaterial({ color: 0xc9a86a, roughness:1 });
+  const capMat = new THREE.MeshStandardMaterial({ color: hex, emissive: hex, emissiveIntensity: mega ? 0.35 : 0.08, roughness:0.75 });
 
-  const capGeo = new THREE.SphereGeometry(0.34*s, 14, 10, 0, Math.PI*2, 0, Math.PI/2);
-  const capMat = new THREE.MeshStandardMaterial({ color: hex, emissive: hex, emissiveIntensity: mega ? 0.35 : 0.1 });
-  const cap = new THREE.Mesh(capGeo, capMat);
-  cap.position.y = 0.34*s;
-  cap.scale.set(1, 0.72, 1);
-  g.add(cap);
+  // Costruisce un singolo corpo fungo (gambo + cappella + pori), scalato
+  // di "scale" e ruotato secondo un'inclinazione casuale ma contenuta,
+  // cosi' ogni esemplare pende leggermente da un lato come nella realta'.
+  function buildMushroomBody(scale, tiltX, tiltZ, rotY, capFlatten, stemBulge){
+    const body = new THREE.Group();
+
+    // Gambo bulboso: costruito con due tronchi di cono impilati, piu'
+    // largo alla base (radice) e via via piu' stretto salendo verso la
+    // cappella, per un profilo "a fiaschetto" tipico del porcino invece
+    // del cilindro uniforme di prima.
+    const stemH = 0.34*s*scale;
+    const rBase = 0.15*s*scale*stemBulge;
+    const rMid  = 0.105*s*scale;
+    const rTop  = 0.085*s*scale;
+    const lower = new THREE.Mesh(
+      new THREE.CylinderGeometry(rMid, rBase, stemH*0.55, 12, 1),
+      stemShadeMat
+    );
+    lower.position.y = stemH*0.275;
+    body.add(lower);
+    const upper = new THREE.Mesh(
+      new THREE.CylinderGeometry(rTop, rMid, stemH*0.5, 12, 1),
+      stemShadeMat
+    );
+    upper.position.y = stemH*0.55 + stemH*0.25;
+    body.add(upper);
+
+    // Cappella a cupola: sfera schiacciata (piu' larga che alta) invece
+    // della mezza sfera precedente, con un profilo piu' arrotondato in
+    // cima e il bordo che si assottiglia verso l'esterno, come una vera
+    // cappella di porcino.
+    const capR = 0.32*s*scale;
+    const capGeo = new THREE.SphereGeometry(capR, 16, 12, 0, Math.PI*2, 0, Math.PI*0.56);
+    const cap = new THREE.Mesh(capGeo, capMat);
+    cap.position.y = stemH + capR*0.28;
+    cap.scale.set(1, capFlatten, 1);
+    body.add(cap);
+
+    // Bordo/margine della cappella leggermente ripiegato verso il basso
+    // (un piccolo toro appena sotto il bordo esterno della cupola), per
+    // dare lo spessore carnoso tipico del porcino invece di un bordo
+    // sottile e netto.
+    const rim = new THREE.Mesh(
+      new THREE.TorusGeometry(capR*0.97, capR*0.09, 8, 20),
+      capMat
+    );
+    rim.position.y = stemH + capR*0.28 - capR*capFlatten*0.02;
+    rim.rotation.x = Math.PI/2;
+    rim.scale.set(1, 1, capFlatten*1.05);
+    body.add(rim);
+
+    // Strato poroso ("tubuli") sotto la cappella: un disco leggermente
+    // concavo color nocciola-porcino, visibile guardando il fungo da
+    // sotto/di lato, che distingue il porcino da un fungo generico a
+    // ombrello liscio.
+    const pores = new THREE.Mesh(
+      new THREE.CylinderGeometry(capR*0.78, capR*0.6, capR*0.16, 14, 1, true),
+      poreMat
+    );
+    pores.position.y = stemH - capR*0.02;
+    body.add(pores);
+
+    body.rotation.x = tiltX;
+    body.rotation.z = tiltZ;
+    body.rotation.y = rotY;
+    body.scale.setScalar(scale);
+    return { body, cap, stemH: stemH*scale };
+  }
+
+  // Variazione per esemplare: dimensione, inclinazione e "pancia" del
+  // gambo diverse ogni volta, guidate dal seed cosi' restano stabili.
+  const mainScale = 0.86 + rnd()*0.34;           // dimensione: da un po' piu' piccolo a un po' piu' grande
+  const mainTiltX = (rnd()-0.5) * 0.32;          // inclinazione avanti/indietro
+  const mainTiltZ = (rnd()-0.5) * 0.32;          // inclinazione laterale
+  const mainRotY  = rnd() * Math.PI*2;           // orientamento casuale
+  const mainFlatten = 0.62 + rnd()*0.22;         // cappella piu' o meno schiacciata
+  const mainBulge = 1.15 + rnd()*0.5;            // quanto e' panciuto il gambo alla base
+
+  const main = buildMushroomBody(mainScale, mainTiltX, mainTiltZ, mainRotY, mainFlatten, mainBulge);
+  g.add(main.body);
+  const caps = [main.cap];
+  const stems = [main.body];
+
+  // Fungo gemello a due teste: nasce dalla stessa base ma con un secondo
+  // corpo piu' piccolo, spostato di lato e inclinato verso l'esterno,
+  // come due porcini cresciuti attaccati dallo stesso micelio.
+  if (twin){
+    const twinScale = mainScale * (0.55 + rnd()*0.2);
+    const twinTiltX = mainTiltX*0.3 + (rnd()-0.5)*0.5;
+    const twinTiltZ = mainTiltZ*0.3 + (rnd()-0.5)*0.5 + (rnd()<0.5?-0.35:0.35);
+    const twinRotY = rnd() * Math.PI*2;
+    const twinFlatten = 0.6 + rnd()*0.22;
+    const twinBulge = 1.1 + rnd()*0.4;
+    const twinBody = buildMushroomBody(twinScale, twinTiltX, twinTiltZ, twinRotY, twinFlatten, twinBulge);
+    // sposta il gemello leggermente di lato dalla base comune, in una
+    // direzione orizzontale casuale.
+    const twinAng = rnd() * Math.PI*2;
+    const twinOffset = 0.08*s;
+    twinBody.body.position.set(Math.cos(twinAng)*twinOffset, 0, Math.sin(twinAng)*twinOffset);
+    g.add(twinBody.body);
+    caps.push(twinBody.cap);
+    stems.push(twinBody.body);
+  }
 
   // Onde magnetiche del fungo madre trasformato (bonus 3800, gia' previste
   // nella struttura anche se non ancora attivabili in 3D): tre anelli
@@ -1250,7 +1390,7 @@ function makeMushroomMesh(hex, mega){
     }
   }
 
-  g.userData = { stem, cap, magRings, mega: !!mega };
+  g.userData = { caps, stems, magRings, mega: !!mega };
   return g;
 }
 // d'azione, con crepe che si irradiano dal centro e si allungano man mano
@@ -4102,11 +4242,17 @@ function onState(msg){
     if (!g){
       const hex = playerColorHex[t.owner] !== undefined ? playerColorHex[t.owner] : 0x5ad1ff;
       g = makeTeslaMesh(hex);
-      g.position.set(t.x*CELL + CELL/2, 0, t.y*CELL + CELL/2);
       g.userData.rangeRing.visible = (t.owner === myId);
       scene.add(g);
       teslaMeshes[t.id] = g;
     }
+    // La posizione va riapplicata SEMPRE, non solo alla creazione: la
+    // Tesla occulta (bonus 3200 punti) si sposta in un nuovo punto ogni
+    // volta che riemerge (vedi tesla_reappear/update_teslas nel server),
+    // quindi t.x/t.y possono cambiare per una mesh gia' esistente. Prima
+    // veniva impostata una sola volta, cosi' la torre sembrava sempre
+    // ricomparire nello stesso posto anche se il server l'aveva spostata.
+    g.position.set(t.x*CELL + CELL/2, 0, t.y*CELL + CELL/2);
     g.userData.charge = t.charge || 0;
     g.userData.hidden = !!t.hidden;
     g.userData.occult = !!t.occult;
@@ -4183,11 +4329,35 @@ function onState(msg){
   const seenBushCells = new Set();
   (msg.bushes||[]).forEach(b => {
     const hex = playerColorHex[b.owner] !== undefined ? playerColorHex[b.owner] : 0x33ff77;
-    (b.cells||[]).forEach(c => {
+    const cells = b.cells || [];
+    // Insieme delle celle di QUESTO arbusto, per trovare rapidamente quali
+    // vicine (su/giu/sx/dx) fanno gia' parte dell'intreccio: b.cells e'
+    // nell'ordine di crescita (la prima e' la casella piazzata, ogni
+    // minuto se ne aggiunge una nuova in coda), quindi la cella precedente
+    // nell'array e' sempre il "genitore" naturale verso cui puntare un
+    // ramo, oltre a qualunque altra cella dell'arbusto gia' adiacente.
+    const cellSet = new Set(cells.map(c => c[0] + "," + c[1]));
+    cells.forEach((c, idx) => {
       const key = b.id + ":" + c[0] + "," + c[1];
       seenBushCells.add(key);
       if (!bushMeshes[key]){
-        const mesh = makeBushCellMesh(hex);
+        const linkDirs = [];
+        const neighborOffsets = [[1,0],[-1,0],[0,1],[0,-1]];
+        neighborOffsets.forEach(([ox,oy]) => {
+          if (cellSet.has((c[0]+ox) + "," + (c[1]+oy))){
+            linkDirs.push({ dx: ox, dz: oy });
+          }
+        });
+        // Se per qualche motivo nessun vicino diretto e' in griglia (es.
+        // arbusto appena piazzato, una sola casella) ma esiste comunque
+        // una cella precedente nell'ordine di crescita, punta comunque
+        // verso di lei (anche se non ortogonalmente adiacente) cosi' il
+        // primo ramo nasce sempre nella direzione "giusta".
+        if (linkDirs.length === 0 && idx > 0){
+          const prev = cells[idx-1];
+          linkDirs.push({ dx: prev[0]-c[0] || 0.001, dz: prev[1]-c[1] || 0.001 });
+        }
+        const mesh = makeBushCellMesh(hex, linkDirs);
         mesh.position.set(c[0]*CELL + CELL/2, 0, c[1]*CELL + CELL/2);
         scene.add(mesh);
         bushMeshes[key] = mesh;
@@ -4212,7 +4382,12 @@ function onState(msg){
     let g = mushroomMeshes[m.id];
     if (!g){
       const hex = playerColorHex[m.owner] !== undefined ? playerColorHex[m.owner] : 0xff5fd1;
-      g = makeMushroomMesh(hex, !!m.mega);
+      // Seed deterministico per esemplare (dall'id, cosi' e' identico su
+      // tutti i client) che decide forma/dimensione/inclinazione e se
+      // nasce come fungo gemello a due teste (circa 1 su 6).
+      const seedVal = hashSeed(String(m.id));
+      const twin = !m.mega && (seedVal % 6 === 0);
+      g = makeMushroomMesh(hex, !!m.mega, seedVal, twin);
       g.position.set(m.x*CELL + CELL/2, 0, m.y*CELL + CELL/2);
       scene.add(g);
       mushroomMeshes[m.id] = g;
@@ -4514,8 +4689,14 @@ function onGameEvent(msg){
       // caselle): qui basta l'effetto visivo/sonoro nel punto d'impatto,
       // e' il server l'unica autorita' su chi viene colpito dall'onda
       // d'urto (i "kill"/vite perse arrivano come eventi separati, stessa
-      // idea della 2D).
-      spawnExplosion(msg.x*CELL+CELL/2, msg.y*CELL+CELL/2, 0xff3b3b);
+      // idea della 2D). Oltre alla piccola sfera di spawnExplosion (il
+      // "lampo" ravvicinato), un'onda d'urto concentrica (shockwaves,
+      // stessa idea del fungo atomico) si espande fino a coprire ESATTAMENTE
+      // il raggio reale dell'esplosione, cosi' si vede a colpo d'occhio
+      // quanto e' grande l'area colpita.
+      const sbHex = playerColorHex[msg.by] !== undefined ? playerColorHex[msg.by] : 0xff3b3b;
+      spawnExplosion(msg.x*CELL+CELL/2, msg.y*CELL+CELL/2, sbHex);
+      shockwaves.push({ x: msg.x*CELL+CELL/2, z: msg.y*CELL+CELL/2, color: sbHex, start: performance.now(), radiusCells: msg.radius || SUPERBOMB_RADIUS_CELLS });
       playSuperbombExplode();
       const sm = superbombMeshes[msg.id];
       if (sm){ scene.remove(sm); delete superbombMeshes[msg.id]; }
@@ -4537,8 +4718,11 @@ function onGameEvent(msg){
       // avversarie colpite arrivano come eventi separati (mine_destroyed/
       // turret_destroyed/ecc. con cause "balloon"), stessa idea del
       // bombolone: qui basta l'effetto visivo/sonoro nel punto d'impatto.
+      // Stessa onda d'urto concentrica del bombolone/fungo, ma delle
+      // dimensioni piu' piccole di questa bomba.
       const balHex = playerColorHex[msg.by] !== undefined ? playerColorHex[msg.by] : 0xffb347;
       spawnExplosion(msg.x*CELL+CELL/2, msg.y*CELL+CELL/2, balHex);
+      shockwaves.push({ x: msg.x*CELL+CELL/2, z: msg.y*CELL+CELL/2, color: balHex, start: performance.now(), radiusCells: msg.radius || BALLOON_BOMB_RADIUS_CELLS });
       playBalloonBomb();
       break;
     }
@@ -5215,12 +5399,15 @@ function animate(){
   });
 
   // Bonus 3000 punti: funghi atomici. Statici (nessun lerp, come le mine),
-  // solo un lieve ondeggiare della cappella; il fungo madre trasformato
-  // (mega) sprigiona in piu' tre anelli magnetici che si espandono verso
+  // solo un lieve ondeggiare di ogni cappella (una sola, o due se e' un
+  // fungo gemello a due teste); il fungo madre trasformato (mega)
+  // sprigiona in piu' tre anelli magnetici che si espandono verso
   // l'esterno a ripetizione, stessa idea della 2D.
   Object.values(mushroomMeshes).forEach(g => {
-    const sway = Math.sin(now3d/900 + g.position.x*3) * 0.04;
-    g.userData.cap.rotation.z = sway;
+    (g.userData.caps||[]).forEach((cap, ci) => {
+      const sway = Math.sin(now3d/900 + g.position.x*3 + ci*1.7) * 0.04;
+      cap.rotation.z = sway;
+    });
     if (g.userData.mega && g.userData.magRings){
       g.userData.magRings.forEach((ring, w) => {
         const f = ((now3d/1600) + w/3) % 1;

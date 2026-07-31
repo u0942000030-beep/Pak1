@@ -477,7 +477,20 @@ class Player:
         }
 
 
+# Bonus 400 punti (missile guidato), NERF/fix "spara a vuoto": se al momento
+# del lancio non c'e' nessun nemico vivo/visibile da agganciare, il missile
+# ora parte comunque in linea retta nella direzione in cui il giocatore sta
+# guardando (player.facing), invece di NON partire affatto come prima.
+# Senza un bersaglio da inseguire non avrebbe pero' senso farlo volare per
+# sempre: dopo aver percorso questa distanza (in caselle) senza agganciare
+# nessuno, si autodistrugge come se avesse colpito un muro (vedi
+# move_missiles). Costante locale (non nel modulo di configurazione
+# condiviso) per non toccare l'elenco di import esistente.
+MISSILE_MAX_RANGE_CELLS_NO_TARGET = 14
+
+
 class Room:
+
     def __init__(self, code):
         self.code = code
         self.players: dict[str, Player] = {}
@@ -2723,6 +2736,15 @@ class Room:
         aggancia di nuovo al bersaglio piu' vicino se quello originale muore
         prima dell'impatto.
 
+        Se in questo istante non c'e' NESSUN nemico vivo/visibile da
+        agganciare (target None), il missile parte comunque: vola dritto
+        nella direzione in cui il giocatore sta guardando (player.facing),
+        agganciandosi al volo al primo nemico che eventualmente rientri nel
+        suo raggio d'azione (vedi move_missiles), e si autodistrugge da
+        solo dopo MISSILE_MAX_RANGE_CELLS_NO_TARGET caselle percorse a
+        vuoto se non trova mai nessuno - invece di non partire affatto
+        come prima.
+
         Se il giocatore e' intrappolato dalla trappola di un avversario,
         NON puo' usare alcun bonus finche' non torna libero di muoversi."""
         if not player.alive or player.trapped_left > 0 or not player.has_missile or player.missiles_left <= 0 or player.is_assassin or player.armor_active:
@@ -2730,18 +2752,24 @@ class Room:
         # Un ninja e' invisibile: il missile non puo' agganciarlo nemmeno al
         # lancio (vedi anche move_missiles per il riaggancio in volo).
         target = self.nearest_alive_non_ninja(player.x, player.y, self.hostile_exclude(player.id))
-        if target is None:
-            return
         player.missiles_left -= 1
         missile = {
             "id": uuid.uuid4().hex[:8],
             "owner": player.id,
             "x": player.x, "y": player.y,
             "move_accum": 0.0,
-            "target": target.id,
+            "target": target.id if target is not None else None,
             "path": [],
             "retarget_cd": 0.0,
         }
+        if target is None:
+            # Nessun bersaglio: parte "a vuoto" dritto nella direzione in
+            # cui il giocatore sta guardando, come il laser (vedi
+            # spawn_laser), invece di restare fermo/non partire.
+            dx, dy = DIRECTIONS.get(player.facing or "right", (1, 0))
+            missile["locked"] = True
+            missile["dir"] = (dx, dy)
+            missile["no_target_travel"] = 0  # caselle percorse senza bersaglio, per lo schianto automatico
         self.missiles.append(missile)
         self.push_event({
             "kind": "missile_fire", "id": missile["id"], "owner": player.id,
@@ -2784,12 +2812,28 @@ class Room:
             if target is None or not target.alive or target.is_assassin:
                 target = self.nearest_alive_non_ninja(mz["x"], mz["y"], self.hostile_exclude(mz["owner"]))
                 if target is None:
-                    destroyed = True
+                    # Nessun nemico agganciabile in questo istante: invece
+                    # di autodistruggersi subito, il missile prosegue dritto
+                    # "a vuoto" nell'ultima direzione nota (o in quella di
+                    # lancio, se non si e' ancora mosso), continuando a
+                    # ricontrollare ad ogni tick se un bersaglio rientra nel
+                    # suo raggio. Dopo MISSILE_MAX_RANGE_CELLS_NO_TARGET
+                    # caselle percorse senza mai agganciare nessuno, si
+                    # schianta da solo (vedi sotto), cosi' non resta in
+                    # volo per sempre sulla mappa.
+                    mz["target"] = None
+                    mz["locked"] = True
+                    if not mz.get("dir"):
+                        mz["dir"] = DIRECTIONS.get(self.players[mz["owner"]].facing, (1, 0)) \
+                            if mz["owner"] in self.players else (1, 0)
+                    if "no_target_travel" not in mz:
+                        mz["no_target_travel"] = 0
                 else:
                     mz["target"] = target.id
                     mz["path"] = []
                     mz["retarget_cd"] = 0.0
                     mz["locked"] = False  # nuovo bersaglio: torna a inseguire normalmente
+                    mz["no_target_travel"] = 0  # riagganciato: il contatore "a vuoto" non serve piu'
 
             if not destroyed:
                 # Appena entra entro MISSILE_LOCK_DISTANCE caselle dal
@@ -2845,6 +2889,15 @@ class Room:
                         break
                     mz["move_accum"] -= 1.0
                     mz["x"], mz["y"] = nx, ny
+                    # Missile senza bersaglio agganciato: conta le caselle
+                    # percorse a vuoto e si autodistrugge da solo dopo
+                    # MISSILE_MAX_RANGE_CELLS_NO_TARGET, come se avesse
+                    # colpito un muro (vedi try_fire_missile per il perche').
+                    if mz.get("target") is None:
+                        mz["no_target_travel"] = mz.get("no_target_travel", 0) + 1
+                        if mz["no_target_travel"] >= MISSILE_MAX_RANGE_CELLS_NO_TARGET:
+                            destroyed = True
+                            break
                     # Un ninja e' immune: il missile lo attraversa senza
                     # detonare, invece di colpirlo (coerente col riaggancio
                     # automatico al bersaglio piu' vicino non-ninja sopra).
