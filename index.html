@@ -1140,6 +1140,38 @@ let quakeMeshes = {};   // id -> THREE.Group con userData {ring, cracks[], seed,
 let potionThrows = [];  // {x0,z0,x1,z1,start,dur,color,landed} — animazione one-shot del volo ad arco della boccetta
 let bombMeshes = {};     // id -> THREE.Group con userData {shadow, body} — bonus 1200 punti: bombe di mortaio in volo, ricreate/aggiornate leggendo msg.bombs ad ogni state (stessa idea della 2D: nessun evento fire/end dedicato)
 let poisonZoneMeshes = {}; // id -> THREE.Mesh — nuvole velenose a terra (impatto mortaio, radius>=1) o scia del blob vivo (radius=0, bonus 2000)
+// ---- bonus 3600 punti: golem spaccapietra (tasto "1", VERO ultimo
+// gradino della catena, dopo la pozione terremoto) ----
+// Creatura mobile che dorme 30s dopo il piazzamento, poi vaga divorando
+// ogni gadget nemico; blocca il passaggio come un muro ma non uccide i
+// giocatori. Si muove come un pet/missile (x/y continui dal server), quindi
+// usa lo stesso schema {group,x,z,targetX,targetZ} gia' collaudato altrove
+// in questa 3D, invece del "dead reckoning" della 2D.
+let golemMeshes = {};      // id -> {group, x, z, targetX, targetZ}
+let golemHitFlashes = {};  // id -> timestamp dell'ultimo colpo incassato (per il lampo bianco breve)
+// ---- bonus 4000 punti: attacco aereo (tasto "1", VERO ultimo gradino
+// della catena, dopo il golem) ----
+// Fase di mira: il personaggio resta fermo, le frecce SU/GIU' scelgono la
+// fila (gestito gia' dal server via i normali messaggi "move", vedi
+// requestDir/airstrike_aiming lato client 2D: qui basta disegnare il
+// mirino leggendo myState.airstrike_row). Fase di lancio: un aereo
+// sorvola l'intera fila bombardando (msg.airstrikes, pubblico).
+let airstrikeMeshes = {};  // id -> THREE.Group con userData {body} — un aereo per ogni attacco in corso
+let lastAirstrikeBoomAt = 0; // throttle dei boati mentre l'aereo e' in volo dentro la mappa (stessa idea della 2D)
+const ALTITUDE_AIRSTRIKE = 1.6; // l'aereo vola sopra i muri, ben visibile da terra
+// ---- bonus 3800 punti: fungo madre magnetico ----
+// scie di risucchio: un oggetto inghiottito vola in linea retta dal punto
+// in cui si trovava fin dentro il fungo, rimpicciolendosi (stessa idea
+// della 2D drawMegaSucks).
+let megaSucks = []; // {x0,z0,x1,z1,start,dur}
+// Reticolo di mira dell'attacco aereo (bonus 4000 punti): una fascia
+// piatta sul pavimento lungo tutta la fila scelta, piu' un blocco pieno
+// sul lato sinistro (il "muro-mirino" della 2D) con una freccia che
+// punta verso destra. Ricostruito solo quando cambia riga o entra/esce
+// dalla fase di mira (myState.airstrike_aiming/airstrike_row), non ad
+// ogni frame.
+let airstrikeReticle = null;   // THREE.Group o null se non si sta mirando
+let airstrikeReticleRow = null; // ultima riga per cui e' stato costruito
 let portals = [];          // [[x,y], ...] ricevuti dal server con la mappa (msg.portals) — coordinate di griglia, fisse per tutto il round
 let portalMeshes = [];     // THREE.Group per ciascun portale, stesso ordine di "portals"
 let portalOn = true;       // stato acceso/spento a cicli (msg.portal_on), aggiornato ad ogni "state"
@@ -1159,17 +1191,19 @@ function spawnExplosion(wx, wz, colorHex){
   explosions.push({ mesh, start: performance.now() });
 }
 
-// Bonus 2800 punti (arbusto spinoso): una casella di rovi, costruita come
-// un intreccio di rami spinosi che nasce dal centro. A differenza della
-// vecchia raggiera isolata, ogni casella ora conosce le direzioni verso
-// le celle vicine gia' collegate dell'ARBUSTO STESSO (linkDirs, calcolate
-// dal chiamante in base a b.cells): un ramo "grosso" e piu' alto viene
-// spinto lungo ognuna di quelle direzioni, cosi' i rami di celle adiacenti
-// si toccano/oltrepassano il confine di cella e danno l'idea di un unico
-// cespuglio che si allunga verso l'esterno, non di tanti cespuglietti
-// separati. I rami restanti (fino a 6 in totale) riempiono le direzioni
-// libere per dare volume, piu' corti. Stessa idea della 2D (rami+spine+
-// nocciolo centrale) ma ora "diretta" invece che a raggiera fissa.
+// Bonus 2800 punti (arbusto spinoso): una casella di ROVI-FILO SPINATO,
+// RIDISEGNATA per sostituire il vecchio effetto "a raggiera di rami
+// dritti" (troppo squadrato/geometrico) con un vero effetto ATTORCIGLIATO
+// E INTRECCIATO: ogni tralcio e' ora un tubo che segue una curva ELICOIDALE
+// (una piccola spirale che avvolge l'asse della direzione, come un filo
+// ritorto), con le spine distribuite LUNGO TUTTO IL TRALCIO invece che
+// solo in punta - la stessa idea del filo spinato reale, dove le punte
+// spuntano a intervalli regolari lungo il filo attorcigliato, non solo
+// alla fine. Le direzioni verso celle vicine gia' collegate dell'ARBUSTO
+// STESSO (linkDirs, calcolate dal chiamante in base a b.cells) restano il
+// criterio per i tralci "di collegamento", piu' lunghi e tesi verso il
+// vicino, cosi' i cespugli di celle adiacenti continuano a fondersi in
+// un unico groviglio invece di apparire come cespuglietti separati.
 function makeBushCellMesh(hex, linkDirs){
   const g = new THREE.Group();
   const colDark = new THREE.Color(hex).multiplyScalar(0.55);
@@ -1185,45 +1219,87 @@ function makeBushCellMesh(hex, linkDirs){
   base.position.y = 0.015;
   g.add(base);
 
-  // Rami spinosi: uno per ogni direzione di collegamento (verso il
-  // "genitore" e/o verso vicini gia' cresciuti), piu' lunghi/alti e
-  // spinti fino a sconfinare leggermente nella cella vicina (arrivano
-  // oltre CELL/2), cosi' l'intreccio appare continuo. Le direzioni
-  // rimanenti, fino a un totale di 6, vengono riempite con rametti piu'
-  // corti solo per dare volume al cespuglio.
+  // Costruisce UN tralcio di filo spinato: una curva elicoidale (piccola
+  // spirale) che avanza lungo l'asse X locale, poi ruotata/posizionata
+  // secondo l'angolo "ang" e lunghezza "len" richiesti. La spirale da'
+  // subito l'idea del filo ATTORCIGLIATO, molto piu' organica dei vecchi
+  // cilindri dritti; le spine coniche vengono infilate a intervalli
+  // regolari lungo la curva (non solo in punta), orientate verso
+  // l'esterno della spirale per sembrare "spuntare" dal filo intrecciato.
+  function buildBarbedTendril(len, thickness, coils, radius, spineEvery){
+    const segs = Math.max(16, Math.round(len*40));
+    const pts = [];
+    for (let i = 0; i <= segs; i++){
+      const t = i/segs;
+      const theta = t * Math.PI*2*coils;
+      // avanzamento lungo X con un piccolo affossamento verso il basso in
+      // punta (peso naturale del tralcio, come un rovo vero che pende)
+      const x = t*len;
+      const y = Math.sin(theta)*radius - t*t*len*0.10;
+      const z = Math.cos(theta)*radius;
+      pts.push(new THREE.Vector3(x, y, z));
+    }
+    const curve = new THREE.CatmullRomCurve3(pts);
+    const tubeGeo = new THREE.TubeGeometry(curve, segs, thickness, 5, false);
+    const tendrilMat = new THREE.MeshStandardMaterial({ color: hex, roughness:0.75 });
+    const tendril = new THREE.Mesh(tubeGeo, tendrilMat);
+
+    // Spine coniche distribuite lungo il tralcio: per ognuna si calcola
+    // punto e tangente della curva, cosi' la spina "spunta" perpendicolare
+    // al filo nel punto esatto in cui e' infilata, proprio come le punte
+    // del filo spinato reale.
+    const spineMat = new THREE.MeshStandardMaterial({ color: 0xe8e8e2 });
+    const spines = [];
+    const nSpines = Math.max(2, Math.round(len/spineEvery));
+    for (let s = 0; s < nSpines; s++){
+      const t = (s+0.5)/nSpines;
+      const p = curve.getPointAt(Math.min(0.999, t));
+      const tangent = curve.getTangentAt(Math.min(0.999, t)).normalize();
+      // vettore radiale approssimato (perpendicolare alla tangente, nel
+      // piano locale della spirale) per far puntare la spina verso fuori.
+      const radial = new THREE.Vector3(0, Math.sin(t*Math.PI*2*coils), Math.cos(t*Math.PI*2*coils)).normalize();
+      const spine = new THREE.Mesh(new THREE.ConeGeometry(thickness*1.5, thickness*7, 5), spineMat);
+      spine.position.copy(p);
+      spine.lookAt(p.clone().add(radial));
+      spine.rotateX(Math.PI/2);
+      spines.push(spine);
+      tendril.add(spine);
+    }
+    return { tendril, spines };
+  }
+
+  // Rami di filo spinato: uno per ogni direzione di collegamento (verso il
+  // "genitore" e/o verso vicini gia' cresciuti), piu' lunghi e con meno
+  // avvolgimenti (piu' "tesi" verso il vicino), piu' fino a un totale di 6
+  // riempiti nelle direzioni libere per dare volume al groviglio, corti e
+  // con piu' avvolgimenti (piu' "arricciati", da cespuglio compatto).
   const NBRANCHES = 6;
   const TAU = Math.PI*2;
   const usedAngles = linkDirs.map(d => Math.atan2(d.dz, d.dx));
   const angles = usedAngles.slice();
   for (let k = angles.length; k < NBRANCHES; k++){
-    // riempie gli spazi vuoti distribuendo gli angoli restanti, con un
-    // piccolo jitter deterministico per non sembrare troppo regolare.
     const ang = (k/NBRANCHES) * TAU + ((k*53)%17)/17 * 0.6;
     angles.push(ang);
   }
 
   const branches = [];
-  const branchMat = new THREE.MeshStandardMaterial({ color: hex });
-  const spineMat = new THREE.MeshStandardMaterial({ color: 0xe8e8e2 });
   angles.forEach((ang, k) => {
     const isLink = k < usedAngles.length;
-    // rami di collegamento: piu' lunghi (arrivano oltre il bordo cella
-    // verso il vicino) e leggermente piu' alti, per fondersi con l'altra
-    // casella dell'arbusto; rami di riempimento: corti come prima.
     const len = isLink
       ? CELL * (0.62 + 0.16*((k*53)%17)/17)
       : CELL * (0.30 + 0.16*((k*53)%17)/17);
-    const tilt = isLink ? -0.32 : -0.5; // rami di collegamento piu' "tesi", meno spioventi
-    const branch = new THREE.Mesh(new THREE.CylinderGeometry(isLink?0.018:0.014, isLink?0.036:0.03, len, 5), branchMat);
-    branch.position.set(Math.cos(ang)*len/2, len*0.30, Math.sin(ang)*len/2);
-    branch.rotation.z = Math.PI/2 - ang;
-    branch.rotation.x = tilt;
-    g.add(branch);
-    const spine = new THREE.Mesh(new THREE.ConeGeometry(isLink?0.024:0.02, isLink?0.1:0.09, 5), spineMat);
-    spine.position.set(Math.cos(ang)*len, len*0.54, Math.sin(ang)*len);
-    spine.rotation.z = Math.PI/2 - ang;
-    g.add(spine);
-    branches.push({ branch, spine, ang });
+    const tilt = isLink ? -0.20 : -0.34; // tralci di collegamento piu' tesi, meno spioventi
+    const coils = isLink ? 2.4 : 3.6;    // tralci corti piu' arricciati, quelli lunghi piu' distesi
+    const radius = isLink ? 0.05 : 0.045;
+    const { tendril } = buildBarbedTendril(len, isLink?0.016:0.013, coils, radius, 0.14);
+
+    const branchGroup = new THREE.Group();
+    branchGroup.add(tendril);
+    branchGroup.rotation.y = -ang;
+    branchGroup.rotation.x = tilt;
+    branchGroup.position.y = len*0.22;
+    g.add(branchGroup);
+    branches.push({ branch: branchGroup, spine: branchGroup, ang }); // "spine" punta allo stesso gruppo: l'animazione di sway in animate() muove branch+spine insieme, qui basta un solo oggetto
   });
 
   // Nocciolo centrale.
@@ -1253,7 +1329,11 @@ function makeBushCellMesh(hex, linkDirs){
 // esemplare, poi solo scalato/ruotato leggermente per un lieve ondeggiare.
 function makeMushroomMesh(hex, mega, seedVal, twin){
   const g = new THREE.Group();
-  const s = mega ? 1.9 : 1;
+  // "mega": scala aumentata a ~4.0 (non 1.9) cosi' il fungo madre
+  // trasformato raggiunge la stessa altezza della cima della Tesla
+  // (TESLA_TOP_Y = WALL_TOTAL_H + 1.1 = 3.1), come richiesto: prima era
+  // solo "piu' grande del normale" (1.9x) ma restava sotto ai muri.
+  const s = mega ? 4.0 : 1;
   seedVal = seedVal || 0;
   // PRNG deterministico piccolo (mulberry32-style) per variare ogni fungo
   // in modo stabile senza dipendere da Math.random().
@@ -1391,6 +1471,293 @@ function makeMushroomMesh(hex, mega, seedVal, twin){
   }
 
   g.userData = { caps, stems, magRings, mega: !!mega };
+  return g;
+}
+
+/* ---- bonus 3600 punti: golem spaccapietra — creatura di roccia GROSSA
+   (circa 1.6 volte un giocatore, come nella 2D), costruita a blocchi
+   irregolari invece della sagoma piatta a bezier della 2D: un corpo
+   principale scolpito da poligoni low-poly leggermente deformati (ogni
+   vertice spostato di un piccolo offset deterministico), spalle/pugni
+   sporgenti separati, e due occhi a fessura nel colore del proprietario
+   che si accendono solo da sveglio (stessa idea della 2D). Le macchie
+   del colore proprietario sulla 2D diventano qui vene minerali
+   luminescenti incise nella roccia. Costruito una sola volta per id,
+   poi solo traslato/ruotato leggendo lo stato ad ogni frame (vedi
+   animate()), coerente con lo schema {group,x,z,targetX,targetZ} gia'
+   usato per pet/missili in questa 3D. ---- */
+function deformGeometry(geo, amount, seedBase){
+  // Deforma leggermente ogni vertice di una BoxGeometry/SphereGeometry con
+  // un piccolo rumore deterministico (seedBase), per rompere la perfezione
+  // geometrica e dare un aspetto "scolpito a mano" tipico della roccia,
+  // senza dipendere da librerie esterne di noise.
+  const pos = geo.attributes.position;
+  for (let i = 0; i < pos.count; i++){
+    const seed = seedBase + i * 37.13;
+    const nx = Math.sin(seed) * 43758.5453 % 1;
+    const ny = Math.sin(seed * 1.7 + 11) * 43758.5453 % 1;
+    const nz = Math.sin(seed * 2.3 + 23) * 43758.5453 % 1;
+    pos.setX(i, pos.getX(i) + (nx - 0.5) * amount);
+    pos.setY(i, pos.getY(i) + (ny - 0.5) * amount);
+    pos.setZ(i, pos.getZ(i) + (nz - 0.5) * amount);
+  }
+  geo.computeVertexNormals();
+  return geo;
+}
+function makeGolemMesh(colorHex){
+  const g = new THREE.Group();
+  const S = 1.6; // il golem e' GROSSO: ~1.6 caselle, stessa proporzione della 2D
+  const ROCK = 0x7c7f86, ROCK_DARK = 0x4a4d53, ROCK_LIGHT = 0x9a9da4;
+
+  // Alone/ombra a terra, stesso linguaggio degli altri gadget piazzabili.
+  const halo = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.42*S, 0.42*S, 0.02, 18),
+    new THREE.MeshBasicMaterial({ color: colorHex, transparent:true, opacity:0.15 })
+  );
+  halo.position.y = 0.01;
+  g.add(halo);
+  const shadow = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.34*S, 0.34*S, 0.02, 18),
+    new THREE.MeshBasicMaterial({ color:0x000000, transparent:true, opacity:0.32 })
+  );
+  shadow.position.y = 0.015;
+  g.add(shadow);
+
+  // Sotto-gruppo "corpo": tutto cio' che deve dondolare/muoversi durante la
+  // camminata (bob verticale) vive qui, MAI l'alone/ombra a terra.
+  const body = new THREE.Group();
+  g.add(body);
+
+  const rockMat = new THREE.MeshStandardMaterial({ color: ROCK, roughness:0.95, flatShading:true });
+  const rockDarkMat = new THREE.MeshStandardMaterial({ color: ROCK_DARK, roughness:0.95, flatShading:true });
+
+  // Busto-testa fuso: un unico blocco scolpito (icosaedro deformato,
+  // schiacciato in altezza) che fa da torace E testa insieme, come nella
+  // statuetta di riferimento della 2D dove la sagoma e' un unico pezzo.
+  const torsoGeo = deformGeometry(new THREE.IcosahedronGeometry(0.30*S, 1), 0.05*S, 1.234);
+  torsoGeo.scale(1, 1.35, 0.85);
+  const torso = new THREE.Mesh(torsoGeo, rockMat);
+  torso.position.y = 0.58*S;
+  body.add(torso);
+
+  // Spalle: due blocchi tozzi ai lati del busto, leggermente sporgenti.
+  const shoulderGeo = deformGeometry(new THREE.BoxGeometry(0.22*S, 0.18*S, 0.24*S), 0.04*S, 5.5);
+  [-1, 1].forEach(side => {
+    const sh = new THREE.Mesh(shoulderGeo.clone(), rockMat);
+    sh.position.set(side * 0.28*S, 0.50*S, 0);
+    sh.rotation.z = side * 0.12;
+    body.add(sh);
+  });
+
+  // Braccia + pugni: cilindri esagonali tozzi con un pugno-cubo deformato
+  // in fondo, sospesi ai lati come nella statuetta (braccia corte e grosse).
+  const armGeo = new THREE.CylinderGeometry(0.075*S, 0.09*S, 0.30*S, 7);
+  const fistGeo = deformGeometry(new THREE.BoxGeometry(0.16*S, 0.16*S, 0.16*S), 0.03*S, 9.1);
+  const arms = [];
+  [-1, 1].forEach(side => {
+    const arm = new THREE.Mesh(armGeo, rockDarkMat);
+    arm.position.set(side * 0.36*S, 0.34*S, 0);
+    arm.rotation.z = side * 0.22;
+    body.add(arm);
+    const fist = new THREE.Mesh(fistGeo.clone(), rockMat);
+    fist.position.set(side * 0.40*S, 0.18*S, 0);
+    body.add(fist);
+    arms.push(arm);
+  });
+
+  // Gambe: due tronchi tozzi con la caratteristica "V" scavata al centro
+  // (spaziatura variabile in animate() per il ciclo del passo).
+  const legGeo = new THREE.CylinderGeometry(0.10*S, 0.13*S, 0.26*S, 7);
+  const legL = new THREE.Mesh(legGeo, rockDarkMat);
+  legL.position.set(-0.12*S, 0.13*S, 0);
+  body.add(legL);
+  const legR = new THREE.Mesh(legGeo.clone(), rockDarkMat);
+  legR.position.set(0.12*S, 0.13*S, 0);
+  body.add(legR);
+
+  // Crepa verticale sottile sul busto (una striscia scura incisa),
+  // stessa idea decorativa della 2D.
+  const crack = new THREE.Mesh(
+    new THREE.BoxGeometry(0.015*S, 0.32*S, 0.02*S),
+    new THREE.MeshBasicMaterial({ color: 0x14161a })
+  );
+  crack.position.set(0.01*S, 0.58*S, 0.24*S);
+  body.add(crack);
+
+  // Vene minerali luminescenti nel colore del proprietario, incise sul
+  // busto: la controparte 3D delle "macchie" semitrasparenti della 2D,
+  // qui rese come sottili tratti emissivi che si notano anche da lontano.
+  const veinMat = new THREE.MeshStandardMaterial({ color: colorHex, emissive: colorHex, emissiveIntensity: 0.5, roughness:0.6 });
+  const veinPositions = [
+    [-0.14, 0.68, 0.20, 0.3], [0.16, 0.64, 0.19, -0.4], [0.0, 0.48, 0.22, 0.1],
+    [-0.08, 0.36, 0.20, 0.5], [0.10, 0.34, 0.20, -0.2],
+  ];
+  veinPositions.forEach(v => {
+    const vein = new THREE.Mesh(new THREE.BoxGeometry(0.03*S, 0.09*S, 0.008*S), veinMat);
+    vein.position.set(v[0]*S, v[1]*S, v[2]*S);
+    vein.rotation.z = v[3];
+    body.add(vein);
+  });
+
+  // Occhi a fessura: spente/sottilissime da addormentato, luminose nel
+  // colore del proprietario da sveglio (stessa logica della 2D).
+  const eyeGeoAwake = new THREE.BoxGeometry(0.05*S, 0.028*S, 0.02*S);
+  const eyeGeoAsleep = new THREE.BoxGeometry(0.045*S, 0.006*S, 0.02*S);
+  const eyeMatAwake = new THREE.MeshStandardMaterial({ color: colorHex, emissive: colorHex, emissiveIntensity: 1.1 });
+  const eyeMatAsleep = new THREE.MeshBasicMaterial({ color: 0x14161a });
+  const eyes = [];
+  [-1, 1].forEach(side => {
+    const eye = new THREE.Mesh(eyeGeoAsleep.clone(), eyeMatAsleep);
+    eye.position.set(side * 0.10*S, 0.66*S, 0.23*S);
+    body.add(eye);
+    eyes.push(eye);
+  });
+
+  // "Zzz" fluttuante mentre dorme: tre piccoli cubi luminosi impilati in
+  // diagonale, controparte 3D della lettera "z" della 2D (i font non
+  // renderizzano bene in una scena three.js senza librerie extra).
+  const zzzGroup = new THREE.Group();
+  const zzzMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent:true, opacity:0.85 });
+  for (let i = 0; i < 3; i++){
+    const cube = new THREE.Mesh(new THREE.BoxGeometry(0.05*S*(1-i*0.15), 0.05*S*(1-i*0.15), 0.02), zzzMat.clone());
+    cube.position.set(0.30*S + i*0.05*S, 0.85*S + i*0.10*S, 0.10*S);
+    zzzGroup.add(cube);
+  }
+  body.add(zzzGroup);
+
+  // Lampo bianco (colpo incassato): sfera semitrasparente attorno al
+  // corpo, mostrata/nascosta in animate() leggendo golemHitFlashes.
+  const hitFlash = new THREE.Mesh(
+    new THREE.SphereGeometry(0.44*S, 12, 8),
+    new THREE.MeshBasicMaterial({ color: 0xffffff, transparent:true, opacity:0, depthWrite:false })
+  );
+  hitFlash.position.y = 0.5*S;
+  body.add(hitFlash);
+
+  // Barra vita sopra la testa, sempre rivolta verso la camera (sprite),
+  // stessa lettura a colpo d'occhio della 2D.
+  const hpBar = makeGolemHpBarSprite();
+  hpBar.position.y = 1.05*S;
+  g.add(hpBar); // FUORI da "body": non deve dondolare con la camminata
+
+  g.userData = {
+    body, torso, arms, legL, legR, eyes, eyeGeoAwake, eyeGeoAsleep, eyeMatAwake, eyeMatAsleep,
+    zzzGroup, hitFlash, halo, hpBar, awake: false, facing: 1, walkPhase: 0,
+  };
+  return g;
+}
+
+/* ---- bonus 4000 punti: attacco aereo — velivolo militare stilizzato nel
+   colore del proprietario, con lo stesso teschio bianco rifinito gia'
+   usato su bombolone/mongolfiera/muro di spunzoni (coerenza visiva fra
+   tutti i gadget "letali"), qui dipinto sul muso della fusoliera. Vola
+   sopra la fila bersaglio sganciando bombe cilindriche che cadono verso
+   il basso, lasciando un tappeto di esplosioni sul terreno appena
+   sorvolato (gestito interamente nel render loop, vedi animate()). ---- */
+function makeAirstrikeMesh(colorHex){
+  const g = new THREE.Group();
+  const body = new THREE.Group();
+  g.add(body);
+
+  const hullMat = new THREE.MeshStandardMaterial({ color: colorHex, roughness:0.4, metalness:0.35 });
+  const hullDarkMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(colorHex).offsetHSL(0,0,-0.28), roughness:0.5 });
+
+  // Fusoliera: capsula allungata (cilindro con estremita' arrotondate),
+  // orientata lungo l'asse X (l'aereo "vola verso destra" come nella 2D,
+  // ma qui l'orientamento viene applicato dal chiamante in base al verso).
+  const fuselage = new THREE.Mesh(new THREE.CapsuleGeometry(0.11, 0.42, 4, 10), hullMat);
+  fuselage.rotation.z = Math.PI / 2;
+  body.add(fuselage);
+
+  // Muso a cono, leggermente piu' scuro.
+  const nose = new THREE.Mesh(new THREE.ConeGeometry(0.10, 0.16, 10), hullDarkMat);
+  nose.rotation.z = -Math.PI / 2;
+  nose.position.x = 0.32;
+  body.add(nose);
+
+  // Ali: due lame sottili che sporgono ai lati, leggermente inclinate
+  // all'indietro come un caccia.
+  const wingGeo = new THREE.BoxGeometry(0.20, 0.02, 0.42);
+  [-1, 1].forEach(side => {
+    const wing = new THREE.Mesh(wingGeo, hullDarkMat);
+    wing.position.set(-0.02, 0, side * 0.22);
+    wing.rotation.y = side * 0.18;
+    body.add(wing);
+  });
+  // Coda a pinna verticale.
+  const tailFin = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.16, 0.02), hullDarkMat);
+  tailFin.position.set(-0.26, 0.09, 0);
+  body.add(tailFin);
+
+  // Teschio bianco rifinito sul muso, stesso schema di bombolone/mongolfiera.
+  const skull = new THREE.Group();
+  const skullMat = new THREE.MeshBasicMaterial({ color: 0xf2f2f0 });
+  const skullDarkMat = new THREE.MeshBasicMaterial({ color: 0x1a1a1a });
+  const cranium = new THREE.Mesh(new THREE.CircleGeometry(0.075, 14), skullMat);
+  skull.add(cranium);
+  [-0.028, 0.028].forEach(dx => {
+    const socket = new THREE.Mesh(new THREE.CircleGeometry(0.020, 8), skullDarkMat);
+    socket.position.set(dx, 0.012, 0.001);
+    skull.add(socket);
+  });
+  const jaw = new THREE.Mesh(new THREE.CircleGeometry(0.045, 10, Math.PI, Math.PI), skullMat);
+  jaw.position.set(0, -0.038, 0.0005);
+  skull.add(jaw);
+  skull.position.set(0.13, 0.005, 0.112);
+  skull.rotation.y = -Math.PI / 2;
+  body.add(skull);
+
+  // Scia di condensa dietro la coda: nastro semitrasparente allungato,
+  // opacita' animata in animate() in base alla velocita' apparente.
+  const trail = new THREE.Mesh(
+    new THREE.PlaneGeometry(0.55, 0.03),
+    new THREE.MeshBasicMaterial({ color:0xdfe7ea, transparent:true, opacity:0.22, side: THREE.DoubleSide })
+  );
+  trail.position.x = -0.55;
+  body.add(trail);
+
+  // Luce lampeggiante di coda (anticollisione), piccolo dettaglio che
+  // pulsa rosso/bianco per dare vita al modello.
+  const beacon = new THREE.Mesh(
+    new THREE.SphereGeometry(0.02, 6, 6),
+    new THREE.MeshBasicMaterial({ color: 0xff3b3b })
+  );
+  beacon.position.set(-0.24, 0.02, 0);
+  body.add(beacon);
+
+  g.userData = { body, trail, beacon, fuselage };
+  return g;
+}
+
+// Costruisce il reticolo di mira per la riga "row" (indice di griglia).
+// Fascia semitrasparente nel colore del giocatore lungo tutta la fila,
+// blocco pieno sul lato sinistro (il "muro" da cui parte l'attacco, come
+// nella 2D) con una piccola freccia bianca che indica il verso di volo.
+function makeAirstrikeReticle(colorHex, row){
+  const g = new THREE.Group();
+  const y = row*CELL + CELL/2;
+  const stripe = new THREE.Mesh(
+    new THREE.PlaneGeometry(mazeW*CELL, CELL*0.94),
+    new THREE.MeshBasicMaterial({ color: colorHex, transparent:true, opacity:0.10, side: THREE.DoubleSide })
+  );
+  stripe.rotation.x = -Math.PI/2;
+  stripe.position.set(mazeW*CELL/2, 0.03, y);
+  g.add(stripe);
+
+  const marker = new THREE.Mesh(
+    new THREE.BoxGeometry(CELL*0.9, 0.5, CELL*0.9),
+    new THREE.MeshStandardMaterial({ color: colorHex, emissive: colorHex, emissiveIntensity:0.5, transparent:true, opacity:0.85 })
+  );
+  marker.position.set(CELL/2, 0.25, y);
+  g.add(marker);
+
+  const arrowShape = new THREE.Shape();
+  arrowShape.moveTo(-0.08, 0.10); arrowShape.lineTo(0.10, 0); arrowShape.lineTo(-0.08, -0.10); arrowShape.closePath();
+  const arrow = new THREE.Mesh(new THREE.ShapeGeometry(arrowShape), new THREE.MeshBasicMaterial({ color:0xffffff }));
+  arrow.rotation.x = -Math.PI/2;
+  arrow.position.set(CELL*1.1, 0.52, y);
+  g.add(arrow);
+
   return g;
 }
 // d'azione, con crepe che si irradiano dal centro e si allungano man mano
@@ -2229,6 +2596,60 @@ function makeLevelUpSprite(){
   return sprite;
 }
 
+// Sprite canvas riusabile per la barra vita del golem spaccapietra
+// (bonus 3600 punti): disegna una barra verde/giallo/rosso in base alla
+// frazione di vita, con le tacche dei colpi e il numero corrente, stessa
+// lettura a colpo d'occhio della barra 2D. Ridisegnata solo quando l'HP
+// cambia (vedi animate()), non ad ogni frame.
+function makeGolemHpBarSprite(){
+  const canvas = document.createElement("canvas");
+  canvas.width = 200; canvas.height = 40;
+  const tex = new THREE.CanvasTexture(canvas);
+  const mat = new THREE.SpriteMaterial({ map: tex, transparent:true, depthTest:false });
+  const sprite = new THREE.Sprite(mat);
+  sprite.scale.set(0.62, 0.124, 1);
+  sprite.userData.canvas = canvas;
+  sprite.userData.tex = tex;
+  sprite.userData.lastHp = null;
+  return sprite;
+}
+function updateGolemHpBarSprite(sprite, hp, maxHp){
+  if (sprite.userData.lastHp === hp) return;
+  sprite.userData.lastHp = hp;
+  const canvas = sprite.userData.canvas;
+  const c = canvas.getContext("2d");
+  c.clearRect(0, 0, canvas.width, canvas.height);
+  const frac = Math.max(0, Math.min(1, hp / (maxHp || 100)));
+  const bw = 180, bh = 14, bx = 10, by = 4;
+  c.fillStyle = "rgba(0,0,0,0.75)";
+  c.fillRect(bx-2, by-2, bw+4, bh+4);
+  c.fillStyle = frac > 0.5 ? "#4dff6a" : (frac > 0.25 ? "#ffd400" : "#ff4d5e");
+  c.fillRect(bx, by, bw*frac, bh);
+  c.strokeStyle = "rgba(0,0,0,0.6)";
+  c.lineWidth = 1;
+  const mh = maxHp || 100;
+  // Tacca per ogni colpo solo se sono poche (<=20): con 100 PV le tacche
+  // singole sarebbero fittissime e illeggibili, quindi sopra quella
+  // soglia si mostra una barra liscia continua (piu' leggibile per vite
+  // alte) con solo qualche tacca ogni 10% per dare comunque un riferimento.
+  if (mh <= 20){
+    for (let i = 1; i < mh; i++){
+      const tx = bx + (bw*i)/mh;
+      c.beginPath(); c.moveTo(tx, by); c.lineTo(tx, by+bh); c.stroke();
+    }
+  } else {
+    for (let i = 1; i < 10; i++){
+      const tx = bx + (bw*i)/10;
+      c.beginPath(); c.moveTo(tx, by); c.lineTo(tx, by+bh); c.stroke();
+    }
+  }
+  c.fillStyle = "#fff";
+  c.font = "16px monospace";
+  c.textAlign = "left";
+  c.fillText(hp + "/" + mh, bx, by+bh+18);
+  sprite.userData.tex.needsUpdate = true;
+}
+
 /* ---- bonus 600 punti: torretta automatica permanente — stessa idea
    della versione 2D (drawTurrets: piastra ottagonale con canna rotante
    e nucleo pulsante), qui come un piccolo "cannoncino" fisso a terra.
@@ -2951,29 +3372,36 @@ function makeBlobMesh(colorHex){
   return g;
 }
 
-/* ---- bonus 2200 punti: muro di spunzoni — grafica rifatta in coerenza
-   con la "famiglia" visiva degli altri gadget (fasce metalliche a
-   rivetti, nucleo interno luminoso pulsante, doppio alone come la
-   mongolfiera, teschio rifinito con mascella) ma adattata a un blocco
-   con SPUNZONI ACUMINATI su tutti e quattro i lati. Alto ESATTAMENTE
-   quanto un muro normale della mappa (WALL_TOTAL_H, non il piu' basso
-   WALL_H usato prima per errore - i muri normali sono a cubetti
-   impilati e la loro altezza reale e' WALL_TOTAL_H), cosi' si confonde
-   bene col resto del labirinto pur restando riconoscibile dagli
-   spunzoni, dalle fasce e dal colore. E' PERMANENTE per tutto il round
-   (solo Tesla e fungo atomico lo abbattono, vedi spike_wall_expired):
-   qui il nucleo pulsa di continuo con un ritmo lento e costante (nessun
-   fusibile da leggere, a differenza del bombolone), giusto per dare
-   l'idea di una trappola "armata e vigile" invece di un blocco inerte. ---- */
+/* ---- bonus 2200 punti: muro di spunzoni — RIDISEGNATO prendendo spunto
+   DIRETTAMENTE dal bombolone (makeSuperbombMesh) invece del vecchio box
+   squadrato: corpo principale a icosaedro sferoidale "corazzato" (non
+   piu' un cubo con pannelli piatti), nucleo interno sferico luminoso che
+   pulsa (stessa idea del bombolone ma senza virare colore: qui non c'e'
+   un fusibile da leggere, il muro e' permanente), fasce metalliche
+   CURVE a rivetti che seguono la sfera invece delle vecchie bande
+   rettangolari sui 4 lati piatti, e un anello di faville statiche alla
+   base come nel bombolone. Gli SPUNZONI ora spuntano RADIALMENTE dal
+   corpo sferoidale (come vere punte che bucano fuori dal guscio
+   corazzato) invece di essere allineati perpendicolari ai 4 lati di un
+   box: stesso numero e medesima idea "3 punte + base conica per lato"
+   della versione precedente, ma distribuiti su una sfera. Resta alto
+   ESATTAMENTE quanto un muro normale della mappa (WALL_TOTAL_H, i muri
+   sono a cubetti impilati) allungando il corpo in verticale, cosi' si
+   confonde bene col resto del labirinto pur restando riconoscibile.
+   E' PERMANENTE per tutto il round (solo Tesla e fungo atomico lo
+   abbattono, vedi spike_wall_expired): qui il nucleo pulsa di continuo
+   con un ritmo lento e costante, giusto per dare l'idea di una trappola
+   "armata e vigile" invece di un blocco inerte. ---- */
 function makeSpikeWallMesh(colorHex){
   const g = new THREE.Group();
-  const colDark = new THREE.Color(colorHex).multiplyScalar(0.55).getHex();
-  const H = WALL_TOTAL_H; // altezza REALE di un muro normale della mappa (i muri sono a cubetti impilati, non WALL_H)
+  const H = WALL_TOTAL_H; // altezza REALE di un muro normale della mappa
   const HALF = CELL / 2 - 0.06; // leggero margine, come i muri "smussati" della 2D
+  const Rx = HALF * 0.92, Rz = HALF * 0.92; // raggio orizzontale del corpo sferoidale (resta dentro la cella)
+  const Ry = H * 0.46;                       // raggio verticale: il corpo allungato riempie l'altezza del muro
 
   // Doppio alone morbido a terra nel colore del proprietario, stessa
-  // idea della mongolfiera/bombolone (anello esterno piu' ampio + uno
-  // interno piu' intenso) invece del corpo che partiva nudo da terra.
+  // idea del bombolone (anello esterno piu' ampio + uno interno piu'
+  // intenso).
   const halo = new THREE.Mesh(
     new THREE.CylinderGeometry(HALF * 1.35, HALF * 1.35, 0.02, 16),
     new THREE.MeshBasicMaterial({ color: colorHex, transparent:true, opacity:0.14 })
@@ -2987,96 +3415,103 @@ function makeSpikeWallMesh(colorHex){
   haloInner.position.y = 0.012;
   g.add(haloInner);
 
-  // Corpo del blocco: superficie leggermente sfaccettata (piccoli bevel
-  // sugli spigoli verticali) invece di un box perfettamente liscio, per
-  // lo stesso effetto "corazzato" del bombolone.
+  // Corpo principale: icosaedro sferoidale (stesso linguaggio del
+  // bombolone: IcosahedronGeometry per una superficie sfaccettata
+  // "corazzata"), allungato in verticale per riempire l'altezza del
+  // muro invece di restare una sfera tonda come il bombolone.
   const body = new THREE.Mesh(
-    new THREE.BoxGeometry(HALF * 2, H, HALF * 2, 1, 3, 1),
+    new THREE.IcosahedronGeometry(1, 1),
     new THREE.MeshStandardMaterial({ color: colorHex, transparent:true, opacity:0.88, flatShading:true, roughness:0.55, metalness:0.3 })
   );
+  body.scale.set(Rx, Ry, Rz);
   body.position.y = H / 2;
   g.add(body);
 
-  // Nucleo interno luminoso, visibile attraverso una fessura verticale
-  // centrale su ciascuna faccia: pulsa lentamente e di continuo nel
-  // render loop (vedi animate()), stessa idea del bombolone ma senza
-  // virare colore (nessun fusibile qui: il muro e' permanente).
+  // Nucleo interno luminoso sferico (non piu' un box), visibile
+  // attraverso le fasce: pulsa lentamente e di continuo nel render loop
+  // (vedi animate()), stessa idea del bombolone ma senza virare colore.
   const core = new THREE.Mesh(
-    new THREE.BoxGeometry(HALF * 0.3, H * 0.7, HALF * 0.3),
+    new THREE.SphereGeometry(0.7, 12, 10),
     new THREE.MeshBasicMaterial({ color: colorHex, transparent:true, opacity:0.5 })
   );
+  core.scale.set(Rx, Ry, Rz);
   core.position.y = H / 2;
   g.add(core);
 
-  // Fasce metalliche orizzontali a rivetti (sostituiscono le vecchie
-  // semplici strisce piatte): un anello rettangolare leggermente
-  // sporgente a 3 altezze, con piccole borchie sferiche nel colore del
-  // proprietario, stesso schema del bombolone adattato a un blocco
-  // squadrato invece che sferico.
+  // Fasce metalliche CURVE a rivetti (sostituiscono le vecchie bande
+  // rettangolari sui 4 lati piatti): tori ellittici che avvolgono il
+  // corpo sferoidale a 3 altezze, con borchie sferiche nel colore del
+  // proprietario, stesso identico schema del bombolone.
   const bandMat = new THREE.MeshStandardMaterial({ color: 0x141416, roughness:0.4, metalness:0.6 });
   const rivetMat = new THREE.MeshStandardMaterial({ color: colorHex, roughness:0.3, metalness:0.5, emissive: colorHex, emissiveIntensity:0.25 });
-  [0.22, 0.5, 0.78].forEach(yFrac => {
-    const bandY = H * yFrac;
-    const bandPts = [
-      [-HALF, -HALF], [HALF, -HALF], [HALF, HALF], [-HALF, HALF],
-    ];
-    for (let i = 0; i < 4; i++){
-      const [x1, z1] = bandPts[i];
-      const [x2, z2] = bandPts[(i + 1) % 4];
-      const midX = (x1 + x2) / 2, midZ = (z1 + z2) / 2;
-      const len = Math.hypot(x2 - x1, z2 - z1);
-      const band = new THREE.Mesh(new THREE.BoxGeometry(len * 0.96, 0.05, 0.03), bandMat);
-      band.position.set(midX, bandY, midZ);
-      band.rotation.y = Math.atan2(x2 - x1, z2 - z1);
-      band.position.x += Math.sin(band.rotation.y + Math.PI/2) * 0.02;
-      band.position.z += Math.cos(band.rotation.y + Math.PI/2) * 0.02;
-      g.add(band);
-      const rivetCount = 3;
-      for (let r = 1; r <= rivetCount; r++){
-        const t = r / (rivetCount + 1);
-        const rivet = new THREE.Mesh(new THREE.SphereGeometry(0.025, 6, 6), rivetMat);
-        rivet.position.set(x1 + (x2 - x1) * t, bandY, z1 + (z2 - z1) * t);
-        g.add(rivet);
-      }
+  [-0.32, 0, 0.32].forEach(yFrac => {
+    const bandY = H/2 + yFrac * Ry;
+    const bandRadiusFactor = Math.sqrt(Math.max(0.0001, 1 - yFrac*yFrac)) * 1.04;
+    const band = new THREE.Mesh(
+      new THREE.TorusGeometry(1, 0.028, 6, 24),
+      bandMat
+    );
+    band.rotation.x = Math.PI / 2;
+    band.scale.set(Rx*bandRadiusFactor, Rz*bandRadiusFactor, 1);
+    band.position.y = bandY;
+    g.add(band);
+    const rivetCount = 10;
+    for (let i = 0; i < rivetCount; i++){
+      const ang = (i / rivetCount) * Math.PI * 2;
+      const rivet = new THREE.Mesh(new THREE.SphereGeometry(0.03, 6, 6), rivetMat);
+      rivet.position.set(Math.sin(ang) * Rx*bandRadiusFactor, bandY, Math.cos(ang) * Rz*bandRadiusFactor);
+      g.add(rivet);
     }
   });
-  // Strisce verticali piu' scure residue (mantiene un minimo di continuita'
-  // visiva col vecchio schema), piu' sottili di prima per non affollare.
-  const stripeMat = new THREE.MeshStandardMaterial({ color: colDark });
-  for (let i = -1; i <= 1; i++){
-    const stripe = new THREE.Mesh(new THREE.BoxGeometry(HALF * 0.16, H * 0.94, 0.025), stripeMat);
-    stripe.position.set(i * HALF * 0.5, H / 2, HALF - 0.015);
-    g.add(stripe);
-    const stripeBack = stripe.clone();
-    stripeBack.position.z = -(HALF - 0.015);
-    g.add(stripeBack);
+
+  // Anello di piccole faville/scintille sospese appena sopra la base,
+  // nel colore del proprietario, stessa idea del bombolone: danno
+  // l'idea di una trappola "viva" anche senza animazione dedicata.
+  const sparkMat = new THREE.MeshBasicMaterial({ color: colorHex });
+  const sparkCount = 10;
+  for (let i = 0; i < sparkCount; i++){
+    const ang = (i / sparkCount) * Math.PI * 2 + 0.3;
+    const spark = new THREE.Mesh(new THREE.SphereGeometry(0.02, 5, 5), sparkMat);
+    const rad = HALF * 1.15;
+    spark.position.set(Math.sin(ang) * rad, 0.05 + (i % 3) * 0.03, Math.cos(ang) * rad);
+    g.add(spark);
   }
 
-  // Spunzoni acuminati: 3 punte per lato con una piccola base conica
-  // rovesciata alla radice (invece di un cono singolo che spunta dal
-  // nulla), per un aggancio visivo piu' solido al blocco, coerente col
-  // livello di dettaglio del resto.
+  // Spunzoni acuminati: ora spuntano RADIALMENTE dal corpo sferoidale
+  // (come vere punte che bucano fuori dal guscio corazzato) invece di
+  // essere allineati perpendicolari ai 4 lati di un box. Distribuiti su
+  // 3 fasce d'altezza x 6 angoli attorno al corpo, con una piccola base
+  // conica rovesciata alla radice per un aggancio visivo solido.
   const spikeMat = new THREE.MeshStandardMaterial({ color: 0xcfcfd4, roughness:0.4, metalness:0.2 });
   const spikeBaseMat = new THREE.MeshStandardMaterial({ color: 0x8a8a90, roughness:0.5 });
-  const spikeLen = CELL * 0.22, spikeR = CELL * 0.075;
-  const spikeY = H * 0.55;
-  function addSpike(x, z, rotX, rotZ){
+  const spikeLen = CELL * 0.20, spikeR = CELL * 0.065;
+  function addRadialSpike(yFrac, angFrac){
+    const ang = angFrac * Math.PI * 2;
+    const yLocal = yFrac; // -1..1, frazione del raggio verticale
+    // Punto sulla superficie dell'ellissoide (normale radiale) da cui far
+    // spuntare la spina, cosi' appare "innestata" nel guscio invece che
+    // fluttuante.
+    const ringFactor = Math.sqrt(Math.max(0.0001, 1 - yLocal*yLocal));
+    const px = Math.sin(ang) * Rx * ringFactor;
+    const pz = Math.cos(ang) * Rz * ringFactor;
+    const py = H/2 + yLocal * Ry;
+    // direzione radiale approssimata (normalizzata) per orientare la spina
+    const dir = new THREE.Vector3(px, (yLocal*Ry)*0.5, pz).normalize();
+
     const base = new THREE.Mesh(new THREE.CylinderGeometry(spikeR * 1.3, spikeR * 1.6, spikeR * 0.6, 8), spikeBaseMat);
-    base.rotation.x = rotX; base.rotation.z = rotZ;
-    base.position.set(x, spikeY, z);
+    base.position.set(px, py, pz);
+    base.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0), dir);
     g.add(base);
     const spike = new THREE.Mesh(new THREE.ConeGeometry(spikeR, spikeLen, 6), spikeMat);
-    spike.rotation.x = rotX; spike.rotation.z = rotZ;
-    spike.position.set(x, spikeY, z);
+    spike.position.set(px + dir.x*spikeLen*0.35, py + dir.y*spikeLen*0.35, pz + dir.z*spikeLen*0.35);
+    spike.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0), dir);
     g.add(spike);
   }
-  for (let i = 0; i < 3; i++){
-    const off = (i - 1) * (CELL * 0.33);
-    addSpike(off, HALF + spikeLen / 2, Math.PI / 2, 0);
-    addSpike(off, -(HALF + spikeLen / 2), -Math.PI / 2, 0);
-    addSpike(HALF + spikeLen / 2, off, 0, -Math.PI / 2);
-    addSpike(-(HALF + spikeLen / 2), off, 0, Math.PI / 2);
-  }
+  [-0.55, 0, 0.55].forEach(yFrac => {
+    for (let i = 0; i < 6; i++){
+      addRadialSpike(yFrac, (i + (yFrac===0?0.5:0)) / 6);
+    }
+  });
 
   // Teschio bianco rifinito al centro del blocco (orbite incavate con
   // pupille + mascella separata, stesso schema del bombolone), su
@@ -3112,10 +3547,10 @@ function makeSpikeWallMesh(colorHex){
     return skull;
   }
   const skullFront = makeSkull();
-  skullFront.position.set(0, H * 0.5, HALF + 0.005);
+  skullFront.position.set(0, H * 0.5, Rz + 0.03);
   g.add(skullFront);
   const skullBack = makeSkull();
-  skullBack.position.set(0, H * 0.5, -(HALF + 0.005));
+  skullBack.position.set(0, H * 0.5, -(Rz + 0.03));
   skullBack.rotation.y = Math.PI;
   g.add(skullBack);
 
@@ -3704,6 +4139,9 @@ document.addEventListener("mousedown", e => {
   if (myState.mushroom && !myState.mushroom_placed){ placeMineChainStep(); return; }
   if (myState.occult_tesla && !myState.occult_tesla_used){ placeMineChainStep(); return; }
   if (myState.potion && !myState.potion_used){ placeMineChainStep(); return; }
+  if (myState.golem && !myState.golem_placed){ placeMineChainStep(); return; }
+  if (myState.mega_mushroom && !myState.mega_mushroom_used){ placeMineChainStep(); return; }
+  if (myState.airstrike && !myState.airstrike_used){ placeMineChainStep(); return; }
   // Tasto "3": missile guidato, solo se ne restano.
   if (myState.missile && myState.missiles_left > 0){ fireMissile(); return; }
   // Tasto "5": torretta, solo se non ancora piazzata.
@@ -3916,6 +4354,22 @@ function onState(msg){
         // iniziare, quindi il testo resta lo stesso finche' non arriva
         // l'evento "potion_throw" (msg.potion_used diventa true).
         hudMines.textContent = "pozione terremoto: premi 1 per mirare/lanciare (5 caselle, anche oltre i muri)";
+        hudMines.classList.remove("hidden");
+      } else if (p.golem && !p.golem_placed){
+        // Bonus 3600 punti: golem spaccapietra.
+        hudMines.textContent = "golem spaccapietra: premi 1 per piazzarlo";
+        hudMines.classList.remove("hidden");
+      } else if (p.mega_mushroom && !p.mega_mushroom_used){
+        // Bonus 3800 punti: trasformazione del fungo madre. Serve solo se
+        // il fungo atomico normale e' ancora vivo (controllo lato server).
+        hudMines.textContent = "fungo madre: premi 1 per trasformarlo (deve essere ancora vivo)";
+        hudMines.classList.remove("hidden");
+      } else if (p.airstrike && !p.airstrike_used){
+        // Bonus 4000 punti: attacco aereo, due fasi (mira poi lancio)
+        // sotto la stessa pressione del tasto "1", come la pozione.
+        hudMines.textContent = p.airstrike_aiming
+          ? "attacco aereo: frecce SU/GI\u00d9 per scegliere la fila \u00b7 ripremi 1 per lanciare"
+          : "attacco aereo: premi 1 per mirare";
         hudMines.classList.remove("hidden");
       } else {
         hudMines.classList.add("hidden");
@@ -4422,6 +4876,69 @@ function onState(msg){
   Object.keys(quakeMeshes).forEach(id => {
     if (!seenQuakes.has(id)){ scene.remove(quakeMeshes[id]); delete quakeMeshes[id]; }
   });
+
+  // bonus 3600 punti: golem spaccapietra. Si muove come un pet/missile
+  // (x/y continui dal server), quindi stesso schema {group,x,z,targetX,
+  // targetZ} gia' collaudato altrove: qui si crea la mesh la prima volta
+  // e si aggiornano solo bersaglio di interpolazione, stato sveglio/
+  // addormentato, vita e secondi al risveglio.
+  const seenGolems = new Set();
+  (msg.golems||[]).forEach(gm => {
+    seenGolems.add(gm.id);
+    const wx = gm.x*CELL + CELL/2, wz = gm.y*CELL + CELL/2;
+    let entry = golemMeshes[gm.id];
+    if (!entry){
+      const hex = playerColorHex[gm.owner] !== undefined ? playerColorHex[gm.owner] : 0x9be7ff;
+      const group = makeGolemMesh(hex);
+      group.position.set(wx, 0, wz);
+      scene.add(group);
+      entry = golemMeshes[gm.id] = { group, x:wx, z:wz, targetX:wx, targetZ:wz };
+    }
+    entry.targetX = wx; entry.targetZ = wz;
+    entry.group.userData.awake = !!gm.awake;
+    entry.group.userData.hp = (typeof gm.hp === "number") ? gm.hp : 15;
+    entry.group.userData.maxHp = gm.max_hp || 100;
+    entry.group.userData.wakeLeft = gm.wake_left;
+  });
+  Object.keys(golemMeshes).forEach(id => {
+    if (!seenGolems.has(id)){ scene.remove(golemMeshes[id].group); delete golemMeshes[id]; }
+  });
+
+  // bonus 4000 punti: attacchi aerei in volo. PUBBLICI come nella 2D
+  // (currSnapshot.airstrikes): niente evento fire/end dedicato, la mesh
+  // viene ricreata/aggiornata leggendo msg.airstrikes ad ogni state. La
+  // 2D non identifica MAI i singoli aerei per id (li ridisegna tutti ogni
+  // frame senza distinguerli): qui si usa un id stabile se il server lo
+  // manda (a.id), altrimenti si ricade sull'INDICE nell'array, esatta
+  // controparte del comportamento 2D (un solo aereo attivo alla volta e'
+  // il caso comune, ma questo schema regge comunque anche con piu' aerei
+  // in parallelo finche' l'ordine dell'array resta stabile fra due state
+  // consecutivi, cosa gia' garantita per gli altri array "pubblici" dello
+  // stesso server, es. msg.bombs).
+  const seenAirstrikes = new Set();
+  (msg.airstrikes||[]).forEach((a, idx) => {
+    const key = (a.id !== undefined && a.id !== null) ? a.id : ("idx" + idx);
+    seenAirstrikes.add(key);
+    const wx = a.x*CELL + CELL/2, wz = a.y*CELL + CELL/2;
+    let g = airstrikeMeshes[key];
+    if (!g){
+      const hex = playerColorHex[a.owner] !== undefined ? playerColorHex[a.owner] : 0x9be7ff;
+      g = makeAirstrikeMesh(hex);
+      scene.add(g);
+      airstrikeMeshes[key] = g;
+    }
+    // Vola verso destra (x crescente), stessa convenzione della 2D: se il
+    // server manda un'altra direzione basta specchiare qui in futuro.
+    g.position.set(wx, ALTITUDE_AIRSTRIKE, wz);
+  });
+  Object.keys(airstrikeMeshes).forEach(key => {
+    if (!seenAirstrikes.has(key)){
+      const g = airstrikeMeshes[key];
+      if (g.userData.bombDrop) scene.remove(g.userData.bombDrop);
+      scene.remove(g);
+      delete airstrikeMeshes[key];
+    }
+  });
 }
 
 function onGameEvent(msg){
@@ -4497,10 +5014,84 @@ function onGameEvent(msg){
         bush: "ARBUSTO SPINOSO SBLOCCATO! premi 1 (a fine catena) per piantarlo \u00b7 uccide al contatto e cresce di una casella al minuto, SOLO negli spazi liberi (mai dentro i muri) \u00b7 lo distruggono solo bombolone, mongolfiera e scudo",
         mushroom: "FUNGO ATOMICO SBLOCCATO! premi 1 (a fine catena) per piazzarlo \u00b7 nascosto come una mina (visibile solo da 3 caselle) \u00b7 se calpestato distrugge TUTTO in un raggio di 8 caselle",
         potion: "POZIONE TERREMOTO SBLOCCATA! premi 1 (a fine catena) per mirare \u00b7 ripremi 1 per lanciarla a 5 caselle, anche oltre i muri \u00b7 terremoto raggio 8 caselle per 5 secondi: rallenta i giocatori del 50% e distrugge OGNI struttura nemica nel cerchio",
+        golem: "GOLEM SPACCAPIETRA SBLOCCATO! premi 1 (a fine catena) per piazzarlo \u00b7 dorme 30 secondi, poi vaga divorando ogni gadget avversario \u00b7 100 colpi per abbatterlo \u00b7 non uccide i giocatori ma li blocca come un muro",
+        mega_mushroom: "FUNGO MADRE MAGNETICO SBLOCCATO! premi 1 (a fine catena) per trasformare il fungo madre, se \u00e8 ancora vivo \u00b7 diventa alto come una Tesla e visibile a tutti \u00b7 onde magnetiche a 3 caselle: attirano nemici e gadget come un buco nero, uccidendo al contatto",
+        airstrike: "ATTACCO AEREO SBLOCCATO! premi 1 (a fine catena) per mirare: resti immobile, frecce su/gi\u00f9 per scegliere la fila \u00b7 ripremi 1: un aereo col teschio percorre TUTTA la fila bombardando ogni cosa nemica",
       };
       const label = bonusLabels[msg.bonus] || ("Bonus sbloccato: " + msg.bonus);
       if (msg.player === myId) showToast(label);
       playBonus();
+      break;
+    }
+    case "golem_place": {
+      // Bonus 3600 punti: la mesh vera e propria viene creata dal
+      // prossimo onState (blocco msg.golems) - qui solo suono + feedback,
+      // stesso comportamento di mortar_place/superbomb_place.
+      playGolemThud();
+      if (msg.player === myId){
+        showToast("Golem piazzato! Dorme per " + Math.round(msg.wake || 30) + " secondi, poi si sveglia affamato di gadget nemici.");
+      } else {
+        showToast("Un giocatore ha piazzato un golem spaccapietra!");
+      }
+      break;
+    }
+    case "golem_wake": {
+      playGolemRoar();
+      const whoseGolem = (msg.player === myId) ? "Il tuo golem" : "Il golem avversario";
+      showToast(whoseGolem + " si \u00e8 SVEGLIATO: divora ogni gadget che trova!");
+      break;
+    }
+    case "golem_hit": {
+      playGolemHit();
+      golemHitFlashes[msg.id] = performance.now();
+      spawnExplosion(msg.x*CELL+CELL/2, msg.y*CELL+CELL/2, 0x8b8f98);
+      break;
+    }
+    case "golem_destroyed": {
+      playGolemCrumble();
+      const hex = playerColorHex[msg.owner] !== undefined ? playerColorHex[msg.owner] : 0x8b8f98;
+      spawnExplosion(msg.x*CELL+CELL/2, msg.y*CELL+CELL/2, 0x8b8f98);
+      spawnExplosion(msg.x*CELL+CELL/2, msg.y*CELL+CELL/2, hex);
+      delete golemHitFlashes[msg.id];
+      showToast("Un golem spaccapietra \u00e8 stato abbattuto (100 colpi incassati)!");
+      break;
+    }
+    case "golem_eat": {
+      playGolemChomp();
+      break;
+    }
+    case "mega_mushroom_activate": {
+      playMegaHum();
+      if (msg.player === myId){
+        showToast("Fungo madre TRASFORMATO! Ora attira e divora tutto cio' che \u00e8 nemico entro 3 caselle, come un buco nero.");
+      } else {
+        showToast("Il fungo madre di un avversario si \u00e8 trasformato in un BUCO NERO magnetico!");
+      }
+      break;
+    }
+    case "mega_swallow": {
+      // Un oggetto nemico viene risucchiato dentro il fungo: scia animata
+      // dal punto di origine al fungo (vedi animate(), stessa idea della
+      // 2D drawMegaSucks) + suono.
+      playMegaSuck();
+      megaSucks.push({
+        x0: msg.x*CELL+CELL/2, z0: msg.y*CELL+CELL/2,
+        x1: msg.tx*CELL+CELL/2, z1: msg.ty*CELL+CELL/2,
+        start: performance.now(), dur: 320,
+      });
+      break;
+    }
+    case "airstrike_aim": {
+      if (msg.player === myId){
+        playAirstrikeAim();
+        showToast("Mirino aereo attivo: frecce SU/GI\u00d9 per scegliere la fila, ripremi 1 per scatenare l'attacco!");
+      }
+      break;
+    }
+    case "airstrike_launch": {
+      playAirstrikeJet();
+      if (msg.player === myId) showToast("ATTACCO AEREO in arrivo sulla fila scelta!");
+      else showToast("ATTACCO AEREO di un avversario in arrivo!");
       break;
     }
     case "laser_fire": {
@@ -5161,6 +5752,176 @@ function animate(){
     g.userData.core.material.emissive.setHex(tracking ? 0xff5b5b : 0x3a2213);
     g.userData.halo.material.opacity = tracking ? 0.30 : 0.18;
   });
+
+  // bonus 3600 punti: golem spaccapietra. Si muove con lo stesso lerp
+  // morbido di pet/missili; mentre e' sveglio e in movimento cammina con
+  // un lieve dondolio verticale e le gambe si aprono a "V" come nella 2D,
+  // e si specchia verso il senso di marcia. Da addormentato mostra invece
+  // gli "Zzz" fluttuanti e i secondi al risveglio (qui semplificati: la
+  // sprite "Zzz" resta visibile, il countdown preciso non serve quanto
+  // in 2D dato che il colore occhi/corpo gia' comunica lo stato).
+  Object.values(golemMeshes).forEach(entry => {
+    const prevX = entry.x, prevZ = entry.z;
+    entry.x += (entry.targetX - entry.x) * LERP;
+    entry.z += (entry.targetZ - entry.z) * LERP;
+    entry.group.position.set(entry.x, 0, entry.z);
+    const ud = entry.group.userData;
+    const dx = entry.x - prevX;
+    if (dx > 0.0006) ud.facing = 1;
+    else if (dx < -0.0006) ud.facing = -1;
+    // Specchia SOLO il corpo (non il gruppo intero): la barra vita e' uno
+    // sprite figlio di "g" e deve restare sempre leggibile, mai ribaltata.
+    ud.body.scale.x = ud.facing;
+
+    const moving = Math.abs(entry.targetX - entry.x) > 0.01 || Math.abs(entry.targetZ - entry.z) > 0.01;
+    if (ud.awake && moving){
+      ud.walkPhase += dt * 6.2;
+      const bob = Math.sin(ud.walkPhase) * 0.03;
+      const legSpread = Math.sin(ud.walkPhase) * 0.05;
+      ud.body.position.y = bob;
+      ud.legL.position.x = -0.12*1.6 - legSpread;
+      ud.legR.position.x = 0.12*1.6 + legSpread;
+    } else {
+      ud.body.position.y += (0 - ud.body.position.y) * 0.2;
+    }
+
+    // Occhi: spenti/fessura sottile da addormentato, accesi nel colore
+    // proprietario da sveglio (stessa logica della 2D).
+    ud.eyes.forEach(eye => {
+      const wantAwake = !!ud.awake;
+      if (eye.userData.isAwake !== wantAwake){
+        eye.userData.isAwake = wantAwake;
+        eye.geometry = wantAwake ? ud.eyeGeoAwake : ud.eyeGeoAsleep;
+        eye.material = wantAwake ? ud.eyeMatAwake : ud.eyeMatAsleep;
+      }
+    });
+    ud.zzzGroup.visible = !ud.awake;
+    if (!ud.awake){
+      const zf = (nowMortar / 900) % 1;
+      ud.zzzGroup.position.y = zf * 0.12;
+      ud.zzzGroup.children.forEach(c => { c.material.opacity = 0.85 * (1 - zf); });
+    }
+
+    // Lampo bianco per colpo incassato: gestito subito sotto in un
+    // secondo forEach indicizzato per id (piu' diretto).
+
+    updateGolemHpBarSprite(ud.hpBar, ud.hp != null ? ud.hp : 100, ud.maxHp || 100);
+    ud.hpBar.material.rotation = 0;
+  });
+  // Lampo bianco per colpo incassato, gestito per id (piu' diretto del
+  // lookup sopra): opacita' che decresce linearmente in 150ms.
+  Object.keys(golemMeshes).forEach(id => {
+    const entry = golemMeshes[id];
+    const fl = golemHitFlashes[id];
+    if (fl){
+      const t = nowMortar - fl;
+      if (t < 150){
+        entry.group.userData.hitFlash.material.opacity = 0.55 * (1 - t/150);
+      } else {
+        entry.group.userData.hitFlash.material.opacity = 0;
+        delete golemHitFlashes[id];
+      }
+    }
+  });
+
+  // bonus 4000 punti: attacchi aerei in volo. L'aereo vola sopra la fila
+  // (posizione X/Z gia' impostata in onState), qui solo l'animazione: un
+  // leggero beccheggio verticale, il muso sempre orientato nel verso di
+  // marcia (specchiato se la fila scorre a sinistra), tappeto di bombe
+  // che cadono e boati a raffica finche' ce n'e' almeno uno nella mappa
+  // (stessa idea client-side della 2D, nessun evento dedicato per bomba).
+  const nowAir = performance.now();
+  if (nowAir - lastAirstrikeBoomAt > 180){
+    lastAirstrikeBoomAt = nowAir;
+    const anyInside = Object.values(airstrikeMeshes).some(g => g.position.x > 0 && g.position.x < mazeW*CELL);
+    if (anyInside) playAirstrikeBoom();
+  }
+  Object.values(airstrikeMeshes).forEach(g => {
+    g.position.y = ALTITUDE_AIRSTRIKE + Math.sin(nowAir/140) * 0.03;
+    const bob = Math.sin(nowAir/220) * 0.05;
+    g.userData.body.rotation.z = bob;
+    const beaconOn = Math.sin(nowAir/160) > 0;
+    g.userData.beacon.material.color.setHex(beaconOn ? 0xff3b3b : 0x501414);
+    g.userData.trail.material.opacity = 0.18 + Math.abs(Math.sin(nowAir/300))*0.1;
+
+    // Bombe in caduta sotto l'aereo + tappeto di esplosioni sulle celle
+    // appena sorvolate, stessa idea client-side della 2D (drawAirstrikes):
+    // nessun evento dedicato per singola bomba, tutto derivato dalla sola
+    // posizione corrente dell'aereo con una fase temporale continua.
+    if (!g.userData.bombDrop){
+      const bombMat = new THREE.MeshStandardMaterial({ color:0x14161a, roughness:0.6 });
+      g.userData.bombDrop = new THREE.Mesh(new THREE.CapsuleGeometry(0.025, 0.05, 3, 6), bombMat);
+      g.userData.bombDrop.visible = false;
+      scene.add(g.userData.bombDrop);
+    }
+    const bombFrac = (nowAir/260) % 1;
+    g.userData.bombDrop.position.set(
+      g.position.x - 0.35 - bombFrac*0.1,
+      g.position.y * (1 - bombFrac),
+      g.position.z
+    );
+    g.userData.bombDrop.visible = true;
+
+    // Tappeto di 4 esplosioni-fantasma sulle celle appena sorvolate
+    // (a sinistra della posizione attuale, come nella 2D): throttle a
+    // ~90ms per cella tramite g.userData.lastBoomCell per non spawnare
+    // una nuova esplosione ad ogni singolo frame.
+    const cellX = Math.floor(g.position.x / CELL);
+    if (g.userData.lastBoomCell !== cellX){
+      g.userData.lastBoomCell = cellX;
+      const hex = 0xffb347;
+      for (let k = 0; k < 2; k++){
+        const exX = (cellX - k) * CELL + CELL/2;
+        if (exX < 0 || exX > mazeW*CELL) continue;
+        spawnExplosion(exX, g.position.z, k % 2 ? hex : 0xff5e3a);
+      }
+    }
+  });
+
+  // Scie di risucchio del fungo madre magnetico (bonus 3800 punti): un
+  // piccolo punto luminoso che vola in linea retta dal bersaglio verso il
+  // fungo, rimpicciolendo, stessa idea della 2D (drawMegaSucks). Le mesh
+  // sono one-shot: create e distrutte qui, mai registrate in una mappa
+  // persistente perche' vivono solo 320ms.
+  for (let i = megaSucks.length - 1; i >= 0; i--){
+    const t = megaSucks[i];
+    const f = (nowAir - t.start) / t.dur;
+    if (f >= 1){
+      if (t.mesh) scene.remove(t.mesh);
+      megaSucks.splice(i, 1);
+      continue;
+    }
+    if (!t.mesh){
+      const mat = new THREE.MeshBasicMaterial({ color:0xe8e8ff, transparent:true, opacity:0.8 });
+      t.mesh = new THREE.Mesh(new THREE.SphereGeometry(0.06, 8, 6), mat);
+      scene.add(t.mesh);
+    }
+    const px = t.x0 + (t.x1-t.x0)*f, pz = t.z0 + (t.z1-t.z0)*f;
+    t.mesh.position.set(px, 0.5, pz);
+    t.mesh.scale.setScalar(1 - f*0.7);
+    t.mesh.material.opacity = 0.8 * (1-f);
+  }
+
+  // Reticolo di mira dell'attacco aereo (bonus 4000 punti): visibile solo
+  // mentre IO sto mirando (myState.airstrike_aiming), leggendo la riga
+  // scelta dal server (myState.airstrike_row, aggiornata dai normali
+  // messaggi "move" mandati dalle frecce durante l'aiming). Ricostruito
+  // solo se la riga cambia, per non ricreare geometrie ad ogni frame.
+  if (myState && myState.airstrike_aiming){
+    const row = Math.max(1, Math.min((mazeH||20) - 2, myState.airstrike_row || 0));
+    if (!airstrikeReticle || airstrikeReticleRow !== row){
+      if (airstrikeReticle) scene.remove(airstrikeReticle);
+      const hex = playerColorHex[myId] !== undefined ? playerColorHex[myId] : 0x9be7ff;
+      airstrikeReticle = makeAirstrikeReticle(hex, row);
+      scene.add(airstrikeReticle);
+      airstrikeReticleRow = row;
+    }
+  } else if (airstrikeReticle){
+    scene.remove(airstrikeReticle);
+    airstrikeReticle = null;
+    airstrikeReticleRow = null;
+  }
+
   // bonus 1400 punti: bomboloni. Fermi (nessuna interpolazione, come le
   // mine): oltre al teschio che lampeggia sempre piu' in fretta man mano
   // che il fusibile residuo si avvicina allo zero (come prima), ora anche
@@ -5395,7 +6156,7 @@ function animate(){
     mesh.scale.setScalar(Math.max(0.001, grow));
     const seed = (mesh.position.x*13 + mesh.position.z*7) % 6.283;
     const sway = Math.sin(now3d/750 + seed) * 0.08;
-    mesh.userData.branches.forEach(b => { b.branch.rotation.y = sway; b.spine.rotation.y = sway; });
+    mesh.userData.branches.forEach(b => { b.branch.rotation.z = sway; });
   });
 
   // Bonus 3000 punti: funghi atomici. Statici (nessun lerp, come le mine),
