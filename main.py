@@ -2311,29 +2311,14 @@ class Room:
         # in diagonale verticale.
         vz = math.sin(pitch_val) * LASER_PROJECTILE_SPEED
         horiz_scale = math.cos(pitch_val)
-        # Offset di spawn in avanti lungo la direzione di mira (dx, dy):
-        # senza questo offset il proiettile nasce nel centro della cella
-        # dello sparatore, che a schermo NON coincide col punto rosso
-        # (crosshair) al centro della visuale — la camera sta un po' + in
-        # avanti/alta rispetto al centro cella, quindi il dardo sembrava
-        # partire "di lato" rispetto al mirino invece che esattamente da
-        # li'. Spostando lo spawn di MUZZLE_FORWARD_OFFSET celle nella
-        # stessa direzione della mira, il dardo nasce visivamente proprio
-        # davanti alla camera, sulla linea di mira, come se partisse dal
-        # crosshair stesso.
-        MUZZLE_FORWARD_OFFSET = 0.35
-        spawn_x = shooter.x + 0.5 + dx * MUZZLE_FORWARD_OFFSET
-        spawn_y = shooter.y + 0.5 + dy * MUZZLE_FORWARD_OFFSET
         laser = {
             "id": uuid.uuid4().hex[:8],
             "owner": shooter.id,
             # Posizione continua (float), a differenza delle celle intere
             # usate da molte altre entita' del gioco: parte dal CENTRO
-            # della cella dello sparatore (spostato in avanti lungo la
-            # mira, vedi MUZZLE_FORWARD_OFFSET sopra) cosi' il percorso in
-            # diagonale e' visivamente corretto fin dal primo istante e il
-            # colpo nasce esattamente sulla linea del mirino/crosshair.
-            "x": spawn_x, "y": spawn_y,
+            # della cella dello sparatore cosi' il percorso in diagonale
+            # e' visivamente corretto fin dal primo istante.
+            "x": shooter.x + 0.5, "y": shooter.y + 0.5,
             "dx": dx, "dy": dy,
             "bounce_left": None,  # None finche' non ha ancora rimbalzato
             "pitch": pitch_val,
@@ -2590,6 +2575,42 @@ class Room:
             if fn():
                 return True
         return False
+
+    def find_nearest_free_cell(self, x, y, exclude=None, max_radius=15):
+        """Cerca la cella di pavimento libera (is_floor E non
+        cell_has_gadget) piu' vicina a (x, y), partendo da (x, y) stessa e
+        allargando il raggio di ricerca un anello alla volta (come le onde
+        concentriche di un sasso in uno stagno) fino a max_radius.
+
+        Serve a evitare che i gradini di piazzamento della catena del
+        tasto "1" (mortaio, bombolone, blob, muro di spunzoni, Tesla,
+        arbusto, fungo) falliscano IN SILENZIO quando il giocatore preme
+        "1" mentre si trova sopra un gadget gia' esistente: invece di non
+        fare nulla (e quindi bloccare per sempre l'avanzamento della
+        catena, attacco aereo compreso), la funzione chiamante piazza il
+        gadget nella cella libera piu' vicina trovata da questa ricerca.
+
+        Ritorna una tupla (fx, fy) oppure None se non si trova nessuna
+        cella libera entro max_radius (evenienza rarissima, mappa quasi
+        del tutto piena di gadget)."""
+        if self.is_floor(x, y) and not self.cell_has_gadget(x, y, exclude=exclude):
+            return (x, y)
+        for radius in range(1, max_radius + 1):
+            # Perimetro del quadrato di lato 2*radius+1 centrato su (x,y),
+            # percorso in ordine stabile (alto, basso, sinistra, destra)
+            # cosi' a parita' di distanza il risultato e' deterministico.
+            ring = []
+            for dx in range(-radius, radius + 1):
+                ring.append((dx, -radius))
+                ring.append((dx, radius))
+            for dy in range(-radius + 1, radius):
+                ring.append((-radius, dy))
+                ring.append((radius, dy))
+            for dx, dy in ring:
+                cx, cy = x + dx, y + dy
+                if self.is_floor(cx, cy) and not self.cell_has_gadget(cx, cy, exclude=exclude):
+                    return (cx, cy)
+        return None
 
     def try_place_mine(self, player):
         """Bonus 200 punti: sgancia una mina nella cella corrente del
@@ -3319,19 +3340,24 @@ class Room:
         NON puo' usare alcun bonus finche' non torna libero di muoversi."""
         if not player.alive or player.trapped_left > 0 or not player.has_mortar or player.mortar_placed or player.is_assassin or player.armor_active:
             return
-        if self.cell_has_gadget(player.x, player.y, exclude="mortars"):
-            return  # niente mortaio sopra un gadget diverso gia' presente
+        # Se la cella corrente e' gia' occupata da un altro gadget, non
+        # falliamo in silenzio (bloccherebbe per sempre il resto della
+        # catena del tasto "1"): piazziamo nella cella libera piu' vicina.
+        cell = self.find_nearest_free_cell(player.x, player.y, exclude="mortars")
+        if cell is None:
+            return  # mappa satura di gadget: nessuna cella libera trovata
+        px, py = cell
         player.mortar_placed = True
         mortar = {
             "id": uuid.uuid4().hex[:8],
             "owner": player.id,
-            "x": player.x, "y": player.y,
+            "x": px, "y": py,
             "cd": LASER_FIRST_DELAY_SECONDS,
         }
         self.mortars.append(mortar)
         self.push_event({
             "kind": "mortar_place", "id": mortar["id"], "player": player.id,
-            "x": player.x, "y": player.y,
+            "x": px, "y": py,
         })
 
     # ---- bonus 1400 punti: bombolone ad area (tasto "1", DOPO il mortaio) ----
@@ -3357,19 +3383,21 @@ class Room:
         NON puo' usare alcun bonus finche' non torna libero di muoversi."""
         if not player.alive or player.trapped_left > 0 or not player.has_superbomb or player.superbomb_left <= 0 or player.is_assassin or player.armor_active:
             return
-        if self.cell_has_gadget(player.x, player.y, exclude="superbombs"):
-            return  # niente bombolone sopra un gadget diverso gia' presente
+        cell = self.find_nearest_free_cell(player.x, player.y, exclude="superbombs")
+        if cell is None:
+            return  # mappa satura di gadget: nessuna cella libera trovata
+        px, py = cell
         player.superbomb_left -= 1
         bomb = {
             "id": uuid.uuid4().hex[:8],
             "owner": player.id,
-            "x": player.x, "y": player.y,
+            "x": px, "y": py,
             "t": 0.0,
         }
         self.superbombs.append(bomb)
         self.push_event({
             "kind": "superbomb_place", "id": bomb["id"], "player": player.id,
-            "x": player.x, "y": player.y,
+            "x": px, "y": py,
         })
 
     def superbomb_public(self, bomb):
@@ -3800,18 +3828,20 @@ class Room:
         NON puo' usare alcun bonus finche' non torna libero di muoversi."""
         if not player.alive or player.trapped_left > 0 or not player.has_blob or player.blob_placed or player.is_assassin or player.armor_active:
             return
-        if self.cell_has_gadget(player.x, player.y, exclude="blobs"):
-            return  # niente blob sopra un gadget diverso gia' presente
+        cell = self.find_nearest_free_cell(player.x, player.y, exclude="blobs")
+        if cell is None:
+            return  # mappa satura di gadget: nessuna cella libera trovata
+        px, py = cell
         player.blob_placed = True
         blob = {
             "id": uuid.uuid4().hex[:8],
             "owner": player.id,
-            "x": player.x, "y": player.y,
+            "x": px, "y": py,
         }
         self.blobs.append(blob)
         self.push_event({
             "kind": "blob_place", "id": blob["id"], "player": player.id,
-            "x": player.x, "y": player.y,
+            "x": px, "y": py,
         })
 
     def blob_public(self, b):
@@ -4009,7 +4039,10 @@ class Room:
         wx = int(round(player.x + dx * player.move_accum))
         wy = int(round(player.y + dy * player.move_accum))
         if self.cell_has_gadget(wx, wy, exclude="spike_walls"):
-            return  # niente muro di spunzoni sopra un gadget diverso gia' presente: il bonus resta disponibile, si potra' riprovare
+            cell = self.find_nearest_free_cell(wx, wy, exclude="spike_walls")
+            if cell is None:
+                return  # mappa satura di gadget: nessuna cella libera trovata
+            wx, wy = cell
         player.spike_wall_placed = True
         # Un singolo blocco di muro, grande esattamente quanto una cella
         # di muro normale, piazzato sulla cella corrente del giocatore.
@@ -4113,19 +4146,21 @@ class Room:
         NON puo' usare alcun bonus finche' non torna libero di muoversi."""
         if not player.alive or player.trapped_left > 0 or not player.has_tesla or player.tesla_placed or player.is_assassin or player.armor_active:
             return
-        if self.cell_has_gadget(player.x, player.y, exclude="teslas"):
-            return  # niente Tesla sopra un gadget diverso gia' presente
+        cell = self.find_nearest_free_cell(player.x, player.y, exclude="teslas")
+        if cell is None:
+            return  # mappa satura di gadget: nessuna cella libera trovata
+        px, py = cell
         player.tesla_placed = True
         tesla = {
             "id": uuid.uuid4().hex[:8],
             "owner": player.id,
-            "x": player.x, "y": player.y,
+            "x": px, "y": py,
             "cd": TESLA_FIRE_INTERVAL_SECONDS,
         }
         self.teslas.append(tesla)
         self.push_event({
             "kind": "tesla_place", "id": tesla["id"], "player": player.id,
-            "x": player.x, "y": player.y,
+            "x": px, "y": py,
         })
 
     def tesla_public(self, t):
@@ -4447,13 +4482,15 @@ class Room:
         NON puo' usare alcun bonus finche' non torna libero di muoversi."""
         if not player.alive or player.trapped_left > 0 or not player.has_bush or player.bush_placed or player.is_assassin or player.armor_active:
             return
-        if self.cell_has_gadget(player.x, player.y, exclude="bushes"):
-            return  # niente arbusto sopra un gadget diverso gia' presente
+        cell = self.find_nearest_free_cell(player.x, player.y, exclude="bushes")
+        if cell is None:
+            return  # mappa satura di gadget: nessuna cella libera trovata
+        px, py = cell
         player.bush_placed = True
         bush = {
             "id": uuid.uuid4().hex[:8],
             "owner": player.id,
-            "cells": [(player.x, player.y)],
+            "cells": [(px, py)],
             # Conto alla rovescia per la PROSSIMA espansione ad anello.
             "grow_left": BUSH_GROW_INTERVAL_SECONDS,
             # Quante espansioni ad anello ha gia' fatto (max BUSH_MAX_EXPANSIONS).
@@ -4462,7 +4499,7 @@ class Room:
         self.bushes.append(bush)
         self.push_event({
             "kind": "bush_place", "id": bush["id"], "player": player.id,
-            "x": player.x, "y": player.y,
+            "x": px, "y": py,
             "grow_interval": BUSH_GROW_INTERVAL_SECONDS,
         })
 
@@ -4620,13 +4657,15 @@ class Room:
         NON puo' usare alcun bonus finche' non torna libero di muoversi."""
         if not player.alive or player.trapped_left > 0 or not player.has_mushroom or player.mushroom_placed or player.is_assassin or player.armor_active:
             return
-        if self.cell_has_gadget(player.x, player.y, exclude="mushrooms"):
-            return  # niente fungo sopra un gadget diverso gia' presente
+        cell = self.find_nearest_free_cell(player.x, player.y, exclude="mushrooms")
+        if cell is None:
+            return  # mappa satura di gadget: nessuna cella libera trovata
+        px, py = cell
         player.mushroom_placed = True
         m = {
             "id": uuid.uuid4().hex[:8],
             "owner": player.id,
-            "x": player.x, "y": player.y,
+            "x": px, "y": py,
             "spawner": True,  # e' il fungo originale: genera altri funghi nel tempo
             "spawn_left": MUSHROOM_RESPAWN_INTERVAL_SECONDS,
         }

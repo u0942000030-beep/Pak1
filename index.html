@@ -1513,7 +1513,15 @@ function makeMushroomMesh(hex, mega, seedVal, twin){
     body.rotation.z = tiltZ;
     body.rotation.y = rotY;
     body.scale.setScalar(scale);
-    return { body, cap, stemH: stemH*scale };
+    // rBase/rMid/rTop/capR sono i raggi REALI del corpo organico in
+    // questo punto (gia' moltiplicati per stemBulge/stemStubby/scale a
+    // seconda dell'archetipo): la corazza del gigafungo (armor plates,
+    // calotta, artigli) li usa per adattarsi ESATTAMENTE alla sagoma
+    // sottostante invece di ricalcolare le proprie dimensioni con
+    // formule indipendenti — la causa del disallineamento (placche che
+    // affondano nel gambo, artigli che restano dentro la base) era
+    // proprio l'uso di due formule scollegate per la stessa sagoma.
+    return { body, cap, stemH: stemH*scale, rBase, rMid, rTop, capR };
   }
 
   // Variazione per esemplare: dimensione, inclinazione e "pancia" del
@@ -1560,16 +1568,26 @@ function makeMushroomMesh(hex, mega, seedVal, twin){
     const armorMid   = new THREE.MeshStandardMaterial({ color: 0x555b66, roughness:0.6, metalness:0.5, flatShading:true });
     const veinMat = new THREE.MeshStandardMaterial({ color: hex, emissive: hex, emissiveIntensity: 0.9, roughness:0.4 });
     const stemHFull = main.stemH;
-    const capRFull = 0.32*s*mainScale;
+    // capR/rBase/rTop REALI del corpo organico sottostante (gia' calcolati
+    // da buildMushroomBody con mainScale/mainBulge/archetipo inclusi):
+    // usarli qui, invece di ricalcolare dimensioni con formule proprie
+    // indipendenti, e' la fix per placche/calotta/artigli che a volte si
+    // univano al fungo o gli affondavano dentro.
+    const capRFull = main.capR;
 
     // Placche corazzate impilate lungo il gambo (anelli poligonali
-    // leggermente svasati, come segmenti di armatura).
+    // leggermente svasati, come segmenti di armatura): il raggio ad ogni
+    // altezza e' interpolato fra rBase e rTop REALI del gambo organico
+    // (main.rBase/main.rTop, che includono gia' mainBulge e l'archetipo),
+    // con un piccolo margine esterno (*1.08) cosi' la placca avvolge
+    // sempre il gambo dall'esterno, non affonda mai dentro anche quando
+    // il gambo e' particolarmente panciuto.
     const plateCount = 4;
     for (let pi = 0; pi < plateCount; pi++){
       const pt = (pi+0.5)/plateCount;
-      const pr = 0.09 + pt*0.06;
+      const pr = (main.rBase + (main.rTop - main.rBase) * pt) * 1.08;
       const plate = new THREE.Mesh(
-        new THREE.CylinderGeometry(pr*s, pr*s*1.12, 0.05*s, 10, 1),
+        new THREE.CylinderGeometry(pr, pr*1.12, 0.05*s, 10, 1),
         pi % 2 === 0 ? armorMid : armorDark
       );
       plate.position.y = stemHFull*pt;
@@ -1577,7 +1595,7 @@ function makeMushroomMesh(hex, mega, seedVal, twin){
       g.add(plate);
       // Vena luminescente verticale incastonata fra le placche.
       const vein = new THREE.Mesh(new THREE.BoxGeometry(0.025*s, stemHFull/plateCount*0.8, 0.02*s), veinMat);
-      vein.position.set(Math.cos(pi*1.6)*pr*s*1.05, stemHFull*pt, Math.sin(pi*1.6)*pr*s*1.05);
+      vein.position.set(Math.cos(pi*1.6)*pr*1.05, stemHFull*pt, Math.sin(pi*1.6)*pr*1.05);
       vein.rotation.y = pi*1.6;
       g.add(vein);
     }
@@ -1682,15 +1700,20 @@ function makeMushroomMesh(hex, mega, seedVal, twin){
     megaSkull.rotation.x = -Math.PI/2;
     helmPivot.add(megaSkull);
 
-    // Artigli/radici corazzate alla base, ancorate al terreno.
+    // Artigli/radici corazzate alla base, ancorate al terreno: distanza
+    // dal centro derivata dal raggio REALE della base del gambo
+    // (main.rBase, gia' comprensivo di mainBulge/archetipo) con un
+    // margine esterno (*1.15) cosi' restano sempre ancorati fuori dalla
+    // base organica, non affondati dentro quando il gambo e' largo.
     const clawCount = 5;
+    const clawDist = main.rBase * 1.15;
     for (let ci = 0; ci < clawCount; ci++){
       const ca = (ci/clawCount) * Math.PI*2 + 0.3;
       const claw = new THREE.Mesh(
         new THREE.ConeGeometry(0.05*s, 0.22*s, 5),
         armorDark
       );
-      claw.position.set(Math.cos(ca)*0.16*s, 0.06*s, Math.sin(ca)*0.16*s);
+      claw.position.set(Math.cos(ca)*clawDist, 0.06*s, Math.sin(ca)*clawDist);
       claw.rotation.z = Math.cos(ca) * 0.9;
       claw.rotation.x = -Math.sin(ca) * 0.9;
       g.add(claw);
@@ -4356,63 +4379,19 @@ window.addEventListener("keyup", e => {
 });
 
 let yaw = 0, pitch = 0, locked = false;
-// Fluidita' del mouse-look: gli eventi "mousemove" arrivano dal browser a
-// cadenza IRREGOLARE (non sincronizzata coi frame renderizzati), quindi
-// applicare movementX/Y direttamente a yaw/pitch dentro l'handler produceva
-// una rotazione a scatti, specie con mouse ad alto polling o refresh rate
-// del monitor diversi dalla cadenza degli eventi. Soluzione: l'handler si
-// limita ad ACCUMULARE il movimento grezzo in un buffer (pendingYawDelta/
-// pendingPitchDelta); il render loop (unica fonte di verita' per ogni
-// frame, vedi animate()) lo consuma e lo applica in modo smussato con un
-// filtro esponenziale (mouseSmoothing), cosi' la rotazione risulta
-// continua e legata al framerate reale invece che alla cadenza degli
-// eventi del mouse.
-let pendingYawDelta = 0, pendingPitchDelta = 0;
-let smoothedYawDelta = 0, smoothedPitchDelta = 0;
-const MOUSE_SENS = 0.0022;
-// 0 = nessuno smoothing (comportamento vecchio, scattoso), 1 = smoothing
-// totale (troppo "gommoso"/con inerzia percepibile). ~0.35 e' un buon
-// compromesso: elimina lo scatto senza introdurre lag percepibile alla
-// mira.
-const MOUSE_SMOOTHING = 0.35;
 document.addEventListener("pointerlockchange", () => {
   locked = document.pointerLockElement && document.pointerLockElement.tagName === "CANVAS";
 });
 document.addEventListener("mousemove", e => {
   if (!locked) return;
-  // Solo accumulo: nessuna scrittura diretta su yaw/pitch qui, per non
-  // dipendere dalla cadenza (spesso irregolare) degli eventi mousemove.
-  pendingYawDelta   -= e.movementX * MOUSE_SENS;
-  pendingPitchDelta -= e.movementY * MOUSE_SENS;
-});
-
-// Consuma il movimento del mouse accumulato dall'ultimo frame e lo applica
-// a yaw/pitch con uno smoothing esponenziale indipendente dal framerate
-// (usa dt cosi' il risultato e' identico a 30fps, 60fps o 144fps).
-// Chiamata una volta per frame dal render loop, PRIMA di leggere yaw/pitch
-// per orientare camera/movimento.
-function applySmoothedMouseLook(dt){
-  if (pendingYawDelta === 0 && pendingPitchDelta === 0 &&
-      smoothedYawDelta === 0 && smoothedPitchDelta === 0) return;
-  // Fattore di risposta indipendente dal framerate: a parita' di
-  // MOUSE_SMOOTHING, un frame lento (dt grande) insegue comunque il target
-  // nello stesso tempo "reale" di un frame veloce.
-  const response = 1 - Math.pow(MOUSE_SMOOTHING, dt * 60);
-  smoothedYawDelta   += (pendingYawDelta   - smoothedYawDelta)   * response;
-  smoothedPitchDelta += (pendingPitchDelta - smoothedPitchDelta) * response;
-  yaw   += smoothedYawDelta;
-  pitch += smoothedPitchDelta;
+  yaw   -= e.movementX * 0.0022;
+  pitch -= e.movementY * 0.0022;
   pitch = Math.max(-Math.PI/2+0.05, Math.min(Math.PI/2-0.05, pitch));
-  // Il delta grezzo di questo frame e' stato consumato: azzeralo cosi' non
-  // si accumula all'infinito (altrimenti il mouse fermo continuerebbe a
-  // "scivolare" verso un delta vecchio).
-  pendingYawDelta = 0;
-  pendingPitchDelta = 0;
   // lo sguardo e' cambiato: se un tasto e' tenuto premuto, il "forward"/
   // "left"/ecc. va reinterpretato rispetto al NUOVO sguardo, quindi la
   // direzione di griglia (e il bersaglio della sterzata) va ricalcolata.
   updateMovementDirection();
-}
+});
 
 // Sterza dolcemente lo yaw verso la direzione di griglia agganciata
 // all'ultimo tasto premuto (steerTargetYaw), chiamata ogni frame dal
@@ -5641,20 +5620,6 @@ function onGameEvent(msg){
       // risposta al comando manuale del giocatore). Crea un piccolo
       // "proiettile" luminoso che il render loop muove morbidamente
       // verso la posizione confermata a ogni "event" successivo.
-      // IMPORTANTE: il server ora manda gia' msg.x/msg.y in coordinate di
-      // GRIGLIA GIA' CENTRATE (cella_intera + 0.5, vedi spawn_laser in
-      // main.py), non piu' celle intere: va quindi solo scalato per CELL,
-      // senza sommare di nuovo CELL/2 (altrimenti il punto di partenza si
-      // sposta di mezza cella e il colpo non nasce dal crosshair/centro).
-      const wx = msg.x*CELL, wz = msg.y*CELL;
-      // msg.z e' la vera quota verticale del colpo (celle, vedi
-      // spawn_laser in main.py: parte da LASER_EYE_HEIGHT e segue il pitch
-      // di mira con pendenza costante): e' la stessa usata dal server per
-      // decidere le collisioni, quindi qui va SOLO scalata per CELL, non
-      // piu' stimata localmente. Cosi' funziona identica sia per i colpi
-      // sparati da me sia per quelli sparati dagli altri giocatori (prima
-      // solo i miei avevano una traiettoria verticale visibile).
-      const wy = (typeof msg.z === "number" ? msg.z : EYE_HEIGHT/CELL) * CELL;
       // Colore del proiettile = colore primario di chi ha sparato (giocatore
       // o gadget/torretta proprietaria), stesso schema gia' usato per
       // missili/mine/torrette (playerColorHex). Se per qualche motivo lo
@@ -5665,6 +5630,43 @@ function onGameEvent(msg){
       const laserHex = (laserOwner !== null && playerColorHex[laserOwner] !== undefined)
                         ? playerColorHex[laserOwner] : 0xff5a4d;
       const mesh = makeLaserBoltMesh(laserHex);
+      // Per il MIO proiettile: il server manda una posizione a griglia
+      // (cella_intera + offset in avanti) che puo' non coincidere col
+      // punto esatto dove si trova la CAMERA in questo istante (il
+      // giocatore sta interpolando/scivolando fra celle, myRenderX/Z, e
+      // magari si sta anche muovendo lateralmente mentre spara). Il
+      // risultato era un dardo che nasceva visivamente storto/sfalsato
+      // rispetto al centro dello schermo invece che esattamente dal
+      // mirino. Fix: per il proprio laser si ignora la posizione di
+      // spawn del server e si usa direttamente la posizione REALE della
+      // camera (myRenderX/EYE_HEIGHT/myRenderZ) proiettata lungo la
+      // stessa direzione di sguardo (yaw/pitch) di questo istante — cosi'
+      // il colpo nasce sempre ESATTAMENTE al centro della visuale, punto
+      // e basta, indipendentemente da dove il server pensa che sia la
+      // cella dello sparatore. Per i laser ALTRUI si mantiene invece la
+      // posizione mandata dal server (non abbiamo accesso alla loro
+      // camera reale).
+      const isMyLaser = (laserOwner !== null && laserOwner === myId);
+      let wx, wy, wz;
+      if (isMyLaser){
+        // Stessa formula usata per orientare la camera nel render loop
+        // (vedi camera.rotation.order = "YXZ"): direzione di sguardo
+        // corrente calcolata da yaw/pitch.
+        const lookX = -Math.sin(yaw) * Math.cos(pitch);
+        const lookY =  Math.sin(pitch);
+        const lookZ = -Math.cos(yaw) * Math.cos(pitch);
+        // Piccola distanza in avanti dalla camera cosi' il dardo non
+        // nasce esattamente "dentro l'obiettivo" (z-fighting/clipping
+        // col piano vicino della camera) ma resta comunque ancorato
+        // al centro esatto della visuale, non spostato lateralmente.
+        const MUZZLE_CAMERA_DIST = 0.35 * CELL;
+        wx = myRenderX + lookX * MUZZLE_CAMERA_DIST;
+        wy = EYE_HEIGHT + lookY * MUZZLE_CAMERA_DIST;
+        wz = myRenderZ + lookZ * MUZZLE_CAMERA_DIST;
+      } else {
+        wx = msg.x*CELL; wz = msg.y*CELL;
+        wy = (typeof msg.z === "number" ? msg.z : EYE_HEIGHT/CELL) * CELL;
+      }
       mesh.position.set(wx, wy, wz);
       // Orienta SUBITO il dardo nella direzione di sparo reale (dx/dy
       // orizzontali + vz verticale, mandati ora dal server): prima
@@ -6941,13 +6943,6 @@ function animate(){
     t.mesh.userData.body.rotation.set(f*Math.PI*3, f*Math.PI*2.2, f*Math.PI*1.6);
     t.mesh.userData.shadow.material.opacity = 0.25 * (1 - lift/(POTION_ARC_HEIGHT*1.4));
   }
-
-  // Applica il movimento del mouse accumulato dall'ultimo frame, smussato
-  // (vedi applySmoothedMouseLook sopra): va fatto qui, una volta per
-  // frame, PRIMA di steerCameraTowardsMovement/della lettura di yaw/pitch
-  // per la camera, cosi' tutto il resto del frame vede gia' lo sguardo
-  // aggiornato.
-  applySmoothedMouseLook(dt);
 
   // sterza automaticamente la visuale verso la direzione in cui mi sto
   // muovendo (WASD), a meno che il mouse non l'abbia appena presa in mano.
