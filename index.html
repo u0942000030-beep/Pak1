@@ -1127,8 +1127,8 @@ let bushCellBirth = {}; // "bushId:x,y" -> performance.now() di quando la casell
 // nube a fungo + onda d'urto.
 const MUSHROOM_VISIBILITY_RANGE = 3; // deve restare identica a MUSHROOM_VISIBILITY_RANGE nella 2D/common.py
 let mushroomMeshes = {}; // id -> THREE.Group — un fungo porcino per esemplare (nascosto/mostrato in base alla distanza, vedi onState)
-let nukeClouds = [];      // {x,z,color,start} — nube a fungo dell'esplosione (evento "mushroom_explode"), 2 secondi
-let shockwaves = [];      // {x,z,color,start,radiusCells} — onda d'urto concentrica, condivisa con superbomb/balloon nella 2D
+let nukeClouds = [];      // {x,z,color,start} — fungo atomico 3D dell'esplosione (evento "mushroom_explode"): gambo + cappella che si sviluppano in altezza, 2 secondi (vedi animate(), .group costruito al volo)
+let shockwaves = [];      // {x,z,color,start,radiusCells} — onda d'urto: cupola semisferica 3D + anello a terra, condivisa con superbomb/balloon/fungo (vedi animate(), .group costruito al volo)
 const NUKE_CLOUD_MS = 2000;
 const SHOCKWAVE_DURATION_MS = 550;
 // ---- bonus 3400 punti: pozione terremoto (tasto "1", dopo la trappola territoriale) ----
@@ -2009,9 +2009,18 @@ function makeAirstrikeMesh(colorHex){
   // Fusoliera: capsula allungata (cilindro con estremita' arrotondate),
   // orientata lungo l'asse X (l'aereo "vola verso destra" come nella 2D,
   // ma qui l'orientamento viene applicato dal chiamante in base al verso).
-  const fuselage = new THREE.Mesh(new THREE.CapsuleGeometry(0.11, 0.42, 4, 10), hullMat);
-  fuselage.rotation.z = Math.PI / 2;
-  body.add(fuselage);
+  // (CapsuleGeometry non esiste in r128: ricostruita come cilindro +
+  // due semisfere alle estremita', stesso trucco di makeCharacterMesh)
+  const fuselageGroup = new THREE.Group();
+  const fuselageCyl = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.11, 0.42, 10), hullMat);
+  fuselageCyl.rotation.z = Math.PI / 2;
+  fuselageGroup.add(fuselageCyl);
+  [-1, 1].forEach(side => {
+    const cap = new THREE.Mesh(new THREE.SphereGeometry(0.11, 10, 8), hullMat);
+    cap.position.x = side * 0.21;
+    fuselageGroup.add(cap);
+  });
+  body.add(fuselageGroup);
 
   // Muso a cono, leggermente piu' scuro.
   const nose = new THREE.Mesh(new THREE.ConeGeometry(0.10, 0.16, 10), hullDarkMat);
@@ -6449,8 +6458,18 @@ function animate(){
     // nessun evento dedicato per singola bomba, tutto derivato dalla sola
     // posizione corrente dell'aereo con una fase temporale continua.
     if (!g.userData.bombDrop){
+      // (CapsuleGeometry non esiste in r128: ricostruita come cilindro +
+      // due semisfere alle estremita', stesso trucco di makeCharacterMesh)
       const bombMat = new THREE.MeshStandardMaterial({ color:0x14161a, roughness:0.6 });
-      g.userData.bombDrop = new THREE.Mesh(new THREE.CapsuleGeometry(0.025, 0.05, 3, 6), bombMat);
+      const bombGroup = new THREE.Group();
+      const bombCyl = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.025, 0.05, 6), bombMat);
+      bombGroup.add(bombCyl);
+      [-1, 1].forEach(side => {
+        const cap = new THREE.Mesh(new THREE.SphereGeometry(0.025, 6, 4), bombMat);
+        cap.position.y = side * 0.025;
+        bombGroup.add(cap);
+      });
+      g.userData.bombDrop = bombGroup;
       g.userData.bombDrop.visible = false;
       scene.add(g.userData.bombDrop);
     }
@@ -6834,51 +6853,160 @@ function animate(){
   });
 
   // Bonus 3000 punti: nube a fungo dell'esplosione (evento
-  // "mushroom_explode"), 2 secondi, colore del proprietario - una sfera
-  // che sale e si allarga sfumando, stessa idea della 2D (drawNukeClouds)
-  // semplificata in 3D.
+  // "mushroom_explode"), 2 secondi, colore del proprietario — RIDISEGNATA
+  // in vero 3D: non piu' una sola sfera che si allarga sul posto, ma un
+  // classico fungo atomico che si sviluppa in ALTEZZA. Tre fasi:
+  //  1) lampo/palla di fuoco a terra (breve, ampia)
+  //  2) gambo (colonna verticale) che si allunga verso l'alto
+  //  3) cappella (sfera appiattita) che sale in cima al gambo e si
+  //     espande, come una vera nube a fungo
+  // L'altezza finale del fungo e' 2 volte l'altezza di un muro
+  // (2 * WALL_TOTAL_H), cosi' resta sempre chiaramente piu' alto di
+  // qualunque muro dell'arena, ben visibile da lontano.
   for (let i = nukeClouds.length - 1; i >= 0; i--){
     const n = nukeClouds[i];
     const t = (now3d - n.start) / NUKE_CLOUD_MS;
     if (t >= 1){
-      if (n.mesh) scene.remove(n.mesh);
+      if (n.group) scene.remove(n.group);
       nukeClouds.splice(i, 1);
       continue;
     }
-    if (!n.mesh){
-      const mat = new THREE.MeshBasicMaterial({ color: n.color, transparent:true, opacity:0.3 });
-      n.mesh = new THREE.Mesh(new THREE.SphereGeometry(0.5, 12, 10), mat);
-      n.mesh.position.set(n.x, 0.3, n.z);
-      scene.add(n.mesh);
+    const targetH = WALL_TOTAL_H * 2;
+    if (!n.group){
+      const group = new THREE.Group();
+      group.position.set(n.x, 0, n.z);
+      scene.add(group);
+
+      const fireMat = new THREE.MeshBasicMaterial({ color: n.color, transparent:true, opacity:0.95 });
+      const fireball = new THREE.Mesh(new THREE.SphereGeometry(0.5, 14, 10), fireMat);
+      fireball.position.y = 0.3;
+      group.add(fireball);
+
+      const stemMat = new THREE.MeshBasicMaterial({ color: n.color, transparent:true, opacity:0.55 });
+      const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.55, 1, 12, 1, true), stemMat);
+      stem.position.y = 0.5;
+      group.add(stem);
+
+      const capMat = new THREE.MeshBasicMaterial({ color: n.color, transparent:true, opacity:0.7, side: THREE.DoubleSide });
+      const cap = new THREE.Mesh(new THREE.SphereGeometry(0.6, 16, 12), capMat);
+      cap.scale.set(1, 0.55, 1);
+      group.add(cap);
+
+      // secondo strato della cappella, leggermente piu' scuro e mosso,
+      // per dare volume e turbolenza alla nube senza serve troppa geometria
+      const capMat2 = new THREE.MeshBasicMaterial({ color: new THREE.Color(n.color).offsetHSL(0,0,-0.15), transparent:true, opacity:0.5, side: THREE.DoubleSide });
+      const cap2 = new THREE.Mesh(new THREE.SphereGeometry(0.45, 14, 10), capMat2);
+      cap2.scale.set(1, 0.5, 1);
+      group.add(cap2);
+
+      n.group = group;
+      n.fireball = fireball;
+      n.stem = stem;
+      n.cap = cap;
+      n.cap2 = cap2;
     }
-    const rise = Math.min(1, t*1.6);
-    const fade = t < 0.15 ? t/0.15 : (1 - Math.max(0, (t-0.55))/0.45);
-    n.mesh.position.y = 0.3 + rise * CELL*2.4;
-    n.mesh.scale.setScalar(1 + t*3.5);
-    n.mesh.material.opacity = 0.3*fade;
+
+    // Fase 1 (0-15%): la palla di fuoco iniziale a terra, che si espande e sfuma in fretta.
+    const fireT = Math.min(1, t/0.15);
+    n.fireball.scale.setScalar(1 + fireT*2.2);
+    n.fireball.material.opacity = 0.95 * (1 - fireT);
+
+    // Fase 2 (dal 5% al 70%): il gambo si allunga dal suolo fino a circa
+    // il 62% dell'altezza finale, mantenendo lo spessore.
+    const stemT = Math.min(1, Math.max(0, (t-0.05)/0.65));
+    const stemH = Math.max(0.05, stemT * targetH * 0.62);
+    n.stem.scale.y = stemH;
+    n.stem.position.y = stemH/2;
+    n.stem.material.opacity = 0.55 * (1 - Math.max(0, (t-0.6))/0.4);
+
+    // Fase 3 (dal 10% al 100%): la cappella sale in cima al gambo e si
+    // allarga progressivamente, sfumando solo nell'ultimo tratto.
+    const capT = Math.min(1, Math.max(0, (t-0.10)/0.85));
+    const capY = 0.15*targetH + capT * targetH * 0.75;
+    const capScale = 0.4 + capT*2.6;
+    n.cap.position.y = capY;
+    n.cap.scale.set(capScale, capScale*0.55, capScale);
+    n.cap2.position.y = capY - capScale*0.12;
+    n.cap2.scale.set(capScale*0.8, capScale*0.42, capScale*0.8);
+    const capFade = t < 0.75 ? 1 : 1 - (t-0.75)/0.25;
+    n.cap.material.opacity = 0.7 * capFade;
+    n.cap2.material.opacity = 0.5 * capFade;
   }
 
-  // Bonus 3000 punti: onda d'urto concentrica che si espande fino al
-  // raggio massimo e sfuma, stessa idea della 2D (drawShockwaves).
+
+  // Bonus 3000 punti: onda d'urto dell'esplosione (bombe, bomboloni,
+  // superbomb, fungo atomico) — RIDISEGNATA in vero 3D: non piu' un
+  // semplice anello piatto appoggiato a terra, ma una vera SEMISFERA
+  // (guscio) che si espande dal punto di impatto, cosi' l'onda d'urto
+  // si sviluppa anche in ALTEZZA (come una cupola d'energia) e non solo
+  // in raggio sul terreno. Un secondo anello sottile a terra rinforza
+  // la lettura del fronte d'onda che avanza sul pavimento.
   for (let i = shockwaves.length - 1; i >= 0; i--){
     const s = shockwaves[i];
     const t = (now3d - s.start) / SHOCKWAVE_DURATION_MS;
     if (t >= 1){
-      if (s.mesh) scene.remove(s.mesh);
+      if (s.group) scene.remove(s.group);
       shockwaves.splice(i, 1);
       continue;
     }
-    if (!s.mesh){
-      const mat = new THREE.MeshBasicMaterial({ color: s.color, transparent:true, opacity:1, side: THREE.DoubleSide });
-      s.mesh = new THREE.Mesh(new THREE.RingGeometry(0.9, 1, 40), mat);
-      s.mesh.rotation.x = -Math.PI/2;
-      s.mesh.position.set(s.x, 0.05, s.z);
-      scene.add(s.mesh);
+    if (!s.group){
+      const group = new THREE.Group();
+      group.position.set(s.x, 0, s.z);
+      scene.add(group);
+
+      // Guscio semisferico: mezza sfera (phiLength = PI di longitudine
+      // intera, thetaLength = PI/2 -> solo l'emisfero superiore), visto
+      // da entrambi i lati cosi' resta visibile anche dall'interno.
+      const domeMat = new THREE.MeshBasicMaterial({
+        color: s.color, transparent:true, opacity:0.55,
+        side: THREE.DoubleSide, wireframe:false
+      });
+      const dome = new THREE.Mesh(
+        new THREE.SphereGeometry(1, 28, 14, 0, Math.PI*2, 0, Math.PI/2),
+        domeMat
+      );
+      group.add(dome);
+
+      // Sottile guscio "interno" leggermente piu' chiaro, per dare
+      // profondita' e l'idea di un doppio fronte d'onda concentrico.
+      const domeMat2 = new THREE.MeshBasicMaterial({
+        color: new THREE.Color(s.color).offsetHSL(0,0,0.2), transparent:true,
+        opacity:0.3, side: THREE.DoubleSide
+      });
+      const dome2 = new THREE.Mesh(
+        new THREE.SphereGeometry(1, 20, 10, 0, Math.PI*2, 0, Math.PI/2),
+        domeMat2
+      );
+      group.add(dome2);
+
+      // Anello a terra: rinforza la lettura del fronte d'onda che
+      // avanza sul pavimento, come prima ma ora affiancato dalla cupola.
+      const ringMat = new THREE.MeshBasicMaterial({ color: s.color, transparent:true, opacity:1, side: THREE.DoubleSide });
+      const ring = new THREE.Mesh(new THREE.RingGeometry(0.92, 1, 40), ringMat);
+      ring.rotation.x = -Math.PI/2;
+      ring.position.y = 0.05;
+      group.add(ring);
+
+      s.group = group;
+      s.dome = dome;
+      s.dome2 = dome2;
+      s.ring = ring;
     }
     const maxR = s.radiusCells * CELL;
-    s.mesh.scale.setScalar(Math.max(0.01, maxR * t));
-    s.mesh.material.opacity = 1 - t;
+    // La cupola si espande un po' piu' velocemente all'inizio (radice
+    // quadrata del tempo) per dare la sensazione di un'onda d'urto che
+    // scoppia subito e poi rallenta, e sfuma verso la fine.
+    const expand = Math.sqrt(Math.max(0.0001, t));
+    const r = Math.max(0.01, maxR * expand);
+    s.dome.scale.setScalar(r);
+    s.dome2.scale.setScalar(r * 0.85);
+    s.ring.scale.setScalar(Math.max(0.01, maxR * t));
+    const fade = 1 - t;
+    s.dome.material.opacity = 0.55 * fade;
+    s.dome2.material.opacity = 0.3 * fade;
+    s.ring.material.opacity = fade;
   }
+
 
   // Bonus 3400 punti: cerchi del terremoto attivi (msg.quakes, aggiornati
   // ad ogni "state"). Il cerchio "esplode" in apertura nel primo 15% della
