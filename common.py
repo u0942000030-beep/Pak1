@@ -132,6 +132,25 @@ LASER_INTERVAL_SECONDS = 1.0   # ogni quanto il laser spara un colpo, una volta 
 LASER_FIRST_DELAY_SECONDS = 1.0  # attesa del primo colpo dopo lo sblocco
 LASER_PROJECTILE_SPEED = 20.0  # celle al secondo percorse dal proiettile laser (raddoppiata: e' un proiettile vero, deve sentirsi veloce)
 LASER_BOUNCE_DISTANCE = 12     # celle percorribili dopo il primo rimbalzo su una parete (bonus 150 punti)
+LASER_LOW_TARGET_PITCH = 0.35  # radianti: il colpo colpisce un bersaglio BASSO (pet a terra) solo se lo sparatore mirava in giu' di almeno questo angolo; sopra questa soglia il colpo passa alto e lo sorvola (i giocatori, ad altezza normale, restano sempre colpibili a prescindere dal pitch)
+# ---- hitbox precisa di player e pet (laser/missili) ----
+# Il vecchio sistema considerava un colpo "a segno" se il proiettile
+# entrava nella STESSA CELLA INTERA occupata dal bersaglio (int(floor(x)),
+# int(floor(y))), indipendentemente da dove esattamente si trovassero
+# proiettile e bersaglio dentro quella cella: due entita' agli angoli
+# opposti della stessa cella (fino a ~1.4 celle di distanza reale, sulla
+# diagonale) risultavano "sovrapposte" tanto quanto due che si toccavano
+# davvero, e un colpo che sfiorava il bordo di una cella vicina mancava il
+# bersaglio anche se in realta' lo aveva quasi centrato. Player e pet si
+# muovono pero' gia' in coordinate continue (player.x/y e pet["x"]/["y"]
+# sono float, non interi), quindi il colpo ora e' considerato a segno solo
+# se la distanza EUCLIDEA reale fra il punto corrente del proiettile e il
+# centro del bersaglio e' entro il raggio della sua hitbox (vedi
+# hitbox_hit qui sotto). Il player e' un personaggio "in piedi" quindi ha
+# un ingombro maggiore del pet, piccolo e basso a terra.
+PLAYER_HITBOX_RADIUS = 0.35   # celle: raggio della hitbox del player (giocatore)
+PET_HITBOX_RADIUS = 0.28      # celle: raggio della hitbox del pet, piu' piccolo del player
+
 MINES_COUNT = 1                # numero di mine disponibili una volta sbloccato il bonus 200 punti (ridotto da 2 a 1)
 MINE_DOUBLE_TAP_MS = 350       # finestra (ms) del doppio tocco freccia destra/D che sgancia una mina (uso lato client)
 PORTAL_COOLDOWN_SECONDS = 1.2  # anti ping-pong: dopo un teletrasporto i portali si ignorano per un attimo
@@ -500,7 +519,7 @@ OCCULT_TESLA_TELEPORT_DISTANCE_CELLS = 10  # distanza (Manhattan) esatta a cui r
 # giocatore per round (vedi Player.potion_used).
 POTION_THRESHOLD = 3400
 POTION_THROW_RANGE_CELLS = 5     # distanza (caselle) del lancio, oltre i muri
-POTION_RADIUS_CELLS = 5          # raggio del terremoto (caselle, distanza Manhattan)
+POTION_RADIUS_CELLS = 2.5        # raggio del terremoto (caselle, distanza Manhattan) — dimezzato rispetto a 5, per allinearsi al cerchio visivo gia' ridotto nel client 3D
 POTION_EFFECT_SECONDS = 5.0      # durata del terremoto a terra
 POTION_SLOW_MULT = 0.5           # rallentamento dei giocatori dentro il cerchio (-50%)
 
@@ -897,6 +916,23 @@ def is_wall(maze, w, h, x, y):
     if x < 0 or y < 0 or y >= h or x >= w:
         return True
     return maze[y][x] == "#"
+
+
+def hitbox_hit(px, py, tx, ty, radius):
+    """Vera hitbox del personaggio: True se il punto (px, py) - tipicamente
+    la posizione corrente di un proiettile durante uno dei suoi micro-passi
+    - cade dentro il cerchio di raggio 'radius' centrato sulla posizione
+    REALE del bersaglio (tx, ty), entrambe in coordinate continue (celle).
+    Sostituisce il vecchio confronto "stessa cella intera"
+    (int(floor(px))==int(floor(tx)) e int(floor(py))==int(floor(ty))), che
+    trattava come "colpiti" anche bersagli fino a ~1.4 celle di distanza
+    reale (angoli opposti della stessa cella) e mancava invece bersagli il
+    cui centro era appena oltre il confine di cella pur essendo a un pelo
+    dal proiettile. Con questa funzione la precisione del colpo dipende
+    solo dalla distanza euclidea vera, non da dove cadono i confini della
+    griglia."""
+    dx, dy = px - tx, py - ty
+    return (dx * dx + dy * dy) <= (radius * radius)
 
 
 def bfs_path(maze, w, h, start, goal):

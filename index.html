@@ -181,6 +181,10 @@ const COLOR_NAMES = Object.keys(COLOR_HEX);
 const CELL = 2;       // dimensione di una cella nel mondo 3D
 const WALL_H = 1.6;
 const EYE_HEIGHT = 1.15;
+// Solo estetica: quanto velocemente il proiettile laser sale/scende in
+// base al pitch di mira (vedi case "laser_fire"). Non tocca in alcun modo
+// la collisione, che resta sul piano orizzontale come sempre.
+const LASER_PROJECTILE_SPEED_VISUAL = 6;
 
 /* ============================================================
    MURI A CUBETTI IMPILATI: invece di un unico box CELLxWALL_Hx
@@ -1172,6 +1176,14 @@ let megaSucks = []; // {x0,z0,x1,z1,start,dur}
 // ogni frame.
 let airstrikeReticle = null;   // THREE.Group o null se non si sta mirando
 let airstrikeReticleRow = null; // ultima riga per cui e' stato costruito
+let quakeReticle = null;        // THREE.Group della X bianca di mira della pozione terremoto, o null
+// Coda dei pitch (inclinazione verticale dello sguardo) dei propri ultimi
+// spari, in attesa della conferma "laser_fire" dal server: il server non
+// conosce/rimanda il pitch (il gioco resta 2D lato collisioni), quindi la
+// traiettoria visiva inclinata viene ricostruita qui abbinando il primo
+// laser_fire in arrivo con shooter===myId al pitch piu' vecchio in coda
+// (FIFO: gli spari vengono confermati nello stesso ordine in cui partono).
+let myLaserPitchQueue = [];
 let portals = [];          // [[x,y], ...] ricevuti dal server con la mappa (msg.portals) — coordinate di griglia, fisse per tutto il round
 let portalMeshes = [];     // THREE.Group per ciascun portale, stesso ordine di "portals"
 let portalOn = true;       // stato acceso/spento a cicli (msg.portal_on), aggiornato ad ogni "state"
@@ -1333,7 +1345,15 @@ function makeMushroomMesh(hex, mega, seedVal, twin){
   // trasformato raggiunge la stessa altezza della cima della Tesla
   // (TESLA_TOP_Y = WALL_TOTAL_H + 1.1 = 3.1), come richiesto: prima era
   // solo "piu' grande del normale" (1.9x) ma restava sotto ai muri.
-  const s = mega ? 4.0 : 1;
+  // Il fungo ATOMICO normale (mega=false) resta invariato nel ramo mega,
+  // ma va dimezzato: "s" scala l'intero fungo (gambo+cappella) in blocco,
+  // quindi basta portarlo a 0.5 SOLO quando non e' mega.
+  const s = mega ? 4.0 : 0.5;
+  // Rapporto di "tozzezza" del gambo, applicato SOLO al fungo atomico
+  // normale: aumenta i raggi (base/media/cima) rispetto all'altezza senza
+  // toccare "s", cosi' il gambo risulta piu' corto e panciuto invece di
+  // restare semplicemente una versione rimpicciolita di quello grande.
+  const stemStubby = mega ? 1.0 : 1.6;
   seedVal = seedVal || 0;
   // PRNG deterministico piccolo (mulberry32-style) per variare ogni fungo
   // in modo stabile senza dipendere da Math.random().
@@ -1359,11 +1379,14 @@ function makeMushroomMesh(hex, mega, seedVal, twin){
     // Gambo bulboso: costruito con due tronchi di cono impilati, piu'
     // largo alla base (radice) e via via piu' stretto salendo verso la
     // cappella, per un profilo "a fiaschetto" tipico del porcino invece
-    // del cilindro uniforme di prima.
-    const stemH = 0.34*s*scale;
-    const rBase = 0.15*s*scale*stemBulge;
-    const rMid  = 0.105*s*scale;
-    const rTop  = 0.085*s*scale;
+    // del cilindro uniforme di prima. "stemStubby" (>1 solo per il fungo
+    // atomico normale, mega esclusa) accorcia l'altezza del gambo e ne
+    // allarga i raggi in proporzione, per un aspetto tozzo/panciuto
+    // invece di un semplice fungo grande rimpicciolito.
+    const stemH = 0.34*s*scale / stemStubby;
+    const rBase = 0.15*s*scale*stemBulge*stemStubby;
+    const rMid  = 0.105*s*scale*stemStubby;
+    const rTop  = 0.085*s*scale*stemStubby;
     const lower = new THREE.Mesh(
       new THREE.CylinderGeometry(rMid, rBase, stemH*0.55, 12, 1),
       stemShadeMat
@@ -1491,12 +1514,24 @@ function deformGeometry(geo, amount, seedBase){
   // un piccolo rumore deterministico (seedBase), per rompere la perfezione
   // geometrica e dare un aspetto "scolpito a mano" tipico della roccia,
   // senza dipendere da librerie esterne di noise.
+  // NB: la classica formula "noise" GLSL (sin(seed)*43758.5453 % 1) in
+  // JS non va bene cosi' com'e': sin() puo' restituire valori negativi e
+  // il prodotto per una costante enorme, passato a "%", da' un resto che
+  // NON e' garantito piccolo e stabile in floating point — il risultato
+  // erano offset giganteschi che facevano esplodere la geometria in
+  // schegge invece di limarla appena (il bug del golem "a pezzi"). Qui
+  // si prende solo la parte frazionaria positiva (fract-like), sempre in
+  // [0,1), prima di ricentrare su [-0.5, 0.5).
+  function hashFrac(x){
+    const v = Math.sin(x) * 43758.5453;
+    return v - Math.floor(v);
+  }
   const pos = geo.attributes.position;
   for (let i = 0; i < pos.count; i++){
     const seed = seedBase + i * 37.13;
-    const nx = Math.sin(seed) * 43758.5453 % 1;
-    const ny = Math.sin(seed * 1.7 + 11) * 43758.5453 % 1;
-    const nz = Math.sin(seed * 2.3 + 23) * 43758.5453 % 1;
+    const nx = hashFrac(seed);
+    const ny = hashFrac(seed * 1.7 + 11);
+    const nz = hashFrac(seed * 2.3 + 23);
     pos.setX(i, pos.getX(i) + (nx - 0.5) * amount);
     pos.setY(i, pos.getY(i) + (ny - 0.5) * amount);
     pos.setZ(i, pos.getZ(i) + (nz - 0.5) * amount);
@@ -1760,6 +1795,42 @@ function makeAirstrikeReticle(colorHex, row){
 
   return g;
 }
+
+// Mirino della pozione terremoto (bonus 3400 punti): a differenza
+// dell'attacco aereo (che mira su una riga intera, comunicata dal
+// server via myState.airstrike_row), la pozione mira liberamente in
+// avanti a distanza fissa (5 caselle, anche oltre i muri) e il server
+// non manda alcun punto di mira — calcola tutto da solo alla seconda
+// pressione. Per mostrare comunque dove cadra' la pozione, il punto
+// viene ricalcolato qui lato client con la stessa proiezione (posizione
+// del giocatore + direzione di sguardo "yaw" * 5 caselle): una grande X
+// bianca disegnata a terra, ben visibile, che segue lo sguardo in tempo
+// reale mentre si mira.
+function makeQuakeReticleX(){
+  const g = new THREE.Group();
+  const armMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent:true, opacity:0.95, side: THREE.DoubleSide });
+  const armGeo = new THREE.PlaneGeometry(CELL*0.85, CELL*0.16);
+  const arm1 = new THREE.Mesh(armGeo, armMat);
+  arm1.rotation.x = -Math.PI/2;
+  arm1.rotation.z = Math.PI/4;
+  arm1.position.y = 0.04;
+  g.add(arm1);
+  const arm2 = new THREE.Mesh(armGeo.clone(), armMat);
+  arm2.rotation.x = -Math.PI/2;
+  arm2.rotation.z = -Math.PI/4;
+  arm2.position.y = 0.04;
+  g.add(arm2);
+  // Alone tenue sotto la X, per farla risaltare meglio sul terreno.
+  const halo = new THREE.Mesh(
+    new THREE.CircleGeometry(CELL*0.55, 20),
+    new THREE.MeshBasicMaterial({ color: 0xffffff, transparent:true, opacity:0.12, side: THREE.DoubleSide })
+  );
+  halo.rotation.x = -Math.PI/2;
+  halo.position.y = 0.02;
+  g.add(halo);
+  return g;
+}
+
 // d'azione, con crepe che si irradiano dal centro e si allungano man mano
 // che il terremoto "si apre" (stessa idea della 2D: grow = min(1,
 // progress/0.15)). Costruito una sola volta per id (i semi delle crepe
@@ -3988,9 +4059,20 @@ document.addEventListener("mousedown", e => {
   // Manda il vettore di mira LIBERO (non piu' agganciato ai 4 cardinali):
   // cosi' il proiettile viaggia esattamente dove sto guardando, comprese
   // le diagonali e qualunque angolo intermedio. "direction" cardinale
-  // resta inviata solo come fallback/compatibilita'.
+  // resta inviata solo come fallback/compatibilita'. "pitch" (inclinazione
+  // verticale dello sguardo, su/giu') viene mandato in piu' solo per dare
+  // al colpo una traiettoria VISIVA inclinata (sale se miri in alto,
+  // scende se miri in basso): il gioco resta un top-down puro, quindi chi
+  // viene colpito e' deciso comunque dalla cella sul piano orizzontale
+  // esattamente come prima - qui serve solo a vedere meglio dove si sta
+  // sparando (utile su pet/bersagli bassi).
   const dir = dirFromVector(fx, fz);
-  sendMsg({ type:"fire_laser", direction: dir, aim: [fx, fz] });
+  myLaserPitchQueue.push(pitch);
+  // "pitch" non e' solo estetico: il server lo usa anche per decidere se
+  // il colpo e' abbastanza rivolto verso il basso da poter colpire un
+  // bersaglio A TERRA (pet nemico). Miralo in basso per prendere di mira
+  // i pet, altrimenti il colpo li sorvola.
+  sendMsg({ type:"fire_laser", direction: dir, aim: [fx, fz], pitch: pitch });
 });
 
 /* ============================================================
@@ -4037,7 +4119,14 @@ function placeMineChainStep(){
   if (myState.mines && myState.mines_left > 0){
     sendMsg({ type:"place_mine" });
   } else {
-    sendMsg({ type:"place_mortar" });
+    // Bonus 3400 (pozione terremoto), fase di LANCIO (seconda pressione,
+    // myState.potion_aiming gia' true): manda anche il vettore di mira
+    // libero [fx, fz] preso dallo sguardo/mouse corrente, esattamente
+    // come fire_laser. Per tutti gli altri gradini della catena "aim"
+    // viene semplicemente ignorato dal server, quindi e' innocuo
+    // includerlo sempre in questo unico punto condiviso.
+    const fx = -Math.sin(yaw), fz = -Math.cos(yaw);
+    sendMsg({ type:"place_mortar", aim: [fx, fz] });
   }
 }
 window.addEventListener("keydown", e => {
@@ -4216,6 +4305,21 @@ function drawMinimap(players){
     minimapCtx.arc(offX + (p.x+0.5)*cell, offY + (p.y+0.5)*cell, Math.max(2.5, cell*0.35), 0, Math.PI*2);
     minimapCtx.fill();
   });
+
+  // mirino dell'attacco aereo: mentre sto mirando (myState.airstrike_aiming)
+  // evidenzio l'intera riga scelta (myState.airstrike_row) sulla minimappa,
+  // cosi' si vede subito dove cadranno le bombe invece di doverlo intuire
+  // solo dal reticolo 3D nel mondo di gioco.
+  if (myState && myState.airstrike_aiming){
+    const row = Math.max(1, Math.min((mazeH||20) - 2, myState.airstrike_row || 0));
+    const t = performance.now() * 0.006;
+    const pulse = 0.35 + 0.25 * Math.sin(t);
+    minimapCtx.fillStyle = `rgba(255,60,60,${pulse.toFixed(2)})`;
+    minimapCtx.fillRect(offX, offY + row*cell, cell*mazeW, cell);
+    minimapCtx.strokeStyle = "#ff3c3c";
+    minimapCtx.lineWidth = 1.5;
+    minimapCtx.strokeRect(offX, offY + row*cell, cell*mazeW, cell);
+  }
 
   // giocatore locale: freccia bianca orientata come lo sguardo (yaw),
   // sempre disegnata per ultima cosi' resta sopra tutto il resto.
@@ -4834,6 +4938,16 @@ function onState(msg){
   (msg.mushrooms||[]).forEach(m => {
     seenMushrooms.add(m.id);
     let g = mushroomMeshes[m.id];
+    // Se il fungo e' gia' stato costruito ma NON come mega e il server ora
+    // dice m.mega=true (bottone di trasformazione premuto), la vecchia
+    // mesh piccola va buttata e ricostruita da capo alla scala mega: prima
+    // "if (!g)" saltava sempre questo caso e il fungo restava piccolo per
+    // sempre anche dopo la trasformazione lato server.
+    if (g && !!m.mega && !g.userData.mega){
+      scene.remove(g);
+      g = null;
+      delete mushroomMeshes[m.id];
+    }
     if (!g){
       const hex = playerColorHex[m.owner] !== undefined ? playerColorHex[m.owner] : 0xff5fd1;
       // Seed deterministico per esemplare (dall'id, cosi' e' identico su
@@ -4865,7 +4979,11 @@ function onState(msg){
     let g = quakeMeshes[q.id];
     if (!g){
       const hex = playerColorHex[q.owner] !== undefined ? playerColorHex[q.owner] : 0x9be7ff;
-      g = makeQuakeMesh(hex, q.radius || 0);
+      // Il server manda q.radius (8 caselle di default), ma a richiesta
+      // il raggio d'azione visivo del terremoto va dimezzato: la mesh
+      // (cerchio di crepe + zona d'effetto) viene quindi costruita a
+      // meta' del valore ricevuto, invece del valore pieno.
+      g = makeQuakeMesh(hex, (q.radius || 0) * 0.5);
       g.position.set(q.x*CELL + CELL/2, 0, q.y*CELL + CELL/2);
       scene.add(g);
       quakeMeshes[q.id] = g;
@@ -5115,7 +5233,20 @@ function onGameEvent(msg){
       // non da un punto piu' basso che sembrava "scentrato".
       mesh.position.set(wx, EYE_HEIGHT, wz);
       scene.add(mesh);
-      laserMeshes[msg.id] = { mesh, x:wx, z:wz, targetX:wx, targetZ:wz, dir: msg.dir };
+      // Traiettoria verticale VISIVA (solo estetica, la collisione resta
+      // sul piano orizzontale come sempre): se questo e' un colpo sparato
+      // da me, il pitch al momento dello sparo era stato accodato in
+      // myLaserPitchQueue (FIFO). Un pitch positivo (guardo in alto,
+      // vedi mousemove: pitch -= movementY, quindi alzare il mouse lo
+      // rende positivo) fa salire il colpo; negativo lo fa scendere,
+      // cosi' mirare un pet basso o un bersaglio in alto si "vede"
+      // davvero nella traiettoria del proiettile.
+      let vy = 0;
+      if (msg.shooter === myId && myLaserPitchQueue.length){
+        const firedPitch = myLaserPitchQueue.shift();
+        vy = Math.sin(firedPitch) * LASER_PROJECTILE_SPEED_VISUAL;
+      }
+      laserMeshes[msg.id] = { mesh, x:wx, z:wz, targetX:wx, targetZ:wz, dir: msg.dir, y: EYE_HEIGHT, vy };
       playLaser();
       break;
     }
@@ -5614,7 +5745,14 @@ function animate(){
   Object.values(laserMeshes).forEach(lz => {
     lz.x += (lz.targetX - lz.x) * LASER_LERP;
     lz.z += (lz.targetZ - lz.z) * LASER_LERP;
-    lz.mesh.position.set(lz.x, EYE_HEIGHT, lz.z);
+    // Traiettoria verticale VISIVA (solo i colpi sparati da me hanno un
+    // vy diverso da zero, vedi case "laser_fire"): sale/scende seguendo
+    // il pitch di mira, con un margine per restare sempre visibile senza
+    // sprofondare sotto al pavimento o sfondare il soffitto della scena.
+    if (lz.vy){
+      lz.y = Math.max(0.15, Math.min(3.4, (lz.y ?? EYE_HEIGHT) + lz.vy * dt));
+    }
+    lz.mesh.position.set(lz.x, lz.y ?? EYE_HEIGHT, lz.z);
   });
   // bonus 400 punti: missile guidato, stessa interpolazione dei laser
   Object.values(missileMeshes).forEach(mz => {
@@ -5920,6 +6058,30 @@ function animate(){
     scene.remove(airstrikeReticle);
     airstrikeReticle = null;
     airstrikeReticleRow = null;
+  }
+
+  // Mirino a X della pozione terremoto (bonus 3400 punti): ora la mira e'
+  // LIBERA, gestita dal mouse esattamente come i proiettili del laser
+  // (stesso vettore [fx,fz] = -sin(yaw), -cos(yaw) mandato al server in
+  // "aim" al momento del lancio, vedi placeMineChainStep). La X segue
+  // quindi lo sguardo in tempo reale, non piu' agganciata alle 4
+  // direzioni cardinali di player.facing.
+  if (myState && myState.potion && !myState.potion_used){
+    const mePotion = lastPlayersForMinimap.find(p => p.id === myId);
+    if (mePotion){
+      const POTION_RANGE_CELLS = 5; // POTION_THROW_RANGE_CELLS lato server
+      const fx = -Math.sin(yaw), fz = -Math.cos(yaw); // stesso vettore mandato al server
+      let tx = Math.max(0, Math.min((mazeW||1) - 1, mePotion.x + fx * POTION_RANGE_CELLS));
+      let ty = Math.max(0, Math.min((mazeH||1) - 1, mePotion.y + fz * POTION_RANGE_CELLS));
+      if (!quakeReticle){
+        quakeReticle = makeQuakeReticleX();
+        scene.add(quakeReticle);
+      }
+      quakeReticle.position.set(tx*CELL + CELL/2, 0, ty*CELL + CELL/2);
+      quakeReticle.visible = true;
+    }
+  } else if (quakeReticle){
+    quakeReticle.visible = false;
   }
 
   // bonus 1400 punti: bomboloni. Fermi (nessuna interpolazione, come le

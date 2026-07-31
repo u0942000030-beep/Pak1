@@ -43,7 +43,7 @@ from websockets.http11 import Response
 from common import (
     TICK_DT, STATE_BROADCAST_EVERY_N_TICKS, COUNTDOWN_SECONDS, ROUND_SECONDS,
     MAX_PLAYERS, MIN_PLAYERS, NORMAL_SPEED, ASSASSIN_SPEED_MULT,
-    COLORS, CHARACTERS, DIRECTIONS, is_wall, ROOM_CODE_CHARS, SECONDARY_ONLY_COLORS,
+    COLORS, CHARACTERS, DIRECTIONS, is_wall, hitbox_hit, ROOM_CODE_CHARS, SECONDARY_ONLY_COLORS,
     pick_random_maze, choose_power_pellet_cells, bfs_path,
     FlowFieldCache, SpatialGrid,
     BONUS_THRESHOLDS, GHOST_SECONDS,
@@ -51,7 +51,8 @@ from common import (
     PELLET_RESPAWN_SECONDS, MEGA_PELLET_POINTS, MEGA_PELLET_INTERVAL_SECONDS, SUPER_ASSASSIN_THRESHOLD,
     SUPER_ASSASSIN_DURATION_SECONDS, LASER_RANGE_CELLS,
     SPAWN_PROTECT_SECONDS, MIN_SPAWN_DISTANCE, LASER_INTERVAL_SECONDS, LASER_FIRST_DELAY_SECONDS,
-    LASER_PROJECTILE_SPEED, LASER_BOUNCE_DISTANCE, MINES_COUNT, SUPERBOMB_COUNT,
+    LASER_PROJECTILE_SPEED, LASER_BOUNCE_DISTANCE, LASER_LOW_TARGET_PITCH, MINES_COUNT, SUPERBOMB_COUNT,
+    PLAYER_HITBOX_RADIUS, PET_HITBOX_RADIUS,
     PORTAL_COOLDOWN_SECONDS, PORTAL_ON_SECONDS, PORTAL_OFF_SECONDS,
     MISSILE_SPEED_MULT, MISSILES_COUNT, MISSILE_RETARGET_SECONDS, MISSILE_LOCK_DISTANCE,
     TRAP_THRESHOLD, TRAP_DURATION_SECONDS, TRAP_RANGE, TRAP_MAX_USES,
@@ -2215,7 +2216,7 @@ class Room:
                 if p.laser_cd < 0:
                     p.laser_cd = 0.0
 
-    def try_fire_laser(self, shooter, direction=None, aim=None):
+    def try_fire_laser(self, shooter, direction=None, aim=None, pitch=None):
         """Spara un colpo di laser su richiesta esplicita del giocatore
         (tasto sinistro del mouse, mira libera con la visuale 3D). Sostituisce
         l'auto-fire di prossimita' della versione 2D: qui il colpo parte
@@ -2230,7 +2231,13 @@ class Room:
         sguardo del giocatore (yaw della camera), cosi' il colpo parte
         esattamente dove sta guardando, comprese le diagonali. 'direction'
         cardinale resta come fallback per client vecchi o se 'aim' manca/e'
-        invalido (es. vettore nullo)."""
+        invalido (es. vettore nullo).
+
+        'pitch' e' l'inclinazione VERTICALE dello sguardo (asse Z/altezza),
+        gia' mandata dal client per il solo effetto visivo della traiettoria:
+        ora viene usata anche ai fini di gioco, per decidere se il colpo
+        e' abbastanza "basso" da colpire bersagli a terra come i pet (vedi
+        move_lasers)."""
         if not shooter.alive or not shooter.has_laser:
             return
         if shooter.is_assassin:
@@ -2240,7 +2247,7 @@ class Room:
         if shooter.trapped_left > 0:
             return
         dx, dy = self._resolve_aim_vector(aim, direction, shooter.facing)
-        self.spawn_laser(shooter, dx, dy, direction or shooter.facing)
+        self.spawn_laser(shooter, dx, dy, direction or shooter.facing, pitch=pitch)
 
     @staticmethod
     def _resolve_aim_vector(aim, direction=None, facing=None):
@@ -2261,7 +2268,7 @@ class Room:
         dx, dy = DIRECTIONS.get(direction, DIRECTIONS.get(facing, (1, 0)))
         return float(dx), float(dy)
 
-    def spawn_laser(self, shooter, dx=None, dy=None, facing=None):
+    def spawn_laser(self, shooter, dx=None, dy=None, facing=None, pitch=None):
         """Crea un nuovo proiettile laser (singolo colpo) che parte dal
         centro della cella dello sparatore e viaggia in linea retta nella
         direzione indicata: un vettore LIBERO, normalizzato, che puo'
@@ -2269,7 +2276,14 @@ class Room:
         colpo segue esattamente la mira del giocatore, diagonali comprese.
         Se non fornita, ricade sulla direzione frontale del personaggio. Il
         proiettile vero e proprio avanza poi, un tick alla volta, dentro
-        move_lasers()."""
+        move_lasers().
+
+        'pitch' e' l'inclinazione verticale della mira (radianti, positivo
+        = guardo in alto, negativo = guardo in basso, stessa convenzione
+        del client): viene salvata sul proiettile per decidere in
+        move_lasers() se il colpo e' abbastanza "basso" da colpire un
+        bersaglio a terra (pet). Se assente/non valida, il colpo si
+        comporta come mira neutra (non abbastanza bassa per i pet)."""
         if dx is None or dy is None:
             dx, dy = DIRECTIONS.get(shooter.facing, (1, 0))
         length = math.hypot(dx, dy)
@@ -2278,6 +2292,10 @@ class Room:
         else:
             dx, dy = DIRECTIONS.get(shooter.facing, (1, 0))
         facing = facing or shooter.facing
+        try:
+            pitch_val = float(pitch) if pitch is not None else 0.0
+        except (TypeError, ValueError):
+            pitch_val = 0.0
         laser = {
             "id": uuid.uuid4().hex[:8],
             "owner": shooter.id,
@@ -2288,6 +2306,7 @@ class Room:
             "x": shooter.x + 0.5, "y": shooter.y + 0.5,
             "dx": dx, "dy": dy,
             "bounce_left": None,  # None finche' non ha ancora rimbalzato
+            "pitch": pitch_val,
         }
         self.lasers.append(laser)
         self.push_event({
@@ -2393,17 +2412,23 @@ class Room:
                     if lz["bounce_left"] <= 0:
                         destroyed = True
                         victims = [
-                            q for q in self.player_grid.at_cell(ncx, ncy)
+                            q for q in self.players.values()
                             if q.alive and self.is_enemy_ids(q.id, lz["owner"])
                             and q.ghost_left <= 0 and q.prot_left <= 0
+                            and hitbox_hit(lz["x"], lz["y"], q.x, q.y, PLAYER_HITBOX_RADIUS)
                         ]
                         for v in victims:
                             self.kill_player(v, "laser", lz["owner"])
                         break
+                # Vera hitbox: il colpo e' a segno solo se il punto reale
+                # del proiettile (lz["x"], lz["y"]) cade dentro il cerchio
+                # di raggio PLAYER_HITBOX_RADIUS attorno alla posizione
+                # REALE del bersaglio (non piu' "stessa cella intera").
                 victims = [
-                    q for q in self.player_grid.at_cell(ncx, ncy)
+                    q for q in self.players.values()
                     if q.alive and self.is_enemy_ids(q.id, lz["owner"])
                     and q.ghost_left <= 0 and q.prot_left <= 0
+                    and hitbox_hit(lz["x"], lz["y"], q.x, q.y, PLAYER_HITBOX_RADIUS)
                 ]
                 if victims:
                     armored = [v for v in victims if v.armor_active]
@@ -2428,11 +2453,18 @@ class Room:
                     break
                 # Bonus 900 punti: un colpo laser NEMICO (di un altro
                 # giocatore o di un'altra torretta/pet) distrugge il pet che
-                # trova sulla sua strada, cosi' come un giocatore.
+                # trova sulla sua strada, cosi' come un giocatore. Il pet
+                # e' un bersaglio BASSO (a terra): il colpo lo raggiunge
+                # solo se lo sparatore mirava abbastanza in giu' (pitch
+                # oltre LASER_LOW_TARGET_PITCH); altrimenti il laser gli
+                # passa sopra la testa e prosegue, esattamente come se il
+                # pet non ci fosse.
+                aiming_low = lz.get("pitch", 0.0) <= -LASER_LOW_TARGET_PITCH
                 pet_victims = [
                     pet for pet in self.pets
-                    if self.is_enemy_ids(pet["owner"], lz["owner"]) and pet["x"] == ncx and pet["y"] == ncy
-                ]
+                    if self.is_enemy_ids(pet["owner"], lz["owner"])
+                    and hitbox_hit(lz["x"], lz["y"], pet["x"], pet["y"], PET_HITBOX_RADIUS)
+                ] if aiming_low else []
                 if pet_victims:
                     for pet in pet_victims:
                         self.destroy_pet(pet, "laser", lz["owner"])
@@ -2901,11 +2933,17 @@ class Room:
                     # Un ninja e' immune: il missile lo attraversa senza
                     # detonare, invece di colpirlo (coerente col riaggancio
                     # automatico al bersaglio piu' vicino non-ninja sopra).
+                    # Vera hitbox: il missile e' arrivato al centro-cella
+                    # (nx, ny) in questo passo; considera colpito solo chi
+                    # ha davvero il centro entro PLAYER_HITBOX_RADIUS da li',
+                    # non piu' semplicemente "chiunque sia nella stessa
+                    # cella intera".
                     victims = [
                         q for q in self.players.values()
                         if q.alive and not q.is_assassin
                         and q.ghost_left <= 0 and q.prot_left <= 0
-                        and self.is_enemy_ids(q.id, mz["owner"]) and q.x == nx and q.y == ny
+                        and self.is_enemy_ids(q.id, mz["owner"])
+                        and hitbox_hit(nx, ny, q.x, q.y, PLAYER_HITBOX_RADIUS)
                     ]
                     if victims:
                         armored = [v for v in victims if v.armor_active]
@@ -2927,7 +2965,8 @@ class Room:
                     # pet nemico che trova sulla sua strada.
                     pet_victims = [
                         pet for pet in self.pets
-                        if self.is_enemy_ids(pet["owner"], mz["owner"]) and pet["x"] == nx and pet["y"] == ny
+                        if self.is_enemy_ids(pet["owner"], mz["owner"])
+                        and hitbox_hit(nx, ny, pet["x"], pet["y"], PET_HITBOX_RADIUS)
                     ]
                     if pet_victims:
                         for pet in pet_victims:
@@ -3182,6 +3221,10 @@ class Room:
                 "x": t["x"] + 0.5, "y": t["y"] + 0.5,
                 "dx": float(dx), "dy": float(dy),
                 "bounce_left": None,
+                # Fuoco automatico a raso terra (nessuna vera mira in
+                # altezza): resta in grado di colpire i pet nemici sulla
+                # traiettoria come prima dell'introduzione del pitch.
+                "pitch": -1.0,
             }
             self.lasers.append(laser)
             self.push_event({
@@ -4625,14 +4668,14 @@ class Room:
 
     # ---- bonus 3400 punti: pozione terremoto (tasto "1", DOPO la Tesla occulta) ----
 
-    def try_use_potion(self, player):
+    def try_use_potion(self, player, aim=None):
         """Tasto '1', RIUSATO come VERO ultimo gradino della catena: viene
         chiamato dal dispatch del messaggio "place_mortar" solo quando
         TUTTA la catena precedente e' esaurita (Tesla occulta compresa, o
         divenuta per sempre impossibile). Funziona in DUE tempi:
           1) prima pressione: entra in modalita' MIRA (potion_aiming): il
-             client disegna un mirino a POTION_THROW_RANGE_CELLS caselle
-             davanti al giocatore, nella direzione in cui guarda;
+             client disegna un mirino (una X a terra) seguendo liberamente
+             il mouse/la visuale, esattamente come la mira del laser;
           2) seconda pressione: la boccetta viene LANCIATA verso quel punto
              (volando SOPRA i muri, come le bombe di mortaio) e il
              terremoto parte esattamente li' (vedi update_quakes):
@@ -4641,23 +4684,31 @@ class Room:
              gadget al suo interno - proprio tutte, anche quelle del
              proprietario (vedi quake_destroy).
 
+        'aim' e' il vettore di mira LIBERO ([fx, fz], preso dallo sguardo/
+        mouse del client, stessa idea di try_fire_laser) mandato al momento
+        del LANCIO (seconda pressione): se assente o invalido si ricade sul
+        vecchio 'facing' cardinale, cosi' resta compatibile con client piu'
+        vecchi.
+
         Se il giocatore e' intrappolato dalla trappola di un avversario,
         NON puo' usare alcun bonus finche' non torna libero di muoversi."""
         if not player.alive or player.trapped_left > 0 or not player.has_potion or player.potion_used or player.is_assassin or player.armor_active:
             return
         if not player.potion_aiming:
             # Prima pressione: si entra in modalita' mira. Il mirino vero e
-            # proprio lo disegna il client leggendo potion_aiming + facing
-            # dallo stato pubblico (vedi drawPotionReticle in index.html).
+            # proprio lo disegna il client leggendo potion_aiming e
+            # seguendo liberamente il mouse (vedi index.html), non piu'
+            # solo il facing cardinale.
             player.potion_aiming = True
             self.push_event({"kind": "potion_aim", "player": player.id})
             return
         # Seconda pressione: LANCIO. Il punto d'impatto e' calcolato dal
-        # server (autorita') con la stessa formula usata dal client per il
-        # mirino: cella corrente + facing * POTION_THROW_RANGE_CELLS,
-        # bloccato dentro i bordi della mappa. Puo' cadere anche SU un muro:
-        # la boccetta vola sopra il labirinto e l'effetto e' ad area.
-        tx, ty = self.potion_target_cell(player)
+        # server (autorita') con la stessa mira libera mandata dal client
+        # al momento del click: cella corrente + direzione mirata (aim,
+        # o facing come fallback) * POTION_THROW_RANGE_CELLS, bloccato
+        # dentro i bordi della mappa. Puo' cadere anche SU un muro: la
+        # boccetta vola sopra il labirinto e l'effetto e' ad area.
+        tx, ty = self.potion_target_cell(player, aim)
         player.potion_aiming = False
         player.potion_used = True
         quake = {
@@ -4680,12 +4731,16 @@ class Room:
         # robot, pet, mongolfiere e blob vaganti).
         self.quake_destroy(tx, ty, player.id)
 
-    def potion_target_cell(self, player):
+    def potion_target_cell(self, player, aim=None):
         """Punto d'impatto del lancio: POTION_THROW_RANGE_CELLS caselle
-        davanti al giocatore, nella direzione in cui sta guardando
-        (facing), bloccato dentro i bordi della mappa. I muri NON fermano
-        il lancio: la boccetta vola sopra il labirinto."""
-        dx, dy = DIRECTIONS.get(player.facing or "right", (1, 0))
+        nella direzione mirata, bloccato dentro i bordi della mappa. I
+        muri NON fermano il lancio: la boccetta vola sopra il labirinto.
+
+        'aim' e' il vettore di mira LIBERO ([fx, fz], qualsiasi angolo,
+        non solo i 4 cardinali) mandato dal client al momento del lancio,
+        stessa idea di _resolve_aim_vector usata da try_fire_laser: se
+        assente o invalido si ricade sul vecchio 'facing' cardinale."""
+        dx, dy = self._resolve_aim_vector(aim, None, player.facing or "right")
         tx = max(0, min(self.maze_w - 1, player.x + dx * POTION_THROW_RANGE_CELLS))
         ty = max(0, min(self.maze_h - 1, player.y + dy * POTION_THROW_RANGE_CELLS))
         return tx, ty
@@ -6252,6 +6307,10 @@ class Room:
                         "x": pet["x"] + 0.5, "y": pet["y"] + 0.5,
                         "dx": float(dx), "dy": float(dy),
                         "bounce_left": None,
+                        # Fuoco automatico a raso terra (nessuna vera mira
+                        # in altezza): resta in grado di colpire altri pet
+                        # nemici sulla traiettoria come prima.
+                        "pitch": -1.0,
                     }
                     self.lasers.append(laser)
                     self.push_event({
@@ -6910,10 +6969,14 @@ async def handle_client(ws):
                 aim = msg.get("aim")
                 if not (isinstance(aim, (list, tuple)) and len(aim) == 2):
                     aim = None
+                pitch = msg.get("pitch")
+                if not isinstance(pitch, (int, float)):
+                    pitch = None
                 room.try_fire_laser(
                     player,
                     direction if direction in DIRECTIONS else None,
                     aim,
+                    pitch,
                 )
 
             elif mtype == "activate_trap":
@@ -7101,7 +7164,7 @@ async def handle_client(ws):
                                                     else:
                                                         room.try_place_golem(player)
                                                 else:
-                                                    room.try_use_potion(player)
+                                                    room.try_use_potion(player, aim=msg.get("aim"))
                                             else:
                                                 room.try_activate_occult_tesla(player)
                                         else:
