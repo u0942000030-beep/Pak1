@@ -132,7 +132,23 @@ LASER_INTERVAL_SECONDS = 1.0   # ogni quanto il laser spara un colpo, una volta 
 LASER_FIRST_DELAY_SECONDS = 1.0  # attesa del primo colpo dopo lo sblocco
 LASER_PROJECTILE_SPEED = 20.0  # celle al secondo percorse dal proiettile laser (raddoppiata: e' un proiettile vero, deve sentirsi veloce)
 LASER_BOUNCE_DISTANCE = 12     # celle percorribili dopo il primo rimbalzo su una parete (bonus 150 punti)
-LASER_LOW_TARGET_PITCH = 0.35  # radianti: il colpo colpisce un bersaglio BASSO (pet a terra) solo se lo sparatore mirava in giu' di almeno questo angolo; sopra questa soglia il colpo passa alto e lo sorvola (i giocatori, ad altezza normale, restano sempre colpibili a prescindere dal pitch)
+
+# ---- traiettoria verticale REALE del laser (asse Z) ----
+# Il colpo non e' piu' un semplice raggio 2D con un flag "alto/basso": ha
+# una vera altezza continua che parte dagli occhi dello sparatore e
+# sale/scende seguendo esattamente il pitch di mira (angolo costante,
+# nessuna gravita': chi mira dritto in alto manda il colpo sempre piu' in
+# alto finche' non esce dal range verticale di qualunque bersaglio, chi
+# mira a terra lo fa scendere fino al pavimento). La velocita' verticale e'
+# derivata dalla stessa velocita' del proiettile (LASER_PROJECTILE_SPEED)
+# scomposta secondo l'angolo di mira, cosi' l'angolo percepito a schermo
+# coincide esattamente con quello usato per le collisioni lato server.
+LASER_EYE_HEIGHT = 1.6          # celle: altezza degli occhi/canna dello sparatore, quota di partenza del proiettile (asse Z)
+LASER_MAX_PITCH = 1.45          # radianti (~83 gradi): oltre questo il pitch di mira viene comunque limitato, per evitare traiettorie quasi verticali degeneri
+PLAYER_HEAD_Z = 1.75            # celle: quota della testa del player (limite superiore della sua hitbox verticale)
+PLAYER_FEET_Z = 0.15            # celle: quota dei piedi del player (limite inferiore della sua hitbox verticale)
+PET_HEAD_Z = 0.55               # celle: quota massima del pet (basso, a terra)
+PET_FEET_Z = 0.0                # celle: quota minima del pet (a livello pavimento)
 # ---- hitbox precisa di player e pet (laser/missili) ----
 # Il vecchio sistema considerava un colpo "a segno" se il proiettile
 # entrava nella STESSA CELLA INTERA occupata dal bersaglio (int(floor(x)),
