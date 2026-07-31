@@ -2336,6 +2336,13 @@ class Room:
         self.push_event({
             "kind": "laser_fire", "id": laser["id"], "shooter": shooter.id,
             "x": laser["x"], "y": laser["y"], "z": laser["z"], "dir": facing,
+            # dx/dy/vz: vettore di mira LIBERO (gia' normalizzato in
+            # orizzontale, piu' la componente verticale) usato dal client
+            # per orientare SUBITO il dardo nel verso di sparo corretto,
+            # senza aspettare il primo state successivo: prima non erano
+            # inviati e il proiettile nasceva un frame con l'orientamento
+            # di default (dardo "di traverso" rispetto al mirino).
+            "dx": dx, "dy": dy, "vz": vz,
         })
 
     def move_lasers(self):

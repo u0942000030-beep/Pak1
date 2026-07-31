@@ -1162,7 +1162,13 @@ let golemHitFlashes = {};  // id -> timestamp dell'ultimo colpo incassato (per i
 // sorvola l'intera fila bombardando (msg.airstrikes, pubblico).
 let airstrikeMeshes = {};  // id -> THREE.Group con userData {body} — un aereo per ogni attacco in corso
 let lastAirstrikeBoomAt = 0; // throttle dei boati mentre l'aereo e' in volo dentro la mappa (stessa idea della 2D)
-const ALTITUDE_AIRSTRIKE = 1.6; // l'aereo vola sopra i muri, ben visibile da terra
+// Bug corretto: prima valeva 1.6, ma WALL_TOTAL_H e' 2.0 (vedi calcolo
+// riga ~199) — l'aereo volava quindi SOTTO la cima dei muri, restando
+// nascosto/tagliato da essi vista la visuale in prima persona (ecco
+// perche' l'attacco aereo non si vedeva). Ora vola ben oltre la cima dei
+// muri, come gia' fa la Tesla (TESLA_TOP_Y = WALL_TOTAL_H + margine).
+const AIRSTRIKE_SCALE = 3;           // l'aereo e' grande quanto la mongolfiera (stessa scala 3x)
+const ALTITUDE_AIRSTRIKE = (WALL_TOTAL_H + 1.4) * 1.3; // l'aereo vola sopra i muri, stessa quota della mongolfiera
 // ---- bonus 3800 punti: fungo madre magnetico ----
 // scie di risucchio: un oggetto inghiottito vola in linea retta dal punto
 // in cui si trovava fin dentro il fungo, rimpicciolendosi (stessa idea
@@ -1578,44 +1584,103 @@ function makeMushroomMesh(hex, mega, seedVal, twin){
 
     // Calotta corazzata sulla cappella: guscio a piastre leggermente piu'
     // grande della cupola organica sottostante, con bordo dentellato.
+    // Costruita dentro un gruppo "helmPivot" cosi' da poter applicare
+    // ESATTAMENTE la stessa inclinazione/rotazione/appiattimento del
+    // cappello organico sottostante (mainTiltX/mainTiltZ/mainRotY/
+    // mainFlatten): senza questo la calotta restava sempre "dritta"
+    // mentre il fungo sotto poteva risultare inclinato/ruotato, dando
+    // lo sfasamento visivo segnalato.
+    const helmPivot = new THREE.Group();
+    helmPivot.position.y = stemHFull + capRFull*0.30;
+    helmPivot.rotation.set(mainTiltX, mainRotY, mainTiltZ);
+    g.add(helmPivot);
+
     const helmGeo = new THREE.SphereGeometry(capRFull*1.08, 12, 3, 0, Math.PI*2, 0, Math.PI*0.5);
     const helm = new THREE.Mesh(helmGeo, armorMid);
-    helm.position.y = stemHFull + capRFull*0.30;
     helm.scale.set(1, mainFlatten*1.05, 1);
-    g.add(helm);
+    helmPivot.add(helm);
 
-    // Creste/spuntoni radiali sulla calotta, come una corona corazzata.
+    // Punte metalliche sulla calotta, stesso linguaggio visivo degli
+    // spunzoni del muro di spunzoni (makeSpikeWallMesh/addRadialSpike):
+    // base conica tozza + punta affusolata, innestate radialmente sulla
+    // superficie della calotta invece delle vecchie creste singole.
+    const wallSpikeMat = new THREE.MeshStandardMaterial({ color: 0xcfcfd4, roughness:0.4, metalness:0.2 });
+    const wallSpikeBaseMat = new THREE.MeshStandardMaterial({ color: 0x8a8a90, roughness:0.5 });
     const spikeCount = 8;
+    const helmSpikeLen = capRFull*0.5, helmSpikeR = capRFull*0.16;
     for (let sp = 0; sp < spikeCount; sp++){
       const sa = (sp/spikeCount) * Math.PI*2;
       const sr = capRFull*0.72;
-      const spike = new THREE.Mesh(
-        new THREE.ConeGeometry(0.045*s, 0.16*s, 6),
-        armorDark
+      const px = Math.cos(sa)*sr, pz = Math.sin(sa)*sr;
+      const py = capRFull*mainFlatten*0.35;
+      const dir = new THREE.Vector3(px, py*1.4, pz).normalize();
+
+      const base = new THREE.Mesh(
+        new THREE.CylinderGeometry(helmSpikeR*1.3, helmSpikeR*1.6, helmSpikeR*0.6, 8),
+        wallSpikeBaseMat
       );
-      spike.position.set(
-        Math.cos(sa)*sr,
-        stemHFull + capRFull*0.30 + capRFull*mainFlatten*0.35,
-        Math.sin(sa)*sr
-      );
-      spike.rotation.x = Math.PI*0.12 * Math.cos(sa);
-      spike.rotation.z = -Math.PI*0.12 * Math.sin(sa);
-      g.add(spike);
+      base.position.set(px, py, pz);
+      base.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0), dir);
+      helmPivot.add(base);
+
+      const spike = new THREE.Mesh(new THREE.ConeGeometry(helmSpikeR, helmSpikeLen, 6), wallSpikeMat);
+      spike.position.set(px + dir.x*helmSpikeLen*0.45, py + dir.y*helmSpikeLen*0.45, pz + dir.z*helmSpikeLen*0.45);
+      spike.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0), dir);
+      helmPivot.add(spike);
     }
 
     // Nucleo pulsante centrale in cima alla calotta: l'"occhio" del
     // gigafungo, riferimento in animate() per farlo respirare/pulsare.
     const coreMat = new THREE.MeshStandardMaterial({ color: hex, emissive: hex, emissiveIntensity: 1.3, roughness:0.3 });
     const megaCore = new THREE.Mesh(new THREE.SphereGeometry(0.09*s, 14, 12), coreMat);
-    megaCore.position.y = stemHFull + capRFull*0.30 + capRFull*mainFlatten*0.62;
-    g.add(megaCore);
+    megaCore.position.y = capRFull*mainFlatten*0.62;
+    helmPivot.add(megaCore);
     const coreRing = new THREE.Mesh(
       new THREE.TorusGeometry(0.13*s, 0.018*s, 6, 20),
       armorDark
     );
     coreRing.position.copy(megaCore.position);
     coreRing.rotation.x = Math.PI/2;
-    g.add(coreRing);
+    helmPivot.add(coreRing);
+
+    // Teschio bianco in cima alla calotta, accanto al nucleo pulsante,
+    // stesso identico design del muro di spunzoni (makeSpikeWallMesh):
+    // orbite incavate con pupille, naso e mascella con denti.
+    function makeMegaSkull(){
+      const skull = new THREE.Group();
+      const skullMat = new THREE.MeshBasicMaterial({ color: 0xf2f2f0 });
+      const skullDarkMat = new THREE.MeshBasicMaterial({ color: 0x1a1a1a });
+      const cranium = new THREE.Mesh(new THREE.CircleGeometry(0.24, 16), skullMat);
+      skull.add(cranium);
+      [-0.09, 0.09].forEach(dx => {
+        const socket = new THREE.Mesh(new THREE.CircleGeometry(0.062, 10), skullDarkMat);
+        socket.position.set(dx, 0.035, 0.001);
+        skull.add(socket);
+        const pupil = new THREE.Mesh(new THREE.CircleGeometry(0.022, 8), skullMat);
+        pupil.position.set(dx, 0.035, 0.002);
+        skull.add(pupil);
+      });
+      const noseShape = new THREE.Shape();
+      noseShape.moveTo(-0.032, 0.0); noseShape.lineTo(0, -0.08); noseShape.lineTo(0.032, 0.0); noseShape.closePath();
+      const nose = new THREE.Mesh(new THREE.ShapeGeometry(noseShape), skullDarkMat);
+      nose.position.set(0, -0.01, 0.001);
+      skull.add(nose);
+      const jaw = new THREE.Mesh(new THREE.CircleGeometry(0.145, 12, Math.PI, Math.PI), skullMat);
+      jaw.position.set(0, -0.12, 0.0005);
+      skull.add(jaw);
+      for (let i = -1.5; i <= 1.5; i++){
+        const tooth = new THREE.Mesh(new THREE.PlaneGeometry(0.03, 0.05), skullDarkMat);
+        tooth.position.set(i * 0.05, -0.135, 0.001);
+        skull.add(tooth);
+      }
+      return skull;
+    }
+    const megaSkull = makeMegaSkull();
+    const skullScale = 0.85*s;
+    megaSkull.scale.set(skullScale, skullScale, skullScale);
+    megaSkull.position.set(0, capRFull*mainFlatten*0.62 + helmSpikeR*1.4, 0);
+    megaSkull.rotation.x = -Math.PI/2;
+    helmPivot.add(megaSkull);
 
     // Artigli/radici corazzate alla base, ancorate al terreno.
     const clawCount = 5;
@@ -1633,6 +1698,8 @@ function makeMushroomMesh(hex, mega, seedVal, twin){
 
     g.userData.megaCore = megaCore;
     g.userData.helm = helm;
+    g.userData.helmPivot = helmPivot;
+    g.userData.helmBaseRotY = mainRotY;
   }
 
   // ================ ALONE DI RISUCCHIO "BUCO NERO" (mega) ================
@@ -1978,6 +2045,10 @@ function makeAirstrikeMesh(colorHex){
   );
   beacon.position.set(-0.24, 0.02, 0);
   body.add(beacon);
+
+  // Scalato come la mongolfiera (AIRSTRIKE_SCALE), cosi' resta ben
+  // visibile anche alla quota di volo elevata.
+  body.scale.setScalar(AIRSTRIKE_SCALE);
 
   g.userData = { body, trail, beacon, fuselage };
   return g;
@@ -2840,10 +2911,14 @@ function makeLaserBoltMesh(colorHex){
     new THREE.CylinderGeometry(RADIUS, RADIUS, LEN, 8),
     new THREE.MeshStandardMaterial({ color: colorHex, emissive: colorHex, emissiveIntensity: 2.2 })
   );
-  // CylinderGeometry nasce con l'asse lungo Y: lo ruotiamo di 90° su Z
-  // cosi' l'asse lungo del dardo punta lungo X locale, pronto per essere
-  // orientato verso la direzione di volo con un quaternion/lookAt.
-  core.rotation.z = Math.PI / 2;
+  // CylinderGeometry nasce con l'asse lungo Y: lo ruotiamo di 90° su X
+  // cosi' l'asse lungo del dardo punta lungo Z locale — l'asse che
+  // Object3D.lookAt() orienta verso il target (lookAt allinea l'asse -Z
+  // locale al bersaglio). Ruotarlo su Z invece di X (bug precedente)
+  // lasciava l'asse lungo su X locale, perpendicolare alla direzione di
+  // volo: il dardo appariva "sdraiato di traverso" invece che puntato
+  // in avanti come un vero proiettile.
+  core.rotation.x = Math.PI / 2;
   g.add(core);
   // Alone sottile: stesso cilindro leggermente piu' spesso e trasparente,
   // da' l'idea di un bagliore energetico attorno al fascio.
@@ -2851,7 +2926,7 @@ function makeLaserBoltMesh(colorHex){
     new THREE.CylinderGeometry(RADIUS * 2.4, RADIUS * 2.4, LEN * 0.82, 8),
     new THREE.MeshBasicMaterial({ color: colorHex, transparent: true, opacity: 0.35 })
   );
-  halo.rotation.z = Math.PI / 2;
+  halo.rotation.x = Math.PI / 2;
   g.add(halo);
   g.userData.isLaserBolt = true;
   return g;
@@ -5547,6 +5622,15 @@ function onGameEvent(msg){
                         ? playerColorHex[laserOwner] : 0xff5a4d;
       const mesh = makeLaserBoltMesh(laserHex);
       mesh.position.set(wx, wy, wz);
+      // Orienta SUBITO il dardo nella direzione di sparo reale (dx/dy
+      // orizzontali + vz verticale, mandati ora dal server): prima
+      // mancava questo passo e per il primo frame il proiettile restava
+      // con la rotazione di default (appariva "sdraiato"/di traverso
+      // rispetto al mirino) finche' non arrivava il primo aggiornamento
+      // di stato con un target diverso dalla posizione di nascita.
+      if (typeof msg.dx === "number" && typeof msg.dy === "number"){
+        orientLaserBolt(mesh, msg.dx, (typeof msg.vz === "number" ? msg.vz : 0), msg.dy);
+      }
       scene.add(mesh);
       laserMeshes[msg.id] = { mesh, x:wx, z:wz, y:wy, targetX:wx, targetZ:wz, targetY:wy, dir: msg.dir };
       playLaser();
@@ -6673,9 +6757,12 @@ function animate(){
         g.userData.megaCore.scale.setScalar(corePulse);
         g.userData.megaCore.material.emissiveIntensity = 1.1 + 0.5*Math.sin(now3d/450);
       }
-      // Calotta corazzata: leggerissima rotazione, come se "scansionasse"
-      // l'arena in cerca di prede da risucchiare.
-      if (g.userData.helm){
+      // Calotta corazzata (con spuntoni, teschio e nucleo): leggerissima
+      // rotazione attorno alla propria inclinazione allineata al fungo,
+      // come se "scansionasse" l'arena in cerca di prede da risucchiare.
+      if (g.userData.helmPivot){
+        g.userData.helmPivot.rotation.y = g.userData.helmBaseRotY + Math.sin(now3d/2600) * 0.15;
+      } else if (g.userData.helm){
         g.userData.helm.rotation.y = Math.sin(now3d/2600) * 0.15;
       }
     }
