@@ -151,7 +151,7 @@
   <canvas id="minimap" width="240" height="240"></canvas>
 </div>
 <div id="toast"></div>
-<div id="hint" class="hidden">Click per guardarti intorno — WASD = avanti/sinistra/indietro/destra rispetto allo sguardo, la visuale sterza da sola verso la direzione presa — tasto sinistro = spara laser · 1 = mina/mortaio · 3 = missile · 5 = torretta · 8 = pet · 9 = evolvi torretta (se sbloccati)</div>
+<div id="hint" class="hidden">Click per guardarti intorno — WASD = avanti/sinistra/indietro/destra rispetto allo sguardo, la visuale sterza da sola verso la direzione presa — tasto sinistro = spara laser · 1 = mina/mortaio · 3 = missile · 5 = torretta · 8 = pet · 9 = evolvi torretta (se sbloccati) · tasto destro = scorciatoia universale (usa il prossimo gadget disponibile)</div>
 <div id="deadBanner" class="hidden">SEI MORTO — attendi il respawn</div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
@@ -1108,6 +1108,36 @@ let myTerritoryMarking = false;  // true durante la mia fase di selezione
 let myTerritoryReady = false;    // true quando la mia selezione e' completa, in attesa della 2a pressione
 let territoryTileMeshes = {};    // "x,y" -> THREE.Mesh — pannello a terra pulsante per ogni casella che ho marcato (solo mio, mai per gli avversari)
 let territoryBursts = [];        // {tiles, group, start} — eruzione di spunzoni dal pavimento, visibile a tutti (evento "territory_trigger")
+// ---- bonus 2800 punti: arbusto spinoso (tasto "1", dopo la trappola territoriale) ----
+// Cespuglio di rovi che cresce di una casella al minuto, per sempre, e
+// uccide al contatto (server-authoritative). Ogni casella nasce con
+// un'animazione di crescita (scala 0 -> 1), stessa idea della 2D
+// (bushCellBirth): il timestamp di nascita viene registrato qui, non sul
+// server, cosi' la crescita resta fluida lato client.
+let bushMeshes = {};    // "bushId:x,y" -> THREE.Group — una mesh per casella dell'arbusto (autorita' server: currSnapshot equivalente e' msg.bushes)
+let bushCellBirth = {}; // "bushId:x,y" -> performance.now() di quando la casella e' comparsa, per l'animazione di crescita
+// ---- bonus 3000 punti: fungo atomico (tasto "1", dopo l'arbusto spinoso) ----
+// Nascosto come una mina (visibile solo entro MUSHROOM_VISIBILITY_RANGE
+// caselle dal proprio giocatore, filtro fatto QUI lato client come nella
+// 2D): se calpestato, distrugge tutto in un raggio di 8 caselle con una
+// nube a fungo + onda d'urto.
+const MUSHROOM_VISIBILITY_RANGE = 3; // deve restare identica a MUSHROOM_VISIBILITY_RANGE nella 2D/common.py
+let mushroomMeshes = {}; // id -> THREE.Group — un fungo porcino per esemplare (nascosto/mostrato in base alla distanza, vedi onState)
+let nukeClouds = [];      // {x,z,color,start} — nube a fungo dell'esplosione (evento "mushroom_explode"), 2 secondi
+let shockwaves = [];      // {x,z,color,start,radiusCells} — onda d'urto concentrica, condivisa con superbomb/balloon nella 2D
+const NUKE_CLOUD_MS = 2000;
+const SHOCKWAVE_DURATION_MS = 550;
+// ---- bonus 3400 punti: pozione terremoto (tasto "1", dopo la trappola territoriale) ----
+// Stesso schema a due fasi della trappola territoriale (mira poi lancio),
+// ma qui non serve nessuno stato locale: il mirino vero e proprio non
+// esiste in prima persona (si mira guardando/muovendosi, il server calcola
+// da solo il punto d'impatto a 5 caselle, anche oltre i muri), quindi basta
+// riflettere il cerchio del terremoto che arriva ad ogni "state"
+// (msg.quakes, PUBBLICO come nella 2D) e animare il volo one-shot della
+// boccetta (evento "potion_throw"), stessa idea della 2D
+// (drawQuakes/drawPotionThrows).
+let quakeMeshes = {};   // id -> THREE.Group con userData {ring, cracks[], seed, owner} — cerchio di crepe pulsante che si allarga in apertura
+let potionThrows = [];  // {x0,z0,x1,z1,start,dur,color,landed} — animazione one-shot del volo ad arco della boccetta
 let bombMeshes = {};     // id -> THREE.Group con userData {shadow, body} — bonus 1200 punti: bombe di mortaio in volo, ricreate/aggiornate leggendo msg.bombs ad ogni state (stessa idea della 2D: nessun evento fire/end dedicato)
 let poisonZoneMeshes = {}; // id -> THREE.Mesh — nuvole velenose a terra (impatto mortaio, radius>=1) o scia del blob vivo (radius=0, bonus 2000)
 let portals = [];          // [[x,y], ...] ricevuti dal server con la mappa (msg.portals) — coordinate di griglia, fisse per tutto il round
@@ -1127,6 +1157,203 @@ function spawnExplosion(wx, wz, colorHex){
   mesh.position.set(wx, 0.55, wz);
   scene.add(mesh);
   explosions.push({ mesh, start: performance.now() });
+}
+
+// Bonus 2800 punti (arbusto spinoso): una casella di rovi, costruita come
+// un piccolo intreccio di rami spinosi che si aprono a raggiera dal
+// centro, nel colore del proprietario. Stessa idea della 2D (6 rami +
+// spine + nocciolo centrale), qui come geometria 3D vera invece che
+// disegno 2D. La scala del gruppo (0 -> 1) pilota la crescita nel render
+// loop, leggendo userData.birth.
+function makeBushCellMesh(hex){
+  const g = new THREE.Group();
+  const colDark = new THREE.Color(hex).multiplyScalar(0.55);
+  const colDarker = new THREE.Color(hex).multiplyScalar(0.32);
+
+  // Terriccio/ombra alla base.
+  const base = new THREE.Mesh(
+    new THREE.CircleGeometry(CELL*0.32, 12),
+    new THREE.MeshBasicMaterial({ color: colDarker, transparent:true, opacity:0.5 })
+  );
+  base.rotation.x = -Math.PI/2;
+  base.position.y = 0.015;
+  g.add(base);
+
+  // 6 rami spinosi a raggiera, ognuno un cilindro sottile inclinato verso
+  // l'esterno e leggermente verso l'alto, con una piccola spina (cono) in
+  // punta - stessa idea dei rami+aculei della 2D, in volume.
+  const branches = [];
+  const branchMat = new THREE.MeshStandardMaterial({ color: hex });
+  const spineMat = new THREE.MeshStandardMaterial({ color: 0xe8e8e2 });
+  for (let k = 0; k < 6; k++){
+    const ang = (k/6) * Math.PI*2;
+    const len = CELL * (0.34 + 0.22*((k*53)%17)/17);
+    const branch = new THREE.Mesh(new THREE.CylinderGeometry(0.014, 0.03, len, 5), branchMat);
+    branch.position.set(Math.cos(ang)*len/2, len*0.28, Math.sin(ang)*len/2);
+    branch.rotation.z = Math.PI/2 - ang;
+    branch.rotation.x = -0.5;
+    g.add(branch);
+    const spine = new THREE.Mesh(new THREE.ConeGeometry(0.02, 0.09, 5), spineMat);
+    spine.position.set(Math.cos(ang)*len, len*0.5, Math.sin(ang)*len);
+    spine.rotation.z = Math.PI/2 - ang;
+    g.add(spine);
+    branches.push({ branch, spine, ang });
+  }
+
+  // Nocciolo centrale.
+  const core = new THREE.Mesh(
+    new THREE.SphereGeometry(0.09, 8, 6),
+    new THREE.MeshStandardMaterial({ color: colDarker, emissive: hex, emissiveIntensity: 0.15 })
+  );
+  core.position.y = 0.09;
+  g.add(core);
+
+  g.userData = { branches, core, birth: performance.now() };
+  return g;
+}
+
+// Bonus 3000 punti (fungo atomico): fungo porcino statico, nel colore del
+// proprietario invece che marrone (stessa scelta della 2D), con gambo
+// bulboso e cappella liscia bombata. Costruito una sola volta per
+// esemplare, poi solo scalato/ruotato leggermente per un lieve ondeggiare.
+function makeMushroomMesh(hex, mega){
+  const g = new THREE.Group();
+  const s = mega ? 1.9 : 1;
+
+  const stem = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.09*s, 0.14*s, 0.34*s, 10),
+    new THREE.MeshStandardMaterial({ color: 0xefe2c8 })
+  );
+  stem.position.y = 0.17*s;
+  g.add(stem);
+
+  const capGeo = new THREE.SphereGeometry(0.34*s, 14, 10, 0, Math.PI*2, 0, Math.PI/2);
+  const capMat = new THREE.MeshStandardMaterial({ color: hex, emissive: hex, emissiveIntensity: mega ? 0.35 : 0.1 });
+  const cap = new THREE.Mesh(capGeo, capMat);
+  cap.position.y = 0.34*s;
+  cap.scale.set(1, 0.72, 1);
+  g.add(cap);
+
+  // Onde magnetiche del fungo madre trasformato (bonus 3800, gia' previste
+  // nella struttura anche se non ancora attivabili in 3D): tre anelli
+  // concentrici, visibili solo se mega=true.
+  let magRings = null;
+  if (mega){
+    magRings = [];
+    const ringMat = new THREE.MeshBasicMaterial({ color: hex, transparent:true, opacity:0.14, side: THREE.DoubleSide });
+    for (let w = 0; w < 3; w++){
+      const ring = new THREE.Mesh(new THREE.RingGeometry(0.05, 0.12, 24), ringMat.clone());
+      ring.rotation.x = -Math.PI/2;
+      ring.position.y = 0.03;
+      g.add(ring);
+      magRings.push(ring);
+    }
+  }
+
+  g.userData = { stem, cap, magRings, mega: !!mega };
+  return g;
+}
+// d'azione, con crepe che si irradiano dal centro e si allungano man mano
+// che il terremoto "si apre" (stessa idea della 2D: grow = min(1,
+// progress/0.15)). Costruito una sola volta per id (i semi delle crepe
+// sono fissi, niente sfarfallio casuale ad ogni frame), poi solo scalato
+// e sfumato nel render loop leggendo userData.left/duration.
+function makeQuakeMesh(hex, radiusCells){
+  const g = new THREE.Group();
+  const r = CELL * (0.5 + radiusCells); // stesso raggio Manhattan della 2D, convertito in unita' di mondo
+
+  const halo = new THREE.Mesh(
+    new THREE.CircleGeometry(r, 28),
+    new THREE.MeshBasicMaterial({ color: hex, transparent:true, opacity:0.12, side: THREE.DoubleSide })
+  );
+  halo.rotation.x = -Math.PI/2;
+  halo.position.y = 0.015;
+  g.add(halo);
+
+  const ring = new THREE.Mesh(
+    new THREE.RingGeometry(r*0.96, r, 40),
+    new THREE.MeshBasicMaterial({ color: hex, transparent:true, opacity:0.55, side: THREE.DoubleSide })
+  );
+  ring.rotation.x = -Math.PI/2;
+  ring.position.y = 0.02;
+  g.add(ring);
+
+  // Crepe che si irradiano dal centro: 8 crepe principali con un piccolo
+  // rametto laterale ciascuna, stessa idea della 2D (quakeCrackSeeds) ma
+  // disegnate come linee 3D vere che si allungano nel render loop.
+  const cracks = [];
+  const nC = 8;
+  for (let i = 0; i < nC; i++){
+    const baseA = (i/nC) * Math.PI*2 + (Math.random()-0.5)*0.5;
+    const lenF = 0.55 + Math.random()*0.45;
+    const branchAt = 0.35 + Math.random()*0.4;
+    const branchA = (Math.random()<0.5?1:-1) * (0.5 + Math.random()*0.5);
+    const nS = 6;
+    const segs = [];
+    for (let s = 0; s <= nS; s++){
+      segs.push({ f: s/nS, jA: (Math.random()-0.5)*0.45, jR: (Math.random()-0.5)*0.08 });
+    }
+    const geo = new THREE.BufferGeometry().setFromPoints(new Array(nS+1).fill(0).map(()=>new THREE.Vector3(0,0.03,0)));
+    const mat = new THREE.LineBasicMaterial({ color: hex, transparent:true, opacity:0.85 });
+    const line = new THREE.Line(geo, mat);
+    g.add(line);
+    const branchGeo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0,0.03,0), new THREE.Vector3(0,0.03,0)]);
+    const branchMat = new THREE.LineBasicMaterial({ color: hex, transparent:true, opacity:0.7 });
+    const branchLine = new THREE.Line(branchGeo, branchMat);
+    g.add(branchLine);
+    cracks.push({ baseA, lenF, branchAt, branchA, segs, line, branchLine });
+  }
+
+  // Zolle/detriti che saltellano dentro il cerchio.
+  const debris = [];
+  for (let d = 0; d < 10; d++){
+    const mesh = new THREE.Mesh(new THREE.SphereGeometry(0.045, 5, 5), new THREE.MeshBasicMaterial({ color: hex, transparent:true, opacity:0.6 }));
+    const da = d*2.399, dr = r * (0.15 + ((d*37)%60)/100);
+    mesh.userData = { angle: da, radius: dr };
+    mesh.position.set(Math.cos(da)*dr, 0.05, Math.sin(da)*dr);
+    g.add(mesh);
+    debris.push(mesh);
+  }
+
+  g.userData = { halo, ring, cracks, debris, r, radiusCells, left: 5, duration: 5 };
+  return g;
+}
+
+// Bonus 3400 punti: boccetta quadrata di vetro che vola ad arco dal
+// lanciatore al punto d'impatto (sopra i muri, come le bombe di mortaio),
+// ruotando in volo. Riusa lo stesso schema shadow+body di makeBombMesh.
+function makePotionMesh(colorHex){
+  const g = new THREE.Group();
+  const shadow = new THREE.Mesh(
+    new THREE.CircleGeometry(0.14, 12),
+    new THREE.MeshBasicMaterial({ color:0x000000, transparent:true, opacity:0.25 })
+  );
+  shadow.rotation.x = -Math.PI/2;
+  shadow.position.y = 0.01;
+  g.add(shadow);
+
+  const body = new THREE.Group();
+  const glass = new THREE.Mesh(
+    new THREE.BoxGeometry(0.16, 0.16, 0.16),
+    new THREE.MeshStandardMaterial({ color:0xdfe7ea, transparent:true, opacity:0.55 })
+  );
+  body.add(glass);
+  const liquid = new THREE.Mesh(
+    new THREE.BoxGeometry(0.13, 0.09, 0.13),
+    new THREE.MeshBasicMaterial({ color: colorHex, transparent:true, opacity:0.9 })
+  );
+  liquid.position.y = -0.02;
+  body.add(liquid);
+  const cork = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.035, 0.035, 0.06, 8),
+    new THREE.MeshStandardMaterial({ color:0x8a5a2b })
+  );
+  cork.position.y = 0.11;
+  body.add(cork);
+  g.add(body);
+
+  g.userData = { shadow, body };
+  return g;
 }
 
 // Bonus 2400 punti: fulmine ad area della Tesla (evento "tesla_fire"). Un
@@ -2773,17 +3000,33 @@ function makeSpikeWallMesh(colorHex){
    e animato nel render loop). Bonus 3200 punti (Tesla occulta): quando
    t.hidden e' vero la torre sparisce e resta visibile solo la botola di
    legno chiusa (g.userData.trapdoor), stessa idea della 2D. ---- */
-const TESLA_TOP_Y = WALL_TOTAL_H + 1.1; // la bobina spunta ben oltre la cima dei muri
+/* ---- bonus 2400 punti: Tesla laser — RIDISEGNATA prendendo ispirazione
+   dalla Torre Infernale di Clash Royale: via il traliccio a 4 gambe
+   sottili con bobina esposta, sostituito da una TORRE CILINDRICA
+   massiccia e corazzata (piastre metalliche scure sovrapposte, fasce a
+   rivetti nel colore del proprietario) che sale dritta fino a
+   TESLA_TOP_Y, coronata da una cupola con un'unica FERITOIA/OCCHIO
+   incandescente che fissa il bersaglio - lo stesso dettaglio iconico
+   della torre del gioco, che si accende sempre piu' intensamente man
+   mano che la carica sale verso il prossimo fulmine. Stessa identica
+   LOGICA della 2D (drawTeslas in common/index-72): struttura fissa e
+   permanente, grande quanto una sola casella ma disegnata ben PIU' ALTA
+   di un muro normale, per rendere leggibile che fulmina "da sopra"
+   ignorando i muri quando spara (server-authoritative,
+   TESLA_RANGE_CELLS a distanza Manhattan). Bonus 3200 punti (Tesla
+   occulta): quando t.hidden e' vero la torre sparisce e resta visibile
+   solo la botola di legno chiusa (g.userData.trapdoor), invariato. ---- */
+const TESLA_TOP_Y = WALL_TOTAL_H + 1.1; // la cupola spunta ben oltre la cima dei muri
 const TESLA_RANGE_CELLS_3D = 8; // deve restare identico a TESLA_RANGE_CELLS in common.py
 function makeTeslaMesh(colorHex){
   const g = new THREE.Group();
   const colDark = new THREE.Color(colorHex).multiplyScalar(0.55).getHex();
-  const METAL = 0x3a3d46, METAL_LIGHT = 0x6b6f7a;
+  const METAL = 0x33363e, METAL_DARK = 0x1f2127, METAL_LIGHT = 0x585c68;
   const HALF = CELL / 2 - 0.1;
 
   // Botola di legno a terra: sempre presente (anche a torre visibile,
   // come indizio permanente se la Tesla e' occulta), mostrata DA SOLA
-  // quando t.hidden e' vero.
+  // quando t.hidden e' vero. Invariata rispetto a prima.
   const trapdoor = new THREE.Group();
   const doorMat = new THREE.MeshStandardMaterial({ color: 0x5c4326, roughness:0.9 });
   const doorBase = new THREE.Mesh(new THREE.CylinderGeometry(HALF * 0.9, HALF * 0.9, 0.05, 8), doorMat);
@@ -2809,25 +3052,26 @@ function makeTeslaMesh(colorHex){
   const tower = new THREE.Group();
   g.add(tower);
 
-  // Base ottagonale a terra, come la torretta/il mortaio ma piu' larga e
-  // scura (metallo corazzato), con una fascia a rivetti nel colore del
-  // proprietario - stessa famiglia visiva del bombolone/muro di spunzoni.
+  // Base ottagonale a terra, larga e scura, come punto d'appoggio
+  // massiccio della torre - stessa famiglia visiva del bombolone/muro
+  // di spunzoni, ma piu' tozza per reggere un corpo cilindrico pieno
+  // invece di un traliccio aperto.
   const baseShape = new THREE.Shape();
   for (let i = 0; i < 8; i++){
     const a = i * Math.PI / 4;
-    const px = Math.cos(a) * HALF * 0.95, py = Math.sin(a) * HALF * 0.95;
+    const px = Math.cos(a) * HALF * 0.98, py = Math.sin(a) * HALF * 0.98;
     if (i === 0) baseShape.moveTo(px, py); else baseShape.lineTo(px, py);
   }
   baseShape.closePath();
   const base = new THREE.Mesh(
-    new THREE.ExtrudeGeometry(baseShape, { depth:0.22, bevelEnabled:true, bevelThickness:0.03, bevelSize:0.03, bevelSegments:1 }),
-    new THREE.MeshStandardMaterial({ color: METAL, roughness:0.55, metalness:0.4, flatShading:true })
+    new THREE.ExtrudeGeometry(baseShape, { depth:0.24, bevelEnabled:true, bevelThickness:0.03, bevelSize:0.03, bevelSegments:1 }),
+    new THREE.MeshStandardMaterial({ color: METAL_DARK, roughness:0.55, metalness:0.4, flatShading:true })
   );
   base.rotation.x = -Math.PI / 2;
-  base.position.y = 0.22;
+  base.position.y = 0.24;
   tower.add(base);
   const baseBand = new THREE.Mesh(
-    new THREE.TorusGeometry(HALF * 0.95, 0.03, 6, 8),
+    new THREE.TorusGeometry(HALF * 0.98, 0.035, 6, 8),
     new THREE.MeshStandardMaterial({ color: colorHex, roughness:0.3, metalness:0.5, emissive: colorHex, emissiveIntensity:0.2 })
   );
   baseBand.rotation.x = Math.PI / 2;
@@ -2837,78 +3081,122 @@ function makeTeslaMesh(colorHex){
   for (let i = 0; i < 8; i++){
     const a = i * Math.PI / 4;
     const rivet = new THREE.Mesh(new THREE.SphereGeometry(0.035, 6, 6), rivetMat);
-    rivet.position.set(Math.cos(a) * HALF * 0.95, 0.1, Math.sin(a) * HALF * 0.95);
+    rivet.position.set(Math.cos(a) * HALF * 0.98, 0.1, Math.sin(a) * HALF * 0.98);
     tower.add(rivet);
   }
 
-  // Traliccio che sale ben oltre il bordo superiore della cella e della
-  // cima dei muri (TESLA_TOP_Y): 4 gambe convergenti verso la bobina, con
-  // pioli/isolatori a scaletta nel colore del proprietario, esattamente
-  // come nella 2D - qui pero' in vero volume 3D invece che linee piatte.
-  const legMat = new THREE.MeshStandardMaterial({ color: METAL_LIGHT, roughness:0.5, metalness:0.5 });
-  const legBottomR = HALF * 0.85, legTopR = 0.05;
-  const legAngles = [Math.PI/4, 3*Math.PI/4, 5*Math.PI/4, 7*Math.PI/4];
-  legAngles.forEach(a => {
-    const bx = Math.cos(a) * legBottomR, bz = Math.sin(a) * legBottomR;
-    const tx = Math.cos(a) * legTopR, tz = Math.sin(a) * legTopR;
-    const dx = tx - bx, dy = TESLA_TOP_Y - 0.28, dz = tz - bz;
-    const len = Math.sqrt(dx*dx + dy*dy + dz*dz);
-    const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.05, len, 6), legMat);
-    leg.position.set((bx+tx)/2, 0.28 + dy/2, (bz+tz)/2);
-    leg.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0), new THREE.Vector3(dx,dy,dz).normalize());
-    tower.add(leg);
-  });
-  // Pioli/isolatori a scaletta: anelli orizzontali a 3 altezze, nel
-  // colore del proprietario, che restringono man mano che si sale.
-  for (let i = 1; i <= 3; i++){
-    const t = i / 4;
-    const yy = 0.28 + (TESLA_TOP_Y - 0.28) * t;
-    const rr = legBottomR + (legTopR - legBottomR) * t;
-    const rung = new THREE.Mesh(
-      new THREE.TorusGeometry(rr, 0.018, 5, 8),
-      new THREE.MeshStandardMaterial({ color: colorHex, roughness:0.3, metalness:0.4, emissive: colorHex, emissiveIntensity:0.15 })
-    );
-    rung.rotation.x = Math.PI / 2;
-    rung.position.y = yy;
-    tower.add(rung);
+  // Fusto cilindrico corazzato: sale pieno (non piu' un traliccio aperto
+  // a gambe sottili) fino quasi in cima, leggermente rastremato, con
+  // 3 fasce metalliche a rivetti sovrapposte lungo l'altezza - la stessa
+  // sagoma "a torre di metallo compatta" della Torre Infernale, invece
+  // del vecchio traliccio da elettrodotto.
+  const shaftBottomR = HALF * 0.72, shaftTopR = HALF * 0.42;
+  const shaftH = (TESLA_TOP_Y - 0.55) ;
+  const shaft = new THREE.Mesh(
+    new THREE.CylinderGeometry(shaftTopR, shaftBottomR, shaftH, 10),
+    new THREE.MeshStandardMaterial({ color: METAL, roughness:0.5, metalness:0.45, flatShading:true })
+  );
+  shaft.position.y = 0.28 + shaftH / 2;
+  tower.add(shaft);
+  // Pannelli verticali leggermente sporgenti, per rompere la superficie
+  // liscia del cilindro con placche corazzate distinte (stesso effetto
+  // "a lamiere imbullonate" della torre del gioco).
+  const panelMat = new THREE.MeshStandardMaterial({ color: METAL_LIGHT, roughness:0.5, metalness:0.4 });
+  for (let i = 0; i < 6; i++){
+    const a = (i / 6) * Math.PI * 2;
+    const panel = new THREE.Mesh(new THREE.BoxGeometry(0.05, shaftH * 0.92, 0.02), panelMat);
+    const rr = (shaftBottomR + shaftTopR) / 2 + 0.01;
+    panel.position.set(Math.cos(a) * rr, 0.28 + shaftH / 2, Math.sin(a) * rr);
+    panel.rotation.y = -a;
+    tower.add(panel);
   }
+  // Fasce a rivetti nel colore del proprietario, a 3 altezze lungo il
+  // fusto (invece dei pioli a scaletta del vecchio traliccio).
+  [0.3, 0.58, 0.86].forEach(frac => {
+    const yy = 0.28 + shaftH * frac;
+    const rr = shaftBottomR + (shaftTopR - shaftBottomR) * frac;
+    const band = new THREE.Mesh(
+      new THREE.TorusGeometry(rr + 0.015, 0.022, 6, 12),
+      new THREE.MeshStandardMaterial({ color: colorHex, roughness:0.3, metalness:0.5, emissive: colorHex, emissiveIntensity:0.22 })
+    );
+    band.rotation.x = Math.PI / 2;
+    band.position.y = yy;
+    tower.add(band);
+    for (let i = 0; i < 6; i++){
+      const a = (i / 6) * Math.PI * 2;
+      const rivet = new THREE.Mesh(new THREE.SphereGeometry(0.02, 6, 6), rivetMat);
+      rivet.position.set(Math.cos(a) * (rr + 0.015), yy, Math.sin(a) * (rr + 0.015));
+      tower.add(rivet);
+    }
+  });
 
-  // Bobina in cima: nucleo pulsante avvolto in un involucro sfaccettato
-  // (stessa "corazzatura" della mongolfiera/bombolone) invece di una
-  // semplice sfera piatta, con doppio alone nel colore del proprietario.
+  // Cupola sommitale: tozza e arrotondata (invece della bobina a sfera
+  // esposta), con un'unica FERITOIA/OCCHIO incandescente rivolta verso
+  // il basso/avanti - il dettaglio iconico della Torre Infernale che
+  // "fissa" il bersaglio e si accende all'attacco.
   const coilGroup = new THREE.Group();
   coilGroup.position.y = TESLA_TOP_Y;
   tower.add(coilGroup);
   const halo = new THREE.Mesh(
-    new THREE.SphereGeometry(0.34, 12, 8),
-    new THREE.MeshBasicMaterial({ color: colorHex, transparent:true, opacity:0.16 })
+    new THREE.SphereGeometry(0.36, 12, 8),
+    new THREE.MeshBasicMaterial({ color: colorHex, transparent:true, opacity:0.14 })
   );
   coilGroup.add(halo);
+  // Cupola: calotta sferica appiattita in cima al fusto.
+  const dome = new THREE.Mesh(
+    new THREE.SphereGeometry(shaftTopR + 0.03, 12, 8, 0, Math.PI*2, 0, Math.PI/1.7),
+    new THREE.MeshStandardMaterial({ color: METAL_DARK, roughness:0.45, metalness:0.5, flatShading:true })
+  );
+  dome.position.y = -0.02;
+  coilGroup.add(dome);
+  // "envelope" storico riusato come anello corazzato appena sotto la
+  // cupola (mantiene l'interfaccia g.userData.envelope gia' animata nel
+  // render loop con una lenta rotazione), qui un anello sfaccettato
+  // invece dell'icosaedro isolato in aria.
   const envelope = new THREE.Mesh(
-    new THREE.IcosahedronGeometry(0.16, 1),
-    new THREE.MeshStandardMaterial({ color: colDark, flatShading:true, roughness:0.4, metalness:0.4, transparent:true, opacity:0.85 })
+    new THREE.TorusGeometry(shaftTopR - 0.02, 0.045, 6, 12),
+    new THREE.MeshStandardMaterial({ color: colDark, flatShading:true, roughness:0.4, metalness:0.4 })
   );
+  envelope.rotation.x = Math.PI / 2;
+  envelope.position.y = -0.06;
   coilGroup.add(envelope);
-  const core = new THREE.Mesh(
-    new THREE.SphereGeometry(0.1, 10, 8),
-    new THREE.MeshBasicMaterial({ color:0xffffff, transparent:true, opacity:0.85 })
+  // Occhio/feritoia: un disco incandescente incassato in una cornice
+  // scura, rivolto leggermente in avanti/basso come l'occhio della torre
+  // del gioco - core storico riusato per il nucleo luminoso pulsante.
+  const eyeFrame = new THREE.Mesh(
+    new THREE.TorusGeometry(0.115, 0.022, 6, 14),
+    new THREE.MeshStandardMaterial({ color: METAL_DARK, roughness:0.4, metalness:0.5 })
   );
+  eyeFrame.position.set(0, -0.02, shaftTopR * 0.55);
+  eyeFrame.rotation.x = Math.PI/2 - 0.5;
+  coilGroup.add(eyeFrame);
+  const core = new THREE.Mesh(
+    new THREE.CircleGeometry(0.1, 14),
+    new THREE.MeshBasicMaterial({ color:0xffffff, transparent:true, opacity:0.85, side: THREE.DoubleSide })
+  );
+  core.position.copy(eyeFrame.position);
+  core.rotation.copy(eyeFrame.rotation);
   coilGroup.add(core);
+  // Anelli decorativi attorno alla cupola (riusano coilRing/coilRing2,
+  // gia' animati con rotazioni indipendenti nel render loop) invece che
+  // attorno a una bobina esposta - qui cingono la base della cupola.
   const coilRing = new THREE.Mesh(
-    new THREE.TorusGeometry(0.16, 0.018, 6, 16),
+    new THREE.TorusGeometry(shaftTopR + 0.06, 0.016, 6, 16),
     new THREE.MeshStandardMaterial({ color: colorHex, roughness:0.3, metalness:0.5, emissive: colorHex, emissiveIntensity:0.3 })
   );
+  coilRing.rotation.x = Math.PI / 2;
+  coilRing.position.y = -0.1;
   coilGroup.add(coilRing);
   const coilRing2 = new THREE.Mesh(
-    new THREE.TorusGeometry(0.16, 0.014, 6, 16),
+    new THREE.TorusGeometry(shaftTopR + 0.02, 0.012, 6, 16),
     new THREE.MeshStandardMaterial({ color: colorHex, roughness:0.3, metalness:0.5, emissive: colorHex, emissiveIntensity:0.3 })
   );
   coilRing2.rotation.x = Math.PI / 2;
+  coilRing2.position.y = 0.05;
   coilGroup.add(coilRing2);
 
-  // Micro-scintille intorno alla bobina, mostrate solo quando la carica
-  // e' quasi piena (t.charge > 0.7): 4 piccoli aghi che ruotano, per
-  // anticipare visivamente il fulmine imminente, stessa idea della 2D.
+  // Micro-scintille intorno alla cupola, mostrate solo quando la carica
+  // e' quasi piena (t.charge > 0.7): invariate rispetto a prima.
   const sparkMat = new THREE.MeshBasicMaterial({ color:0xffffff, transparent:true, opacity:0 });
   const sparks = new THREE.Group();
   for (let i = 0; i < 4; i++){
@@ -2918,7 +3206,7 @@ function makeTeslaMesh(colorHex){
   coilGroup.add(sparks);
 
   // Anello del raggio d'azione (8 caselle di default): piatto a terra,
-  // visibile solo al proprietario (mostrato/nascosto da chi crea la mesh).
+  // visibile solo al proprietario. Invariato.
   const rangeRing = new THREE.Mesh(
     new THREE.RingGeometry(TESLA_RANGE_CELLS_3D * CELL - 0.03, TESLA_RANGE_CELLS_3D * CELL, 48),
     new THREE.MeshBasicMaterial({ color: colorHex, transparent:true, opacity:0.08, side: THREE.DoubleSide })
@@ -3137,45 +3425,50 @@ document.addEventListener("mousedown", e => {
    pathfinding (vedi try_fire_missile/move_missiles in main.py) -
    quindi qui basta il tasto, senza leggere lo sguardo.
    ============================================================ */
+// Funzione di dispatch riutilizzabile (tasto "3" E tasto destro, vedi
+// sotto): incapsula esattamente lo stesso invio del listener keydown, cosi'
+// il tasto destro puo' richiamarla senza duplicare la logica.
+function fireMissile(){
+  sendMsg({ type:"fire_missile" });
+}
 window.addEventListener("keydown", e => {
   if (currentScreen !== "game") return;
   if (e.key !== "3") return;
-  sendMsg({ type:"fire_missile" });
+  fireMissile();
 });
 
 /* ============================================================
    CATENA MINE -> MORTAIO -> BOMBOLONE -> MONGOLFIERA -> BLOB -> BLOB
-   VIVO -> MURO DI SPUNZONI -> TESLA LASER -> TRAPPOLA TERRITORIALE
-   (bonus 200, 1200, 1400, 1600, 1800, 2000, 2200, 2400, 2600): stesso
-   tasto "1" della versione 2D. Il tasto "1" sgancia prima le mine
-   finche' ne restano (mines_left > 0), poi - solo quando sono finite o
-   il bonus mina non e' mai stato sbloccato - manda sempre "place_mortar"
-   per il gradino successivo della catena: e' il SERVER a decidere se
-   questo significa schierare il mortaio, piazzare un bombolone, far
-   librare la mongolfiera, piazzare/risvegliare il blob, piantare il
-   muro di spunzoni, piazzare la Tesla laser o avviare/attivare la
-   trappola territoriale (a seconda di cosa e' gia' stato fatto),
-   esattamente come nella 2D (vedi dispatch di "place_mortar" in
-   main.py). Il client non deve distinguere i casi: gli arrivano gia'
-   come eventi diversi (mortar_place / superbomb_place / balloon_launch
-   / blob_place / blob_animate / spike_wall_place / tesla_place /
-   territory_start / territory_trigger). La trappola territoriale ha DUE
-   fasi sotto la STESSA pressione del tasto "1" (prima selezione, poi
-   attivazione): il client non manda nulla di diverso per le due fasi,
-   e' sempre lo stesso "place_mortar" - il server sa gia' in quale fase
-   si trova il giocatore. La Tesla laser e' PERMANENTE per tutto il
-   round, come il muro di spunzoni. La Tesla occulta, quando verra'
-   portata anche lei in 3D, si aggiungera' da sola alla stessa catena
-   senza toccare questo dispatch.
+   VIVO -> MURO DI SPUNZONI -> TESLA LASER -> TRAPPOLA TERRITORIALE ->
+   ARBUSTO SPINOSO -> FUNGO ATOMICO -> TESLA OCCULTA -> POZIONE TERREMOTO
+   (bonus 200, 1200, 1400, 1600, 1800, 2000, 2200, 2400, 2600, 2800, 3000,
+   3200, 3400): stesso tasto "1" della versione 2D. Il tasto "1" sgancia
+   prima le mine finche' ne restano (mines_left > 0), poi - solo quando
+   sono finite o il bonus mina non e' mai stato sbloccato - manda sempre
+   "place_mortar" per il gradino successivo della catena: e' il SERVER a
+   decidere se questo significa schierare il mortaio, piazzare un
+   bombolone, far librare la mongolfiera, piazzare/risvegliare il blob,
+   piantare il muro di spunzoni, piazzare la Tesla laser, avviare/attivare
+   la trappola territoriale, piantare l'arbusto, piazzare il fungo,
+   risvegliare la Tesla occulta o mirare/lanciare la pozione (a seconda di
+   cosa e' gia' stato fatto), esattamente come nella 2D (vedi dispatch di
+   "place_mortar" in main.py). Il client non deve distinguere i casi: gli
+   arrivano gia' come eventi diversi (mortar_place / superbomb_place /
+   balloon_launch / blob_place / ... / potion_throw). Le fasi doppie
+   (trappola territoriale, pozione) usano sempre lo stesso "place_mortar" -
+   il server sa gia' in quale fase si trova il giocatore.
    ============================================================ */
-window.addEventListener("keydown", e => {
-  if (currentScreen !== "game") return;
-  if (e.key !== "1") return;
+function placeMineChainStep(){
   if (myState.mines && myState.mines_left > 0){
     sendMsg({ type:"place_mine" });
   } else {
     sendMsg({ type:"place_mortar" });
   }
+}
+window.addEventListener("keydown", e => {
+  if (currentScreen !== "game") return;
+  if (e.key !== "1") return;
+  placeMineChainStep();
 });
 
 /* ============================================================
@@ -3187,10 +3480,13 @@ window.addEventListener("keydown", e => {
    try_place_turret in main.py) - qui basta il tasto, nessun controllo
    lato client.
    ============================================================ */
+function placeTurret(){
+  sendMsg({ type:"place_turret" });
+}
 window.addEventListener("keydown", e => {
   if (currentScreen !== "game") return;
   if (e.key !== "5") return;
-  sendMsg({ type:"place_turret" });
+  placeTurret();
 });
 
 /* ============================================================
@@ -3201,10 +3497,13 @@ window.addEventListener("keydown", e => {
    ignora richieste successive (vedi try_summon_pet in main.py) - qui
    basta il tasto, nessun controllo lato client.
    ============================================================ */
+function activatePet(){
+  sendMsg({ type:"activate_pet" });
+}
 window.addEventListener("keydown", e => {
   if (currentScreen !== "game") return;
   if (e.key !== "8") return;
-  sendMsg({ type:"activate_pet" });
+  activatePet();
 });
 
 /* ============================================================
@@ -3216,10 +3515,63 @@ window.addEventListener("keydown", e => {
    sola volta per round - qui basta il tasto, nessun controllo lato
    client.
    ============================================================ */
+function evolveTurret(){
+  sendMsg({ type:"evolve_turret" });
+}
 window.addEventListener("keydown", e => {
   if (currentScreen !== "game") return;
   if (e.key !== "9") return;
-  sendMsg({ type:"evolve_turret" });
+  evolveTurret();
+});
+
+/* ============================================================
+   TASTO DESTRO DEL MOUSE = SCORCIATOIA UNIVERSALE, stesso identico
+   sistema del tasto "1": UN SOLO gesto (qui il click destro, invece di
+   una pressione di tasto) che il CLIENT instrada verso l'azione giusta
+   in base al proprio stato noto (myState, aggiornato ad ogni "state" -
+   vedi onState), provando i gadget in ordine (1, poi 3, poi 5, poi 8,
+   poi 9) e fermandosi al primo che risulta ancora utilizzabile secondo
+   le stesse condizioni gia' usate dai tasti originali. Non sostituisce
+   NESSUN tasto esistente (restano tutti invariati, look invariato): e'
+   solo un modo alternativo di premere "il prossimo tasto giusto" senza
+   dover ricordare quale numero usare, esattamente come la catena del
+   tasto "1" fa gia' internamente per mine/mortaio/bombolone/ecc. Il
+   client sceglie solo QUALE messaggio inviare: il server resta comunque
+   l'unica autorita' su cosa sia davvero disponibile in quel momento
+   (torretta/pet/evoluzione una tantum, missili in esaurimento, ecc.),
+   esattamente come per il tasto "1".
+   ============================================================ */
+document.addEventListener("contextmenu", e => {
+  if (currentScreen === "game") e.preventDefault(); // niente menu del browser durante la partita
+});
+document.addEventListener("mousedown", e => {
+  if (currentScreen !== "game" || !locked) return;
+  if (e.button !== 2) return; // solo tasto destro
+  e.preventDefault();
+  // Tasto "1": la catena mine -> mortaio -> ... e' sempre "attiva" finche'
+  // c'e' un gradino successivo da consumare (myState.mines/mortar/ecc.),
+  // quindi ha la priorita' piu' alta - stesso ordine numerico dei tasti.
+  if (myState.mines && myState.mines_left > 0){ placeMineChainStep(); return; }
+  if (myState.mortar && !myState.mortar_placed){ placeMineChainStep(); return; }
+  if (myState.superbomb && (myState.superbomb_left||0) > 0){ placeMineChainStep(); return; }
+  if (myState.balloon && !myState.balloon_launched){ placeMineChainStep(); return; }
+  if (myState.blob && !myState.blob_placed){ placeMineChainStep(); return; }
+  if (myState.blob_alive_bonus && !myState.blob_alive_used){ placeMineChainStep(); return; }
+  if (myState.spike_wall && !myState.spike_wall_placed){ placeMineChainStep(); return; }
+  if (myState.tesla && !myState.tesla_placed){ placeMineChainStep(); return; }
+  if (myState.territory_trap && !myState.territory_used){ placeMineChainStep(); return; }
+  if (myState.bush && !myState.bush_placed){ placeMineChainStep(); return; }
+  if (myState.mushroom && !myState.mushroom_placed){ placeMineChainStep(); return; }
+  if (myState.occult_tesla && !myState.occult_tesla_used){ placeMineChainStep(); return; }
+  if (myState.potion && !myState.potion_used){ placeMineChainStep(); return; }
+  // Tasto "3": missile guidato, solo se ne restano.
+  if (myState.missile && myState.missiles_left > 0){ fireMissile(); return; }
+  // Tasto "5": torretta, solo se non ancora piazzata.
+  if (myState.turret && !myState.turret_placed){ placeTurret(); return; }
+  // Tasto "8": pet, solo se non ancora evocato.
+  if (myState.pet && !myState.pet_summoned){ activatePet(); return; }
+  // Tasto "9": evoluzione, solo se non ancora usata.
+  if (myState.robot && !myState.robot_used){ evolveTurret(); return; }
 });
 
 function enterGame(){
@@ -3407,6 +3759,23 @@ function onState(msg){
         } else {
           hudMines.textContent = "trappola territoriale: premi 1 per iniziare a marcare";
         }
+        hudMines.classList.remove("hidden");
+      } else if (p.bush && !p.bush_placed){
+        // Bonus 2800 punti: arbusto spinoso.
+        hudMines.textContent = "arbusto spinoso: premi 1 per piantarlo";
+        hudMines.classList.remove("hidden");
+      } else if (p.mushroom && !p.mushroom_placed){
+        // Bonus 3000 punti: fungo atomico.
+        hudMines.textContent = "fungo atomico: premi 1 per piazzarlo";
+        hudMines.classList.remove("hidden");
+      } else if (p.potion && !p.potion_used){
+        // Bonus 3400 punti: pozione terremoto, due fasi (mira poi lancio)
+        // sotto la stessa pressione del tasto "1", ma qui non c'e' nessun
+        // stato locale da leggere (a differenza della trappola
+        // territoriale): il server sa gia' se sto mirando o devo ancora
+        // iniziare, quindi il testo resta lo stesso finche' non arriva
+        // l'evento "potion_throw" (msg.potion_used diventa true).
+        hudMines.textContent = "pozione terremoto: premi 1 per mirare/lanciare (5 caselle, anche oltre i muri)";
         hudMines.classList.remove("hidden");
       } else {
         hudMines.classList.add("hidden");
@@ -3804,6 +4173,80 @@ function onState(msg){
   Object.keys(poisonZoneMeshes).forEach(id => {
     if (!seenPoison.has(id)){ scene.remove(poisonZoneMeshes[id]); delete poisonZoneMeshes[id]; }
   });
+
+  // bonus 2800 punti: arbusto spinoso. Ogni oggetto in msg.bushes ha una
+  // lista di celle (b.cells): una mesh per casella, creata la prima volta
+  // che la si vede (registrando anche il momento di nascita per farla
+  // sbocciare gradualmente nel render loop, stessa idea della 2D). Le
+  // caselle non piu' presenti (potate o l'arbusto intero distrutto)
+  // vengono rimosse qui.
+  const seenBushCells = new Set();
+  (msg.bushes||[]).forEach(b => {
+    const hex = playerColorHex[b.owner] !== undefined ? playerColorHex[b.owner] : 0x33ff77;
+    (b.cells||[]).forEach(c => {
+      const key = b.id + ":" + c[0] + "," + c[1];
+      seenBushCells.add(key);
+      if (!bushMeshes[key]){
+        const mesh = makeBushCellMesh(hex);
+        mesh.position.set(c[0]*CELL + CELL/2, 0, c[1]*CELL + CELL/2);
+        scene.add(mesh);
+        bushMeshes[key] = mesh;
+        bushCellBirth[key] = performance.now();
+      }
+    });
+  });
+  Object.keys(bushMeshes).forEach(key => {
+    if (!seenBushCells.has(key)){
+      scene.remove(bushMeshes[key]); delete bushMeshes[key]; delete bushCellBirth[key];
+    }
+  });
+
+  // bonus 3000 punti: funghi atomici. Nascosti come una mina: visibili
+  // solo entro MUSHROOM_VISIBILITY_RANGE caselle dal proprio giocatore
+  // (filtro lato client, stessa idea della 2D drawMushrooms), tranne il
+  // fungo madre trasformato (m.mega) che resta sempre visibile a tutti.
+  const seenMushrooms = new Set();
+  const myForMushroom = msg.players.find(p => p.id === myId);
+  (msg.mushrooms||[]).forEach(m => {
+    seenMushrooms.add(m.id);
+    let g = mushroomMeshes[m.id];
+    if (!g){
+      const hex = playerColorHex[m.owner] !== undefined ? playerColorHex[m.owner] : 0xff5fd1;
+      g = makeMushroomMesh(hex, !!m.mega);
+      g.position.set(m.x*CELL + CELL/2, 0, m.y*CELL + CELL/2);
+      scene.add(g);
+      mushroomMeshes[m.id] = g;
+    }
+    const visible = m.mega || m.owner === myId || (myForMushroom &&
+      Math.max(Math.abs(m.x - myForMushroom.x), Math.abs(m.y - myForMushroom.y)) <= MUSHROOM_VISIBILITY_RANGE);
+    g.visible = !!visible;
+  });
+  Object.keys(mushroomMeshes).forEach(id => {
+    if (!seenMushrooms.has(id)){ scene.remove(mushroomMeshes[id]); delete mushroomMeshes[id]; }
+  });
+
+  // bonus 3400 punti: terremoti attivi (pozione lanciata). PUBBLICI come
+  // nella 2D (currSnapshot.quakes): chiunque puo' vederli, non solo il
+  // proprietario. La mesh (crepe comprese) e' creata una sola volta per
+  // id, poi solo left/duration vengono aggiornati qui per pilotare
+  // l'apertura/dissolvenza nel render loop (vedi animate()).
+  const seenQuakes = new Set();
+  (msg.quakes||[]).forEach(q => {
+    seenQuakes.add(q.id);
+    let g = quakeMeshes[q.id];
+    if (!g){
+      const hex = playerColorHex[q.owner] !== undefined ? playerColorHex[q.owner] : 0x9be7ff;
+      g = makeQuakeMesh(hex, q.radius || 0);
+      g.position.set(q.x*CELL + CELL/2, 0, q.y*CELL + CELL/2);
+      scene.add(g);
+      quakeMeshes[q.id] = g;
+    }
+    g.userData.left = (typeof q.left === "number") ? q.left : 5;
+    g.userData.duration = q.duration || 5;
+  });
+  Object.keys(quakeMeshes).forEach(id => {
+    if (!seenQuakes.has(id)){ scene.remove(quakeMeshes[id]); delete quakeMeshes[id]; }
+  });
 }
 
 function onGameEvent(msg){
@@ -3876,6 +4319,9 @@ function onGameEvent(msg){
         spike_wall: "MURO DI SPUNZONI SBLOCCATO! premi 1 (a fine catena) per piazzarlo sulla tua cella \u00b7 un singolo blocco, grande come un muro normale \u00b7 PERMANENTE per tutto il round \u00b7 solo tu e i tuoi gadget lo attraversate, chiunque altro ci sbatta muore",
         tesla: "TESLA LASER SBLOCCATA! premi 1 (dopo il muro di spunzoni) per piazzarla \u00b7 fulmina tutto cio' che \u00e8 nemico entro 8 caselle, ignorando i muri",
         territory_trap: "TRAPPOLA TERRITORIALE SBLOCCATA! premi 1 (dopo la Tesla) e calpesta 20 caselle per marcarle in segreto \u00b7 ripremi 1 per far erompere gli spunzoni",
+        bush: "ARBUSTO SPINOSO SBLOCCATO! premi 1 (a fine catena) per piantarlo \u00b7 uccide al contatto e cresce di una casella al minuto, SOLO negli spazi liberi (mai dentro i muri) \u00b7 lo distruggono solo bombolone, mongolfiera e scudo",
+        mushroom: "FUNGO ATOMICO SBLOCCATO! premi 1 (a fine catena) per piazzarlo \u00b7 nascosto come una mina (visibile solo da 3 caselle) \u00b7 se calpestato distrugge TUTTO in un raggio di 8 caselle",
+        potion: "POZIONE TERREMOTO SBLOCCATA! premi 1 (a fine catena) per mirare \u00b7 ripremi 1 per lanciarla a 5 caselle, anche oltre i muri \u00b7 terremoto raggio 8 caselle per 5 secondi: rallenta i giocatori del 50% e distrugge OGNI struttura nemica nel cerchio",
       };
       const label = bonusLabels[msg.bonus] || ("Bonus sbloccato: " + msg.bonus);
       if (msg.player === myId) showToast(label);
@@ -4272,6 +4718,90 @@ function onGameEvent(msg){
       playTerritoryTrigger();
       break;
     }
+    case "bush_place": {
+      // Bonus 2800 punti: arbusto spinoso piantato. La mesh vera e propria
+      // viene creata dal prossimo onState (blocco msg.bushes) - qui serve
+      // solo il feedback per chi l'ha piantato, stesso comportamento di
+      // superbomb_place/balloon_launch.
+      if (msg.player === myId) showToast("Arbusto spinoso piantato! Si espander\u00e0 tutto intorno a se' ogni minuto: chiunque lo tocchi muore, solo bombolone, mongolfiera e scudo possono distruggerlo.");
+      playBlobPlace();
+      break;
+    }
+    case "bush_grow": {
+      // Nuova casella dell'arbusto: la crescita graduale (scala 0 -> 1) e'
+      // gia' gestita da onState/animate leggendo bushCellBirth, che viene
+      // impostato li' stesso alla prima comparsa della cella - qui non
+      // serve fare nulla oltre a lasciare che il prossimo onState la crei.
+      break;
+    }
+    case "bush_cells_destroyed": {
+      // Potatura (bombolone, bomba di mongolfiera o scudo): frana di
+      // detriti su ogni casella spezzata, poi rimozione dal prossimo
+      // onState (le celle non piu' in msg.bushes vengono ripulite li').
+      (msg.cells||[]).forEach(c => {
+        spawnExplosion(c[0]*CELL + CELL/2, c[1]*CELL + CELL/2, 0x8a7a56);
+      });
+      playSpikeWallCrumble();
+      break;
+    }
+    case "bush_destroyed": {
+      // Zero caselle rimaste: l'arbusto e' eliminato del tutto e smette
+      // per sempre di crescere.
+      playBlobDestroyed();
+      if (msg.by === myId) showToast("Arbusto spinoso avversario eliminato del tutto!");
+      else if (msg.owner === myId) showToast("Il tuo arbusto spinoso \u00e8 stato eliminato del tutto!");
+      break;
+    }
+    case "mushroom_place": {
+      // Bonus 3000 punti: fungo atomico piazzato. Il fungo in se' viene
+      // creato dal prossimo onState (blocco msg.mushrooms, con la
+      // visibilita' a 3 caselle gia' gestita li') - qui serve solo il
+      // feedback per chi l'ha piazzato.
+      if (msg.player === myId) showToast("Fungo atomico piazzato! Chi lo calpesta scatena la distruzione totale in un raggio di 8 caselle.");
+      playMushroomPlace();
+      break;
+    }
+    case "mushroom_explode": {
+      // GROSSO BOATO + nube a fungo gassosa nel colore del proprietario
+      // per 2 secondi + onda d'urto concentrica raggio 8 (o quanto manda
+      // il server), stessa idea della 2D (nukeClouds + shockwaves). La
+      // mesh del fungo viene rimossa dal prossimo onState.
+      const hexNuke = playerColorHex[msg.by] !== undefined ? playerColorHex[msg.by] : 0xffd400;
+      const nx = msg.x*CELL + CELL/2, nz = msg.y*CELL + CELL/2;
+      nukeClouds.push({ x: nx, z: nz, color: hexNuke, start: performance.now() });
+      shockwaves.push({ x: nx, z: nz, color: hexNuke, start: performance.now(), radiusCells: msg.radius || 8 });
+      playNukeBoom();
+      break;
+    }
+    case "potion_aim": {
+      // Bonus 3400 punti, prima pressione del tasto "1" dopo la trappola
+      // territoriale: mirino attivo. In prima persona non c'e' nessun
+      // reticolo da disegnare (si mira semplicemente guardando/muovendosi,
+      // il server calcola da solo il punto d'impatto a 5 caselle quando
+      // arriva la seconda pressione): qui c'e' solo il riscontro sonoro +
+      // le istruzioni per chi sta mirando, come nella 2D.
+      if (msg.player === myId){
+        playPotionAim();
+        showToast("Mirino attivo: muoviti per puntare, ripremi 1 per lanciare la pozione (5 caselle, anche oltre i muri)");
+      }
+      break;
+    }
+    case "potion_throw": {
+      // Seconda pressione: la boccetta parte ad arco dal lanciatore verso
+      // il punto d'impatto (sopra i muri, come le bombe di mortaio). Il
+      // cerchio del terremoto vero e proprio arriva dallo stato
+      // (msg.quakes, vedi onState): qui si anima solo il volo della
+      // boccetta + suoni, stessa idea della 2D (drawPotionThrows).
+      const hexThrow = playerColorHex[msg.player] !== undefined ? playerColorHex[msg.player] : 0x9be7ff;
+      potionThrows.push({
+        x0: msg.x0*CELL + CELL/2, z0: msg.y0*CELL + CELL/2,
+        x1: msg.x*CELL + CELL/2, z1: msg.y*CELL + CELL/2,
+        start: performance.now(), dur: 450, color: hexThrow, landed: false,
+      });
+      playPotionThrow();
+      if (msg.player === myId) showToast("Pozione lanciata! Terremoto in corso: 5 secondi di crepe, rallentamento e demolizione totale nel cerchio.");
+      break;
+    }
   }
 }
 
@@ -4507,6 +5037,11 @@ function animate(){
     const pulse = 0.55 + 0.45 * Math.abs(Math.sin(nowSuperbomb / period));
     g.userData.core.scale.setScalar(0.6 + 0.4 * pulse);
     g.userData.core.material.opacity = 0.5 + 0.4 * pulse;
+    // L'occhio/feritoia in cima vira dal giallo tenue al rosso acceso
+    // man mano che la carica sale, come l'iconico bagliore della Torre
+    // Infernale che si intensifica prima di colpire.
+    const eyeColor = new THREE.Color(0xffcf6b).lerp(new THREE.Color(0xff2e1a), charge);
+    g.userData.core.material.color.copy(eyeColor);
     g.userData.envelope.rotation.y += 0.004;
     g.userData.coilRing.rotation.z += 0.01;
     g.userData.coilRing2.rotation.y += 0.012;
@@ -4661,6 +5196,168 @@ function animate(){
     if (t >= 1){ scene.remove(ex.mesh); explosions.splice(i, 1); continue; }
     ex.mesh.scale.setScalar(1 + t*2.4);
     ex.mesh.material.opacity = Math.max(0, 0.9 * (1 - t));
+  }
+
+  // Bonus 2800 punti: arbusto spinoso. Ogni casella sboccia gradualmente
+  // (scala 0 -> 1, ease-out) invece di comparire di colpo, e ondeggia
+  // piano come mossa dal vento - stessa idea della 2D (bushCellBirth +
+  // grow = 1 - (1-t)^3, sway = sin(now/750 + seed)).
+  const BUSH_GROW_ANIM_MS = 900;
+  Object.keys(bushMeshes).forEach(key => {
+    const mesh = bushMeshes[key];
+    const birth = bushCellBirth[key] || now3d;
+    const t = Math.min(1, (now3d - birth) / BUSH_GROW_ANIM_MS);
+    const grow = 1 - Math.pow(1 - t, 3);
+    mesh.scale.setScalar(Math.max(0.001, grow));
+    const seed = (mesh.position.x*13 + mesh.position.z*7) % 6.283;
+    const sway = Math.sin(now3d/750 + seed) * 0.08;
+    mesh.userData.branches.forEach(b => { b.branch.rotation.y = sway; b.spine.rotation.y = sway; });
+  });
+
+  // Bonus 3000 punti: funghi atomici. Statici (nessun lerp, come le mine),
+  // solo un lieve ondeggiare della cappella; il fungo madre trasformato
+  // (mega) sprigiona in piu' tre anelli magnetici che si espandono verso
+  // l'esterno a ripetizione, stessa idea della 2D.
+  Object.values(mushroomMeshes).forEach(g => {
+    const sway = Math.sin(now3d/900 + g.position.x*3) * 0.04;
+    g.userData.cap.rotation.z = sway;
+    if (g.userData.mega && g.userData.magRings){
+      g.userData.magRings.forEach((ring, w) => {
+        const f = ((now3d/1600) + w/3) % 1;
+        ring.scale.setScalar(1 + f*28);
+        ring.material.opacity = 0.14*(1-f);
+      });
+    }
+  });
+
+  // Bonus 3000 punti: nube a fungo dell'esplosione (evento
+  // "mushroom_explode"), 2 secondi, colore del proprietario - una sfera
+  // che sale e si allarga sfumando, stessa idea della 2D (drawNukeClouds)
+  // semplificata in 3D.
+  for (let i = nukeClouds.length - 1; i >= 0; i--){
+    const n = nukeClouds[i];
+    const t = (now3d - n.start) / NUKE_CLOUD_MS;
+    if (t >= 1){
+      if (n.mesh) scene.remove(n.mesh);
+      nukeClouds.splice(i, 1);
+      continue;
+    }
+    if (!n.mesh){
+      const mat = new THREE.MeshBasicMaterial({ color: n.color, transparent:true, opacity:0.3 });
+      n.mesh = new THREE.Mesh(new THREE.SphereGeometry(0.5, 12, 10), mat);
+      n.mesh.position.set(n.x, 0.3, n.z);
+      scene.add(n.mesh);
+    }
+    const rise = Math.min(1, t*1.6);
+    const fade = t < 0.15 ? t/0.15 : (1 - Math.max(0, (t-0.55))/0.45);
+    n.mesh.position.y = 0.3 + rise * CELL*2.4;
+    n.mesh.scale.setScalar(1 + t*3.5);
+    n.mesh.material.opacity = 0.3*fade;
+  }
+
+  // Bonus 3000 punti: onda d'urto concentrica che si espande fino al
+  // raggio massimo e sfuma, stessa idea della 2D (drawShockwaves).
+  for (let i = shockwaves.length - 1; i >= 0; i--){
+    const s = shockwaves[i];
+    const t = (now3d - s.start) / SHOCKWAVE_DURATION_MS;
+    if (t >= 1){
+      if (s.mesh) scene.remove(s.mesh);
+      shockwaves.splice(i, 1);
+      continue;
+    }
+    if (!s.mesh){
+      const mat = new THREE.MeshBasicMaterial({ color: s.color, transparent:true, opacity:1, side: THREE.DoubleSide });
+      s.mesh = new THREE.Mesh(new THREE.RingGeometry(0.9, 1, 40), mat);
+      s.mesh.rotation.x = -Math.PI/2;
+      s.mesh.position.set(s.x, 0.05, s.z);
+      scene.add(s.mesh);
+    }
+    const maxR = s.radiusCells * CELL;
+    s.mesh.scale.setScalar(Math.max(0.01, maxR * t));
+    s.mesh.material.opacity = 1 - t;
+  }
+
+  // Bonus 3400 punti: cerchi del terremoto attivi (msg.quakes, aggiornati
+  // ad ogni "state"). Il cerchio "esplode" in apertura nel primo 15% della
+  // durata e sfuma dolcemente negli ultimi istanti, stessa idea della 2D
+  // (drawQuakes: grow = min(1, progress/0.15), fade = min(1, left/0.6)).
+  // Le crepe si allungano progressivamente, con un piccolo sfasamento tra
+  // l'una e l'altra, e tremano leggermente come nella 2D.
+  Object.values(quakeMeshes).forEach(g => {
+    const ud = g.userData;
+    const dur = ud.duration || 5;
+    const left = (typeof ud.left === "number") ? ud.left : dur;
+    const progress = Math.max(0, Math.min(1, 1 - left/dur));
+    const grow = Math.min(1, progress/0.15);
+    const fade = Math.min(1, left/0.6);
+    const pulse = 0.85 + 0.15*Math.sin(now3d/90);
+    const shake = Math.sin(now3d/35) * 0.02 * ud.r;
+
+    ud.halo.scale.setScalar(grow);
+    ud.halo.material.opacity = 0.12*fade;
+    ud.ring.scale.setScalar(grow*pulse);
+    ud.ring.material.opacity = 0.55*fade;
+
+    ud.cracks.forEach((c, ci) => {
+      const reach = Math.min(1, Math.max(0, (grow - ci*0.02)/0.9)) * c.lenF;
+      const pts = [];
+      let bx = 0, bz = 0;
+      c.segs.forEach(s => {
+        const rr = ud.r * reach * s.f * (1 + s.jR);
+        const aa = c.baseA + s.jA*s.f;
+        const px = Math.cos(aa)*rr + shake*s.f;
+        const pz = Math.sin(aa)*rr + shake*s.f*0.6;
+        pts.push(new THREE.Vector3(px, 0.03, pz));
+        if (Math.abs(s.f - c.branchAt) < 0.12){ bx = px; bz = pz; }
+      });
+      c.line.geometry.setFromPoints(pts);
+      c.line.geometry.attributes.position.needsUpdate = true;
+      c.line.material.opacity = reach > 0.02 ? 0.85*fade : 0;
+      const bl = ud.r*reach*0.22;
+      c.branchLine.geometry.setFromPoints([
+        new THREE.Vector3(bx, 0.03, bz),
+        new THREE.Vector3(bx + Math.cos(c.baseA + c.branchA)*bl, 0.03, bz + Math.sin(c.baseA + c.branchA)*bl),
+      ]);
+      c.branchLine.geometry.attributes.position.needsUpdate = true;
+      c.branchLine.material.opacity = reach > 0.02 ? 0.7*fade : 0;
+    });
+
+    ud.debris.forEach((d, di) => {
+      const hop = Math.abs(Math.sin(now3d/140 + di)) * 0.06;
+      d.position.set(Math.cos(d.userData.angle)*d.userData.radius*grow, 0.05 + hop, Math.sin(d.userData.angle)*d.userData.radius*grow);
+      d.material.opacity = 0.6*fade;
+    });
+  });
+
+  // Bonus 3400 punti: volo ad arco della boccetta di pozione (evento
+  // "potion_throw"), stessa parabola gia' collaudata per le bombe di
+  // mortaio (Math.sin(PI*f)) ma con rotazione continua della boccetta in
+  // volo. All'atterraggio: boato/rombo di terra + piccola esplosione
+  // (il cerchio del terremoto vero e proprio arriva gia' da onState).
+  const POTION_ARC_HEIGHT = 2.4;
+  for (let i = potionThrows.length - 1; i >= 0; i--){
+    const t = potionThrows[i];
+    const f = (now3d - t.start) / t.dur;
+    if (f >= 1){
+      if (!t.landed){
+        t.landed = true;
+        playQuakeRumble();
+        spawnExplosion(t.x1, t.z1, t.color);
+      }
+      if (t.mesh) scene.remove(t.mesh);
+      potionThrows.splice(i, 1);
+      continue;
+    }
+    if (!t.mesh){
+      t.mesh = makePotionMesh(t.color);
+      scene.add(t.mesh);
+    }
+    const px = t.x0 + (t.x1 - t.x0)*f;
+    const pz = t.z0 + (t.z1 - t.z0)*f;
+    const lift = Math.sin(Math.PI*f) * POTION_ARC_HEIGHT;
+    t.mesh.position.set(px, lift, pz);
+    t.mesh.userData.body.rotation.set(f*Math.PI*3, f*Math.PI*2.2, f*Math.PI*1.6);
+    t.mesh.userData.shadow.material.opacity = 0.25 * (1 - lift/(POTION_ARC_HEIGHT*1.4));
   }
 
   // sterza automaticamente la visuale verso la direzione in cui mi sto
