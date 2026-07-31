@@ -2311,14 +2311,29 @@ class Room:
         # in diagonale verticale.
         vz = math.sin(pitch_val) * LASER_PROJECTILE_SPEED
         horiz_scale = math.cos(pitch_val)
+        # Offset di spawn in avanti lungo la direzione di mira (dx, dy):
+        # senza questo offset il proiettile nasce nel centro della cella
+        # dello sparatore, che a schermo NON coincide col punto rosso
+        # (crosshair) al centro della visuale — la camera sta un po' + in
+        # avanti/alta rispetto al centro cella, quindi il dardo sembrava
+        # partire "di lato" rispetto al mirino invece che esattamente da
+        # li'. Spostando lo spawn di MUZZLE_FORWARD_OFFSET celle nella
+        # stessa direzione della mira, il dardo nasce visivamente proprio
+        # davanti alla camera, sulla linea di mira, come se partisse dal
+        # crosshair stesso.
+        MUZZLE_FORWARD_OFFSET = 0.35
+        spawn_x = shooter.x + 0.5 + dx * MUZZLE_FORWARD_OFFSET
+        spawn_y = shooter.y + 0.5 + dy * MUZZLE_FORWARD_OFFSET
         laser = {
             "id": uuid.uuid4().hex[:8],
             "owner": shooter.id,
             # Posizione continua (float), a differenza delle celle intere
             # usate da molte altre entita' del gioco: parte dal CENTRO
-            # della cella dello sparatore cosi' il percorso in diagonale
-            # e' visivamente corretto fin dal primo istante.
-            "x": shooter.x + 0.5, "y": shooter.y + 0.5,
+            # della cella dello sparatore (spostato in avanti lungo la
+            # mira, vedi MUZZLE_FORWARD_OFFSET sopra) cosi' il percorso in
+            # diagonale e' visivamente corretto fin dal primo istante e il
+            # colpo nasce esattamente sulla linea del mirino/crosshair.
+            "x": spawn_x, "y": spawn_y,
             "dx": dx, "dy": dy,
             "bounce_left": None,  # None finche' non ha ancora rimbalzato
             "pitch": pitch_val,

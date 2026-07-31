@@ -4356,19 +4356,63 @@ window.addEventListener("keyup", e => {
 });
 
 let yaw = 0, pitch = 0, locked = false;
+// Fluidita' del mouse-look: gli eventi "mousemove" arrivano dal browser a
+// cadenza IRREGOLARE (non sincronizzata coi frame renderizzati), quindi
+// applicare movementX/Y direttamente a yaw/pitch dentro l'handler produceva
+// una rotazione a scatti, specie con mouse ad alto polling o refresh rate
+// del monitor diversi dalla cadenza degli eventi. Soluzione: l'handler si
+// limita ad ACCUMULARE il movimento grezzo in un buffer (pendingYawDelta/
+// pendingPitchDelta); il render loop (unica fonte di verita' per ogni
+// frame, vedi animate()) lo consuma e lo applica in modo smussato con un
+// filtro esponenziale (mouseSmoothing), cosi' la rotazione risulta
+// continua e legata al framerate reale invece che alla cadenza degli
+// eventi del mouse.
+let pendingYawDelta = 0, pendingPitchDelta = 0;
+let smoothedYawDelta = 0, smoothedPitchDelta = 0;
+const MOUSE_SENS = 0.0022;
+// 0 = nessuno smoothing (comportamento vecchio, scattoso), 1 = smoothing
+// totale (troppo "gommoso"/con inerzia percepibile). ~0.35 e' un buon
+// compromesso: elimina lo scatto senza introdurre lag percepibile alla
+// mira.
+const MOUSE_SMOOTHING = 0.35;
 document.addEventListener("pointerlockchange", () => {
   locked = document.pointerLockElement && document.pointerLockElement.tagName === "CANVAS";
 });
 document.addEventListener("mousemove", e => {
   if (!locked) return;
-  yaw   -= e.movementX * 0.0022;
-  pitch -= e.movementY * 0.0022;
+  // Solo accumulo: nessuna scrittura diretta su yaw/pitch qui, per non
+  // dipendere dalla cadenza (spesso irregolare) degli eventi mousemove.
+  pendingYawDelta   -= e.movementX * MOUSE_SENS;
+  pendingPitchDelta -= e.movementY * MOUSE_SENS;
+});
+
+// Consuma il movimento del mouse accumulato dall'ultimo frame e lo applica
+// a yaw/pitch con uno smoothing esponenziale indipendente dal framerate
+// (usa dt cosi' il risultato e' identico a 30fps, 60fps o 144fps).
+// Chiamata una volta per frame dal render loop, PRIMA di leggere yaw/pitch
+// per orientare camera/movimento.
+function applySmoothedMouseLook(dt){
+  if (pendingYawDelta === 0 && pendingPitchDelta === 0 &&
+      smoothedYawDelta === 0 && smoothedPitchDelta === 0) return;
+  // Fattore di risposta indipendente dal framerate: a parita' di
+  // MOUSE_SMOOTHING, un frame lento (dt grande) insegue comunque il target
+  // nello stesso tempo "reale" di un frame veloce.
+  const response = 1 - Math.pow(MOUSE_SMOOTHING, dt * 60);
+  smoothedYawDelta   += (pendingYawDelta   - smoothedYawDelta)   * response;
+  smoothedPitchDelta += (pendingPitchDelta - smoothedPitchDelta) * response;
+  yaw   += smoothedYawDelta;
+  pitch += smoothedPitchDelta;
   pitch = Math.max(-Math.PI/2+0.05, Math.min(Math.PI/2-0.05, pitch));
+  // Il delta grezzo di questo frame e' stato consumato: azzeralo cosi' non
+  // si accumula all'infinito (altrimenti il mouse fermo continuerebbe a
+  // "scivolare" verso un delta vecchio).
+  pendingYawDelta = 0;
+  pendingPitchDelta = 0;
   // lo sguardo e' cambiato: se un tasto e' tenuto premuto, il "forward"/
   // "left"/ecc. va reinterpretato rispetto al NUOVO sguardo, quindi la
   // direzione di griglia (e il bersaglio della sterzata) va ricalcolata.
   updateMovementDirection();
-});
+}
 
 // Sterza dolcemente lo yaw verso la direzione di griglia agganciata
 // all'ultimo tasto premuto (steerTargetYaw), chiamata ogni frame dal
@@ -6897,6 +6941,13 @@ function animate(){
     t.mesh.userData.body.rotation.set(f*Math.PI*3, f*Math.PI*2.2, f*Math.PI*1.6);
     t.mesh.userData.shadow.material.opacity = 0.25 * (1 - lift/(POTION_ARC_HEIGHT*1.4));
   }
+
+  // Applica il movimento del mouse accumulato dall'ultimo frame, smussato
+  // (vedi applySmoothedMouseLook sopra): va fatto qui, una volta per
+  // frame, PRIMA di steerCameraTowardsMovement/della lettura di yaw/pitch
+  // per la camera, cosi' tutto il resto del frame vede gia' lo sguardo
+  // aggiornato.
+  applySmoothedMouseLook(dt);
 
   // sterza automaticamente la visuale verso la direzione in cui mi sto
   // muovendo (WASD), a meno che il mouse non l'abbia appena presa in mano.
