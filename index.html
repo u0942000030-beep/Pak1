@@ -4951,7 +4951,13 @@ function onState(msg){
     // server per le collisioni: anche qui solo scalata per CELL.
     entry.targetX = lz.x*CELL;
     entry.targetZ = lz.y*CELL;
-    if (typeof lz.z === "number") entry.targetY = lz.z*CELL;
+    // yOffset (impostato solo per il MIO laser, vedi case "laser_fire")
+    // corregge lo scarto fra la quota reale di nascita (camera) e quella
+    // usata dal server (LASER_EYE_HEIGHT): senza questa correzione il
+    // proiettile nasceva al centro dello schermo ma "scattava" verso
+    // l'alto/basso non appena arrivava il primo state con targetY
+    // assoluto del server.
+    if (typeof lz.z === "number") entry.targetY = lz.z*CELL + (entry.yOffset || 0);
     // Il proiettile ora puo' viaggiare in qualsiasi angolo (non solo i 4
     // cardinali): l'orientamento visivo si calcola con atan2 sul vettore
     // dx/dz reale invece di una tabella fissa a 4 valori.
@@ -5648,6 +5654,17 @@ function onGameEvent(msg){
       // camera reale).
       const isMyLaser = (laserOwner !== null && laserOwner === myId);
       let wx, wy, wz;
+      // Scarto costante fra la quota REALE di nascita (camera) e la quota
+      // che il SERVER crede di aver usato per lo spawn (LASER_EYE_HEIGHT,
+      // diversa da EYE_HEIGHT del client): applicato ad ogni targetY
+      // ricevuto in seguito (onState/laser_bounce) cosi' la traiettoria
+      // mantiene la stessa pendenza calcolata dal server (stesse
+      // collisioni) ma resta coerente con l'altezza vera della camera da
+      // cui il dardo e' partito visivamente. Senza questo offset il primo
+      // frame nasceva giusto (al centro) ma il frame successivo, appena
+      // arrivava il primo state con targetY assoluto del server, il
+      // proiettile "scattava" verso la quota server (piu' alta).
+      let yOffset = 0;
       if (isMyLaser){
         // Stessa formula usata per orientare la camera nel render loop
         // (vedi camera.rotation.order = "YXZ"): direzione di sguardo
@@ -5663,6 +5680,8 @@ function onGameEvent(msg){
         wx = myRenderX + lookX * MUZZLE_CAMERA_DIST;
         wy = EYE_HEIGHT + lookY * MUZZLE_CAMERA_DIST;
         wz = myRenderZ + lookZ * MUZZLE_CAMERA_DIST;
+        const serverWy = (typeof msg.z === "number" ? msg.z : EYE_HEIGHT/CELL) * CELL;
+        yOffset = wy - serverWy;
       } else {
         wx = msg.x*CELL; wz = msg.y*CELL;
         wy = (typeof msg.z === "number" ? msg.z : EYE_HEIGHT/CELL) * CELL;
@@ -5678,7 +5697,7 @@ function onGameEvent(msg){
         orientLaserBolt(mesh, msg.dx, (typeof msg.vz === "number" ? msg.vz : 0), msg.dy);
       }
       scene.add(mesh);
-      laserMeshes[msg.id] = { mesh, x:wx, z:wz, y:wy, targetX:wx, targetZ:wz, targetY:wy, dir: msg.dir };
+      laserMeshes[msg.id] = { mesh, x:wx, z:wz, y:wy, targetX:wx, targetZ:wz, targetY:wy, dir: msg.dir, yOffset };
       playLaser();
       break;
     }
@@ -5693,7 +5712,7 @@ function onGameEvent(msg){
       if (lz){
         const wx = msg.x*CELL, wz = msg.y*CELL;
         lz.targetX = wx; lz.targetZ = wz;
-        if (typeof msg.z === "number") lz.targetY = msg.z*CELL;
+        if (typeof msg.z === "number") lz.targetY = msg.z*CELL + (lz.yOffset || 0);
       }
       break;
     }
