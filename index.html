@@ -1326,34 +1326,38 @@ function makeBushCellMesh(hex, linkDirs){
   return g;
 }
 
-// Bonus 3000 punti (fungo atomico): fungo PORCINO vero e realistico, nel
-// colore del proprietario solo sulla cappella (il gambo resta color
-// porcino naturale, come un porcino vero), con gambo bulboso rastremato
-// (piu' largo alla base, si stringe verso la cappella), cappella a cupola
-// con bordo leggermente ripiegato in basso e una zona porosa (i "tubuli")
-// visibile sotto il bordo. Ogni esemplare e' diverso: la forma, la
-// dimensione e l'inclinazione del gambo variano in base a un seed
-// deterministico (seedVal, derivato dall'id/posizione dal chiamante, cosi'
-// resta identico per tutti i client che vedono lo stesso fungo). In rari
-// casi (twin=true, deciso dal chiamante con la stessa logica del seed)
-// nasce un fungo gemello a due teste: un secondo gambo/cappella piu'
-// piccolo che si stacca dalla base comune. Costruito una sola volta per
+// Bonus 3000 punti (fungo atomico): fungo PORCINO vero e realistico,
+// DAVVERO corto e tozzo (gambo a botte, non un cono slanciato rimpicciolito)
+// e radicalmente diverso da esemplare a esemplare: il seed deterministico
+// non si limita piu' a scalare/inclinare lo stesso identico modello, ma
+// sceglie fra piu' "archetipi" di sagoma (a botte, a clava, a fungo
+// panciuto asimmetrico) e fa variare indipendentemente tonalita' della
+// cappella, presenza di macchie/screziature, reticolo sul gambo e forma
+// della cupola, cosi' due funghi vicini non si somigliano quasi mai. Il
+// colore del proprietario resta solo sulla cappella (il gambo e' sempre
+// color porcino naturale, come un porcino vero). Fungo gemello a due teste
+// (twin=true) invariato nel funzionamento. Costruito una sola volta per
 // esemplare, poi solo scalato/ruotato leggermente per un lieve ondeggiare.
+//
+// Bonus 3800 (fungo madre trasformato, mega=true): non piu' lo stesso
+// porcino ingigantito, ma un GIGAFUNGO CORAZZATO a se' stante — gambo
+// cinto da placche metalliche imbullonate, cappella coperta da una calotta
+// a piastre con creste/spuntoni, vene luminescenti pulsanti nel colore del
+// proprietario (stesso linguaggio del golem/veicoli) e un nucleo/occhio
+// centrale che pulsa sulla cappella. L'alone di risucchio diventa un vero
+// e proprio "buco nero": disco di accrescimento multi-anello inclinato,
+// molto piu' ampio e luminoso, con un bagliore centrale intenso — vedi
+// animate() per la rotazione/pulsazione di magRings, magDisc e magCore.
 function makeMushroomMesh(hex, mega, seedVal, twin){
   const g = new THREE.Group();
   // "mega": scala aumentata a ~4.0 (non 1.9) cosi' il fungo madre
   // trasformato raggiunge la stessa altezza della cima della Tesla
-  // (TESLA_TOP_Y = WALL_TOTAL_H + 1.1 = 3.1), come richiesto: prima era
-  // solo "piu' grande del normale" (1.9x) ma restava sotto ai muri.
-  // Il fungo ATOMICO normale (mega=false) resta invariato nel ramo mega,
-  // ma va dimezzato: "s" scala l'intero fungo (gambo+cappella) in blocco,
-  // quindi basta portarlo a 0.5 SOLO quando non e' mega.
+  // (TESLA_TOP_Y = WALL_TOTAL_H + 1.1 = 3.1).
   const s = mega ? 4.0 : 0.5;
-  // Rapporto di "tozzezza" del gambo, applicato SOLO al fungo atomico
-  // normale: aumenta i raggi (base/media/cima) rispetto all'altezza senza
-  // toccare "s", cosi' il gambo risulta piu' corto e panciuto invece di
-  // restare semplicemente una versione rimpicciolita di quello grande.
-  const stemStubby = mega ? 1.0 : 1.6;
+  // Rapporto di "tozzezza" del gambo del fungo atomico normale: valore
+  // alzato ulteriormente (da 1.6 a 2.35) per un gambo VERAMENTE corto e
+  // panciuto, non piu' una versione rimpicciolita del gambo del mega.
+  const stemStubby = mega ? 1.0 : 2.35;
   seedVal = seedVal || 0;
   // PRNG deterministico piccolo (mulberry32-style) per variare ogni fungo
   // in modo stabile senza dipendere da Math.random().
@@ -1364,57 +1368,124 @@ function makeMushroomMesh(hex, mega, seedVal, twin){
     t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   }
+  function pick(arr){ return arr[Math.floor(rnd()*arr.length) % arr.length]; }
 
-  const stemColor = 0xe9dcc0; // color porcino naturale (avorio/crema), NON il colore del player
+  const stemColorBase = mega ? 0x8a8478 : 0xe9dcc0; // porcino naturale (avorio/crema); il mega e' piu' scuro sotto le piastre
+  // Leggera variazione di tonalita' del gambo per esemplare (dal crema
+  // chiaro a un nocciola piu' scuro), cosi' anche il gambo — non solo la
+  // cappella — rompe la monotonia fra un fungo e l'altro.
+  const stemTint = mega ? 0 : (rnd()-0.5)*0.10;
+  const stemColor = new THREE.Color(stemColorBase).offsetHSL(0, 0, stemTint);
   const stemShadeMat = new THREE.MeshStandardMaterial({ color: stemColor, roughness:0.9 });
   const poreMat = new THREE.MeshStandardMaterial({ color: 0xc9a86a, roughness:1 });
-  const capMat = new THREE.MeshStandardMaterial({ color: hex, emissive: hex, emissiveIntensity: mega ? 0.35 : 0.08, roughness:0.75 });
+  // Tonalita' della cappella variabile per esemplare intorno al colore del
+  // proprietario (mai sul mega, che resta piu' "metallico/minerale").
+  const capHueShift = mega ? 0 : (rnd()-0.5)*0.06;
+  const capLightShift = mega ? 0 : (rnd()-0.5)*0.14;
+  const capColor = mega ? new THREE.Color(hex) : new THREE.Color(hex).offsetHSL(capHueShift, 0, capLightShift);
+  const capMat = new THREE.MeshStandardMaterial({ color: capColor, emissive: hex, emissiveIntensity: mega ? 0.3 : 0.08, roughness: mega ? 0.55 : 0.75 });
+  // Macchie/screziature sulla cappella: presenti solo su alcuni esemplari
+  // (circa 1 su 2), colore scuro-naturale sparso in chiazze irregolari.
+  const hasSpots = !mega && rnd() < 0.5;
+  const spotMat = new THREE.MeshStandardMaterial({ color: 0x5a3d22, roughness:1 });
+  // Reticolo (retino) sul gambo: presente solo su alcuni esemplari, righe
+  // orizzontali leggermente incise che imitano la trama del porcino vero.
+  const hasNetting = !mega && rnd() < 0.45;
+  const nettingMat = new THREE.MeshStandardMaterial({ color: stemColor.clone().offsetHSL(0,0,-0.12), roughness:1 });
+
+  // Archetipo di sagoma del gambo, scelto dal seed: rompe la monotonia
+  // molto piu' della sola variazione di scala/pancia, perche' cambia
+  // davvero la silhouette dell'esemplare.
+  //  "botte"  -> gambo molto corto e rigonfio, quasi sferico
+  //  "clava"  -> stretto alla base, si allarga bruscamente verso l'alto
+  //  "tronco" -> il classico profilo a fiaschetto, ma ancora piu' compresso
+  const archetype = mega ? "tronco" : pick(["botte","clava","tronco"]);
 
   // Costruisce un singolo corpo fungo (gambo + cappella + pori), scalato
   // di "scale" e ruotato secondo un'inclinazione casuale ma contenuta,
   // cosi' ogni esemplare pende leggermente da un lato come nella realta'.
-  function buildMushroomBody(scale, tiltX, tiltZ, rotY, capFlatten, stemBulge){
+  function buildMushroomBody(scale, tiltX, tiltZ, rotY, capFlatten, stemBulge, arch){
     const body = new THREE.Group();
 
-    // Gambo bulboso: costruito con due tronchi di cono impilati, piu'
-    // largo alla base (radice) e via via piu' stretto salendo verso la
-    // cappella, per un profilo "a fiaschetto" tipico del porcino invece
-    // del cilindro uniforme di prima. "stemStubby" (>1 solo per il fungo
-    // atomico normale, mega esclusa) accorcia l'altezza del gambo e ne
-    // allarga i raggi in proporzione, per un aspetto tozzo/panciuto
-    // invece di un semplice fungo grande rimpicciolito.
     const stemH = 0.34*s*scale / stemStubby;
-    const rBase = 0.15*s*scale*stemBulge*stemStubby;
-    const rMid  = 0.105*s*scale*stemStubby;
-    const rTop  = 0.085*s*scale*stemStubby;
+    let rBase, rMid, rTop, lowerFrac;
+    if (arch === "botte"){
+      // Quasi tondo: base e cima simili, pancia centrale molto marcata.
+      rBase = 0.155*s*scale*stemBulge*stemStubby;
+      rMid  = 0.135*s*scale*stemBulge*stemStubby;
+      rTop  = 0.105*s*scale*stemStubby;
+      lowerFrac = 0.5;
+    } else if (arch === "clava"){
+      // Stretto alla radice, si apre di colpo verso la cappella.
+      rBase = 0.09*s*scale*stemStubby;
+      rMid  = 0.10*s*scale*stemBulge*stemStubby;
+      rTop  = 0.135*s*scale*stemBulge*stemStubby;
+      lowerFrac = 0.42;
+    } else {
+      // "tronco": fiaschetto classico, usato anche dal mega.
+      rBase = 0.15*s*scale*stemBulge*stemStubby;
+      rMid  = 0.105*s*scale*stemStubby;
+      rTop  = 0.085*s*scale*stemStubby;
+      lowerFrac = 0.55;
+    }
     const lower = new THREE.Mesh(
-      new THREE.CylinderGeometry(rMid, rBase, stemH*0.55, 12, 1),
+      new THREE.CylinderGeometry(rMid, rBase, stemH*lowerFrac, 12, 1),
       stemShadeMat
     );
-    lower.position.y = stemH*0.275;
+    lower.position.y = stemH*lowerFrac*0.5;
     body.add(lower);
     const upper = new THREE.Mesh(
-      new THREE.CylinderGeometry(rTop, rMid, stemH*0.5, 12, 1),
+      new THREE.CylinderGeometry(rTop, rMid, stemH*(1-lowerFrac), 12, 1),
       stemShadeMat
     );
-    upper.position.y = stemH*0.55 + stemH*0.25;
+    upper.position.y = stemH*lowerFrac + stemH*(1-lowerFrac)*0.5;
     body.add(upper);
 
-    // Cappella a cupola: sfera schiacciata (piu' larga che alta) invece
-    // della mezza sfera precedente, con un profilo piu' arrotondato in
-    // cima e il bordo che si assottiglia verso l'esterno, come una vera
-    // cappella di porcino.
+    // Reticolo del gambo: 3-4 anelli sottili leggermente piu' scuri,
+    // impilati lungo il gambo, solo se hasNetting.
+    if (hasNetting){
+      const bands = 3 + (rnd()<0.5?1:0);
+      for (let bi = 0; bi < bands; bi++){
+        const bt = (bi+1)/(bands+1);
+        const br = rBase + (rTop-rBase)*bt;
+        const band = new THREE.Mesh(
+          new THREE.TorusGeometry(br*1.02, br*0.05, 6, 12),
+          nettingMat
+        );
+        band.position.y = stemH*bt;
+        band.rotation.x = Math.PI/2;
+        body.add(band);
+      }
+    }
+
+    // Cappella a cupola: sfera schiacciata, con profilo che varia in base
+    // all'archetipo (piu' bombata sulla "botte", piu' conica sulla "clava").
     const capR = 0.32*s*scale;
-    const capGeo = new THREE.SphereGeometry(capR, 16, 12, 0, Math.PI*2, 0, Math.PI*0.56);
+    const capThetaMax = arch === "clava" ? Math.PI*0.5 : Math.PI*0.58;
+    const capGeo = new THREE.SphereGeometry(capR, 16, 12, 0, Math.PI*2, 0, capThetaMax);
     const cap = new THREE.Mesh(capGeo, capMat);
     cap.position.y = stemH + capR*0.28;
     cap.scale.set(1, capFlatten, 1);
     body.add(cap);
 
-    // Bordo/margine della cappella leggermente ripiegato verso il basso
-    // (un piccolo toro appena sotto il bordo esterno della cupola), per
-    // dare lo spessore carnoso tipico del porcino invece di un bordo
-    // sottile e netto.
+    // Macchie sulla cappella: piccole chiazze scure sparse in modo
+    // deterministico ma irregolare, solo se hasSpots.
+    if (hasSpots){
+      const nSpots = 3 + Math.floor(rnd()*4);
+      for (let sp = 0; sp < nSpots; sp++){
+        const sa = rnd()*Math.PI*2;
+        const sr = capR * (0.25 + rnd()*0.55);
+        const spot = new THREE.Mesh(
+          new THREE.CircleGeometry(capR*(0.05+rnd()*0.06), 8),
+          spotMat
+        );
+        spot.position.set(Math.cos(sa)*sr, stemH + capR*0.28 + capR*capFlatten*0.5 + 0.005, Math.sin(sa)*sr);
+        spot.rotation.x = -Math.PI/2;
+        body.add(spot);
+      }
+    }
+
+    // Bordo/margine della cappella leggermente ripiegato verso il basso.
     const rim = new THREE.Mesh(
       new THREE.TorusGeometry(capR*0.97, capR*0.09, 8, 20),
       capMat
@@ -1424,10 +1495,7 @@ function makeMushroomMesh(hex, mega, seedVal, twin){
     rim.scale.set(1, 1, capFlatten*1.05);
     body.add(rim);
 
-    // Strato poroso ("tubuli") sotto la cappella: un disco leggermente
-    // concavo color nocciola-porcino, visibile guardando il fungo da
-    // sotto/di lato, che distingue il porcino da un fungo generico a
-    // ombrello liscio.
+    // Strato poroso ("tubuli") sotto la cappella.
     const pores = new THREE.Mesh(
       new THREE.CylinderGeometry(capR*0.78, capR*0.6, capR*0.16, 14, 1, true),
       poreMat
@@ -1444,31 +1512,30 @@ function makeMushroomMesh(hex, mega, seedVal, twin){
 
   // Variazione per esemplare: dimensione, inclinazione e "pancia" del
   // gambo diverse ogni volta, guidate dal seed cosi' restano stabili.
-  const mainScale = 0.86 + rnd()*0.34;           // dimensione: da un po' piu' piccolo a un po' piu' grande
-  const mainTiltX = (rnd()-0.5) * 0.32;          // inclinazione avanti/indietro
-  const mainTiltZ = (rnd()-0.5) * 0.32;          // inclinazione laterale
+  const mainScale = 0.82 + rnd()*0.42;           // dimensione: range piu' ampio
+  const mainTiltX = (rnd()-0.5) * 0.36;          // inclinazione avanti/indietro
+  const mainTiltZ = (rnd()-0.5) * 0.36;          // inclinazione laterale
   const mainRotY  = rnd() * Math.PI*2;           // orientamento casuale
-  const mainFlatten = 0.62 + rnd()*0.22;         // cappella piu' o meno schiacciata
-  const mainBulge = 1.15 + rnd()*0.5;            // quanto e' panciuto il gambo alla base
+  const mainFlatten = 0.58 + rnd()*0.26;         // cappella piu' o meno schiacciata
+  const mainBulge = 1.1 + rnd()*0.6;             // quanto e' panciuto il gambo alla base
 
-  const main = buildMushroomBody(mainScale, mainTiltX, mainTiltZ, mainRotY, mainFlatten, mainBulge);
+  const main = buildMushroomBody(mainScale, mainTiltX, mainTiltZ, mainRotY, mainFlatten, mainBulge, archetype);
   g.add(main.body);
   const caps = [main.cap];
   const stems = [main.body];
 
   // Fungo gemello a due teste: nasce dalla stessa base ma con un secondo
-  // corpo piu' piccolo, spostato di lato e inclinato verso l'esterno,
-  // come due porcini cresciuti attaccati dallo stesso micelio.
+  // corpo piu' piccolo (anche di archetipo diverso), spostato di lato e
+  // inclinato verso l'esterno.
   if (twin){
-    const twinScale = mainScale * (0.55 + rnd()*0.2);
-    const twinTiltX = mainTiltX*0.3 + (rnd()-0.5)*0.5;
-    const twinTiltZ = mainTiltZ*0.3 + (rnd()-0.5)*0.5 + (rnd()<0.5?-0.35:0.35);
+    const twinArch = mega ? "tronco" : pick(["botte","clava","tronco"]);
+    const twinScale = mainScale * (0.5 + rnd()*0.25);
+    const twinTiltX = mainTiltX*0.3 + (rnd()-0.5)*0.55;
+    const twinTiltZ = mainTiltZ*0.3 + (rnd()-0.5)*0.55 + (rnd()<0.5?-0.35:0.35);
     const twinRotY = rnd() * Math.PI*2;
-    const twinFlatten = 0.6 + rnd()*0.22;
-    const twinBulge = 1.1 + rnd()*0.4;
-    const twinBody = buildMushroomBody(twinScale, twinTiltX, twinTiltZ, twinRotY, twinFlatten, twinBulge);
-    // sposta il gemello leggermente di lato dalla base comune, in una
-    // direzione orizzontale casuale.
+    const twinFlatten = 0.56 + rnd()*0.26;
+    const twinBulge = 1.05 + rnd()*0.5;
+    const twinBody = buildMushroomBody(twinScale, twinTiltX, twinTiltZ, twinRotY, twinFlatten, twinBulge, twinArch);
     const twinAng = rnd() * Math.PI*2;
     const twinOffset = 0.08*s;
     twinBody.body.position.set(Math.cos(twinAng)*twinOffset, 0, Math.sin(twinAng)*twinOffset);
@@ -1477,23 +1544,132 @@ function makeMushroomMesh(hex, mega, seedVal, twin){
     stems.push(twinBody.body);
   }
 
-  // Onde magnetiche del fungo madre trasformato (bonus 3800, gia' previste
-  // nella struttura anche se non ancora attivabili in 3D): tre anelli
-  // concentrici, visibili solo se mega=true.
-  let magRings = null;
+  // ==================== GIGAFUNGO CORAZZATO (mega) ====================
+  // Corazza applicata SOPRA al corpo gia' costruito: placche sul gambo,
+  // calotta a piastre sulla cappella, creste/spuntoni, vene luminescenti
+  // pulsanti e un nucleo pulsante centrale — stesso linguaggio visivo del
+  // golem/veicoli (rockMat scuro + emissivi nel colore del proprietario).
+  if (mega){
+    const armorDark = new THREE.MeshStandardMaterial({ color: 0x3a3f47, roughness:0.7, metalness:0.55, flatShading:true });
+    const armorMid   = new THREE.MeshStandardMaterial({ color: 0x555b66, roughness:0.6, metalness:0.5, flatShading:true });
+    const veinMat = new THREE.MeshStandardMaterial({ color: hex, emissive: hex, emissiveIntensity: 0.9, roughness:0.4 });
+    const stemHFull = main.stemH;
+    const capRFull = 0.32*s*mainScale;
+
+    // Placche corazzate impilate lungo il gambo (anelli poligonali
+    // leggermente svasati, come segmenti di armatura).
+    const plateCount = 4;
+    for (let pi = 0; pi < plateCount; pi++){
+      const pt = (pi+0.5)/plateCount;
+      const pr = 0.09 + pt*0.06;
+      const plate = new THREE.Mesh(
+        new THREE.CylinderGeometry(pr*s, pr*s*1.12, 0.05*s, 10, 1),
+        pi % 2 === 0 ? armorMid : armorDark
+      );
+      plate.position.y = stemHFull*pt;
+      plate.rotation.y = pi * 0.4;
+      g.add(plate);
+      // Vena luminescente verticale incastonata fra le placche.
+      const vein = new THREE.Mesh(new THREE.BoxGeometry(0.025*s, stemHFull/plateCount*0.8, 0.02*s), veinMat);
+      vein.position.set(Math.cos(pi*1.6)*pr*s*1.05, stemHFull*pt, Math.sin(pi*1.6)*pr*s*1.05);
+      vein.rotation.y = pi*1.6;
+      g.add(vein);
+    }
+
+    // Calotta corazzata sulla cappella: guscio a piastre leggermente piu'
+    // grande della cupola organica sottostante, con bordo dentellato.
+    const helmGeo = new THREE.SphereGeometry(capRFull*1.08, 12, 3, 0, Math.PI*2, 0, Math.PI*0.5);
+    const helm = new THREE.Mesh(helmGeo, armorMid);
+    helm.position.y = stemHFull + capRFull*0.30;
+    helm.scale.set(1, mainFlatten*1.05, 1);
+    g.add(helm);
+
+    // Creste/spuntoni radiali sulla calotta, come una corona corazzata.
+    const spikeCount = 8;
+    for (let sp = 0; sp < spikeCount; sp++){
+      const sa = (sp/spikeCount) * Math.PI*2;
+      const sr = capRFull*0.72;
+      const spike = new THREE.Mesh(
+        new THREE.ConeGeometry(0.045*s, 0.16*s, 6),
+        armorDark
+      );
+      spike.position.set(
+        Math.cos(sa)*sr,
+        stemHFull + capRFull*0.30 + capRFull*mainFlatten*0.35,
+        Math.sin(sa)*sr
+      );
+      spike.rotation.x = Math.PI*0.12 * Math.cos(sa);
+      spike.rotation.z = -Math.PI*0.12 * Math.sin(sa);
+      g.add(spike);
+    }
+
+    // Nucleo pulsante centrale in cima alla calotta: l'"occhio" del
+    // gigafungo, riferimento in animate() per farlo respirare/pulsare.
+    const coreMat = new THREE.MeshStandardMaterial({ color: hex, emissive: hex, emissiveIntensity: 1.3, roughness:0.3 });
+    const megaCore = new THREE.Mesh(new THREE.SphereGeometry(0.09*s, 14, 12), coreMat);
+    megaCore.position.y = stemHFull + capRFull*0.30 + capRFull*mainFlatten*0.62;
+    g.add(megaCore);
+    const coreRing = new THREE.Mesh(
+      new THREE.TorusGeometry(0.13*s, 0.018*s, 6, 20),
+      armorDark
+    );
+    coreRing.position.copy(megaCore.position);
+    coreRing.rotation.x = Math.PI/2;
+    g.add(coreRing);
+
+    // Artigli/radici corazzate alla base, ancorate al terreno.
+    const clawCount = 5;
+    for (let ci = 0; ci < clawCount; ci++){
+      const ca = (ci/clawCount) * Math.PI*2 + 0.3;
+      const claw = new THREE.Mesh(
+        new THREE.ConeGeometry(0.05*s, 0.22*s, 5),
+        armorDark
+      );
+      claw.position.set(Math.cos(ca)*0.16*s, 0.06*s, Math.sin(ca)*0.16*s);
+      claw.rotation.z = Math.cos(ca) * 0.9;
+      claw.rotation.x = -Math.sin(ca) * 0.9;
+      g.add(claw);
+    }
+
+    g.userData.megaCore = megaCore;
+    g.userData.helm = helm;
+  }
+
+  // ================ ALONE DI RISUCCHIO "BUCO NERO" (mega) ================
+  // Sostituisce i tre anelli piatti precedenti con un vero disco di
+  // accrescimento: un anello ampio e luminoso vicino al fungo, due anelli
+  // esterni piu' tenui che si espandono e ruotano a velocita' diverse (uno
+  // in senso orario, l'altro antiorario, per l'effetto vortice), piu' un
+  // bagliore centrale pulsante a terra — molto piu' evidente ed "espansivo"
+  // di prima, coerente col testo "buco nero" annunciato in game.
+  let magRings = null, magDisc = null, magGlow = null;
   if (mega){
     magRings = [];
-    const ringMat = new THREE.MeshBasicMaterial({ color: hex, transparent:true, opacity:0.14, side: THREE.DoubleSide });
-    for (let w = 0; w < 3; w++){
-      const ring = new THREE.Mesh(new THREE.RingGeometry(0.05, 0.12, 24), ringMat.clone());
+    const ringMat = new THREE.MeshBasicMaterial({ color: hex, transparent:true, opacity:0.22, side: THREE.DoubleSide });
+    for (let w = 0; w < 4; w++){
+      const ring = new THREE.Mesh(new THREE.RingGeometry(0.06, 0.16, 32), ringMat.clone());
       ring.rotation.x = -Math.PI/2;
-      ring.position.y = 0.03;
+      ring.position.y = 0.025 + w*0.004;
       g.add(ring);
       magRings.push(ring);
     }
+    // Disco di accrescimento fisso, leggermente inclinato, che resta
+    // sempre visibile (non solo l'espansione a impulsi degli anelli) cosi'
+    // il raggio d'azione del risucchio si legge a colpo d'occhio.
+    const discMat = new THREE.MeshBasicMaterial({ color: hex, transparent:true, opacity:0.10, side: THREE.DoubleSide });
+    magDisc = new THREE.Mesh(new THREE.RingGeometry(0.3, 1.0, 40), discMat);
+    magDisc.rotation.x = -Math.PI/2 + 0.18;
+    magDisc.position.y = 0.04;
+    g.add(magDisc);
+    // Bagliore centrale intenso a terra, come l'orizzonte degli eventi.
+    const glowMat = new THREE.MeshBasicMaterial({ color: hex, transparent:true, opacity:0.5 });
+    magGlow = new THREE.Mesh(new THREE.CircleGeometry(0.22, 24), glowMat);
+    magGlow.rotation.x = -Math.PI/2;
+    magGlow.position.y = 0.02;
+    g.add(magGlow);
   }
 
-  g.userData = { caps, stems, magRings, mega: !!mega };
+  g.userData = { caps, stems, magRings, magDisc, magGlow, mega: !!mega };
   return g;
 }
 
@@ -1526,15 +1702,58 @@ function deformGeometry(geo, amount, seedBase){
     const v = Math.sin(x) * 43758.5453;
     return v - Math.floor(v);
   }
-  const pos = geo.attributes.position;
-  for (let i = 0; i < pos.count; i++){
-    const seed = seedBase + i * 37.13;
+  // SECONDO bug, piu' subdolo del primo: le BufferGeometry di three.js
+  // r128 (Box/Icosahedron ecc.) sono "non indicizzate", cioe' ogni faccia
+  // ha copie proprie dei vertici che condivide con le facce vicine (serve
+  // per lo shading piatto). Se si sposta ogni vertice con un rumore
+  // indipendente per indice, le copie che dovrebbero coincidere allo
+  // stesso spigolo si separano fisicamente: il solido si "sfalda" in
+  // schegge scollegate — la massa bianca frastagliata vista sul golem in
+  // game. Fix: fondere prima i vertici duplicati (merge by position) cosi'
+  // ogni punto nello spazio ha UN solo indice, spostarlo una volta sola,
+  // poi riscrivere lo stesso spostamento su tutte le copie: ogni faccia
+  // si sposta in blocco invece di lacerarsi ai bordi.
+  function mergeVerticesByPosition(g, tolerance){
+    const p = g.attributes.position;
+    const tol = tolerance || 1e-5;
+    const key = v => Math.round(v[0]/tol)+","+Math.round(v[1]/tol)+","+Math.round(v[2]/tol);
+    const map = new Map();
+    const uniquePos = [];
+    const indexOfVertex = new Array(p.count);
+    for (let i = 0; i < p.count; i++){
+      const v = [p.getX(i), p.getY(i), p.getZ(i)];
+      const k = key(v);
+      if (map.has(k)){
+        indexOfVertex[i] = map.get(k);
+      } else {
+        const newIdx = uniquePos.length;
+        map.set(k, newIdx);
+        uniquePos.push(v);
+        indexOfVertex[i] = newIdx;
+      }
+    }
+    return { uniquePos, indexOfVertex };
+  }
+  const posAttr = geo.attributes.position;
+  const { uniquePos, indexOfVertex } = mergeVerticesByPosition(geo);
+  // Sposta ogni vertice UNICO una sola volta (un solo rumore per punto
+  // condiviso), cosi' gli spigoli fusi restano saldati dopo la deformazione.
+  const displaced = uniquePos.map((v, u) => {
+    const seed = seedBase + u * 37.13;
     const nx = hashFrac(seed);
     const ny = hashFrac(seed * 1.7 + 11);
     const nz = hashFrac(seed * 2.3 + 23);
-    pos.setX(i, pos.getX(i) + (nx - 0.5) * amount);
-    pos.setY(i, pos.getY(i) + (ny - 0.5) * amount);
-    pos.setZ(i, pos.getZ(i) + (nz - 0.5) * amount);
+    return [
+      v[0] + (nx - 0.5) * amount,
+      v[1] + (ny - 0.5) * amount,
+      v[2] + (nz - 0.5) * amount,
+    ];
+  });
+  // Riscrive la posizione originale (non indicizzata) leggendo, per ogni
+  // vertice-copia, lo spostamento del suo corrispondente vertice unico.
+  for (let i = 0; i < posAttr.count; i++){
+    const d = displaced[indexOfVertex[i]];
+    posAttr.setXYZ(i, d[0], d[1], d[2]);
   }
   geo.computeVertexNormals();
   return geo;
@@ -2602,6 +2821,62 @@ function animatePacmanMouth(group, dt, moving){
 /* ---- bonus 400 punti: missile guidato — stessa idea della versione 2D
    (drawMissiles: alone translucido nel colore del proprietario + nucleo
    bianco acceso al centro), qui come due sfere in un gruppo. ---- */
+/* ---- bonus 150 punti: colpo di LASER — sostituisce la vecchia pallina
+   bianca con un vero e proprio proiettile a forma di dardo cilindrico,
+   sottile e allungato, nel colore del giocatore/gadget che ha sparato
+   (stesso schema di missili/mine/torrette: playerColorHex). Il cilindro
+   nasce orientato di default lungo l'asse X (sdraiato), cosi' basta
+   ruotarlo con .setRotationFromAxisAngle o allinearlo con .lookAt una
+   volta noto il verso di volo (vedi orientLaserBolt, chiamata dal render
+   loop insieme all'interpolazione della posizione). Un sottile alone
+   trasparente attorno al nucleo dà l'idea di un fascio energetico senza
+   appesantire troppo la scena con tanti proiettili in volo insieme. ---- */
+function makeLaserBoltMesh(colorHex){
+  const g = new THREE.Group();
+  const LEN = 0.34, RADIUS = 0.035;
+  // Nucleo: cilindro stretto e lungo, molto luminoso (emissive alto) per
+  // leggersi bene anche in movimento veloce e da lontano.
+  const core = new THREE.Mesh(
+    new THREE.CylinderGeometry(RADIUS, RADIUS, LEN, 8),
+    new THREE.MeshStandardMaterial({ color: colorHex, emissive: colorHex, emissiveIntensity: 2.2 })
+  );
+  // CylinderGeometry nasce con l'asse lungo Y: lo ruotiamo di 90° su Z
+  // cosi' l'asse lungo del dardo punta lungo X locale, pronto per essere
+  // orientato verso la direzione di volo con un quaternion/lookAt.
+  core.rotation.z = Math.PI / 2;
+  g.add(core);
+  // Alone sottile: stesso cilindro leggermente piu' spesso e trasparente,
+  // da' l'idea di un bagliore energetico attorno al fascio.
+  const halo = new THREE.Mesh(
+    new THREE.CylinderGeometry(RADIUS * 2.4, RADIUS * 2.4, LEN * 0.82, 8),
+    new THREE.MeshBasicMaterial({ color: colorHex, transparent: true, opacity: 0.35 })
+  );
+  halo.rotation.z = Math.PI / 2;
+  g.add(halo);
+  g.userData.isLaserBolt = true;
+  return g;
+}
+
+/* Orienta il dardo laser lungo la sua direzione di volo istantanea
+   (dal delta target-corrente aggiornato ogni frame durante l'interpolazione),
+   cosi' il cilindro punta sempre "in avanti" anche dopo un rimbalzo/
+   riflessione (laser_bounce/laser_reflect), senza bisogno di ricalcolare
+   nulla lato server: il client si limita a guardare verso dove sta andando. */
+const _laserBoltDir = new THREE.Vector3();
+const _laserBoltUp = new THREE.Vector3(0, 1, 0);
+function orientLaserBolt(mesh, dx, dy, dz){
+  const lenSq = dx*dx + dy*dy + dz*dz;
+  if (lenSq < 1e-8) return; // proiettile fermo (appena nato o a target): mantieni l'orientamento precedente
+  _laserBoltDir.set(dx, dy, dz).normalize();
+  const target = new THREE.Vector3(
+    mesh.position.x + _laserBoltDir.x,
+    mesh.position.y + _laserBoltDir.y,
+    mesh.position.z + _laserBoltDir.z
+  );
+  mesh.up.copy(_laserBoltUp);
+  mesh.lookAt(target);
+}
+
 function makeMissileMesh(colorHex){
   const g = new THREE.Group();
   const halo = new THREE.Mesh(
@@ -4037,6 +4312,33 @@ function steerCameraTowardsMovement(dt){
 }
 
 /* ============================================================
+   ATTACCO AEREO (bonus 4000 punti), fase di mira: la riga da
+   bombardare si sceglie con la ROTELLA DEL MOUSE, non piu' con le
+   frecce/WASD. Prima la fila veniva scelta con ArrowUp/ArrowDown,
+   MA quegli stessi tasti sono anche "forward"/"backward" per il
+   movimento (vedi normalizeMoveKey) e la direzione di griglia
+   effettiva dipende dallo yaw della telecamera in quel momento
+   (vedi baseToGridDir): il risultato era imprevedibile e
+   confliggeva col movimento, rendendo il bonus quasi inutilizzabile.
+   La rotella e' un canale di input completamente separato: durante
+   la mira il personaggio resta comunque immobile (bloccato lato
+   server), quindi scorrere la riga non ha alcuna interferenza con
+   WASD/frecce/sguardo. Un solo passo di rotella = una sola riga,
+   con un piccolo cooldown per non "sparare" decine di scroll con
+   un trackpad sensibile.
+   ============================================================ */
+let lastAirstrikeScroll = 0;
+window.addEventListener("wheel", e => {
+  if (currentScreen !== "game") return;
+  if (!myState || !myState.airstrike_aiming) return; // rotella libera per il browser fuori dalla mira
+  e.preventDefault();
+  const now = performance.now();
+  if (now - lastAirstrikeScroll < 90) return; // 90ms: uno scatto di riga alla volta, anche con trackpad
+  lastAirstrikeScroll = now;
+  sendMsg({ type:"airstrike_scroll", delta: Math.sign(e.deltaY) });
+}, { passive:false });
+
+/* ============================================================
    LASER (bonus 150 punti): a differenza della versione 2D non
    spara piu' in automatico quando un nemico e' vicino. E' il
    giocatore a decidere quando sparare, con il tasto sinistro del
@@ -4472,7 +4774,7 @@ function onState(msg){
         // Bonus 4000 punti: attacco aereo, due fasi (mira poi lancio)
         // sotto la stessa pressione del tasto "1", come la pozione.
         hudMines.textContent = p.airstrike_aiming
-          ? "attacco aereo: frecce SU/GI\u00d9 per scegliere la fila \u00b7 ripremi 1 per lanciare"
+          ? "attacco aereo: rotella del mouse per scegliere la fila \u00b7 ripremi 1 per lanciare"
           : "attacco aereo: premi 1 per mirare";
         hudMines.classList.remove("hidden");
       } else {
@@ -4547,8 +4849,11 @@ function onState(msg){
     if (!entry) return; // laser_fire non ancora arrivato/processato: aspetta il prossimo state
     // lz.x/lz.y sono coordinate di griglia CONTINUE (non celle intere da
     // centrare, vedi move_lasers in main.py): si scalano solo per CELL.
+    // lz.z e' la vera quota verticale (celle), stessa fonte usata dal
+    // server per le collisioni: anche qui solo scalata per CELL.
     entry.targetX = lz.x*CELL;
     entry.targetZ = lz.y*CELL;
+    if (typeof lz.z === "number") entry.targetY = lz.z*CELL;
     // Il proiettile ora puo' viaggiare in qualsiasi angolo (non solo i 4
     // cardinali): l'orientamento visivo si calcola con atan2 sul vettore
     // dx/dz reale invece di una tabella fissa a 4 valori.
@@ -5134,7 +5439,7 @@ function onGameEvent(msg){
         potion: "POZIONE TERREMOTO SBLOCCATA! premi 1 (a fine catena) per mirare \u00b7 ripremi 1 per lanciarla a 5 caselle, anche oltre i muri \u00b7 terremoto raggio 8 caselle per 5 secondi: rallenta i giocatori del 50% e distrugge OGNI struttura nemica nel cerchio",
         golem: "GOLEM SPACCAPIETRA SBLOCCATO! premi 1 (a fine catena) per piazzarlo \u00b7 dorme 30 secondi, poi vaga divorando ogni gadget avversario \u00b7 100 colpi per abbatterlo \u00b7 non uccide i giocatori ma li blocca come un muro",
         mega_mushroom: "FUNGO MADRE MAGNETICO SBLOCCATO! premi 1 (a fine catena) per trasformare il fungo madre, se \u00e8 ancora vivo \u00b7 diventa alto come una Tesla e visibile a tutti \u00b7 onde magnetiche a 3 caselle: attirano nemici e gadget come un buco nero, uccidendo al contatto",
-        airstrike: "ATTACCO AEREO SBLOCCATO! premi 1 (a fine catena) per mirare: resti immobile, frecce su/gi\u00f9 per scegliere la fila \u00b7 ripremi 1: un aereo col teschio percorre TUTTA la fila bombardando ogni cosa nemica",
+        airstrike: "ATTACCO AEREO SBLOCCATO! premi 1 (a fine catena) per mirare: resti immobile, rotella del mouse per scegliere la fila \u00b7 ripremi 1: un aereo col teschio percorre TUTTA la fila bombardando ogni cosa nemica",
       };
       const label = bonusLabels[msg.bonus] || ("Bonus sbloccato: " + msg.bonus);
       if (msg.player === myId) showToast(label);
@@ -5223,30 +5528,27 @@ function onGameEvent(msg){
       // senza sommare di nuovo CELL/2 (altrimenti il punto di partenza si
       // sposta di mezza cella e il colpo non nasce dal crosshair/centro).
       const wx = msg.x*CELL, wz = msg.y*CELL;
-      const geo = new THREE.SphereGeometry(0.1, 10, 8);
-      const mat = new THREE.MeshStandardMaterial({
-        color: 0xff5a4d, emissive: 0xff5a4d, emissiveIntensity: 1.4,
-      });
-      const mesh = new THREE.Mesh(geo, mat);
-      // Altezza allineata a EYE_HEIGHT (livello occhi/camera): cosi' il
-      // colpo nasce visivamente dal crosshair al centro dello schermo,
-      // non da un punto piu' basso che sembrava "scentrato".
-      mesh.position.set(wx, EYE_HEIGHT, wz);
+      // msg.z e' la vera quota verticale del colpo (celle, vedi
+      // spawn_laser in main.py: parte da LASER_EYE_HEIGHT e segue il pitch
+      // di mira con pendenza costante): e' la stessa usata dal server per
+      // decidere le collisioni, quindi qui va SOLO scalata per CELL, non
+      // piu' stimata localmente. Cosi' funziona identica sia per i colpi
+      // sparati da me sia per quelli sparati dagli altri giocatori (prima
+      // solo i miei avevano una traiettoria verticale visibile).
+      const wy = (typeof msg.z === "number" ? msg.z : EYE_HEIGHT/CELL) * CELL;
+      // Colore del proiettile = colore primario di chi ha sparato (giocatore
+      // o gadget/torretta proprietaria), stesso schema gia' usato per
+      // missili/mine/torrette (playerColorHex). Se per qualche motivo lo
+      // shooter non e' ancora noto lato client, si ricade sul rosso di
+      // sempre come fallback innocuo.
+      const laserOwner = (typeof msg.shooter !== "undefined") ? msg.shooter
+                        : (typeof msg.owner !== "undefined") ? msg.owner : null;
+      const laserHex = (laserOwner !== null && playerColorHex[laserOwner] !== undefined)
+                        ? playerColorHex[laserOwner] : 0xff5a4d;
+      const mesh = makeLaserBoltMesh(laserHex);
+      mesh.position.set(wx, wy, wz);
       scene.add(mesh);
-      // Traiettoria verticale VISIVA (solo estetica, la collisione resta
-      // sul piano orizzontale come sempre): se questo e' un colpo sparato
-      // da me, il pitch al momento dello sparo era stato accodato in
-      // myLaserPitchQueue (FIFO). Un pitch positivo (guardo in alto,
-      // vedi mousemove: pitch -= movementY, quindi alzare il mouse lo
-      // rende positivo) fa salire il colpo; negativo lo fa scendere,
-      // cosi' mirare un pet basso o un bersaglio in alto si "vede"
-      // davvero nella traiettoria del proiettile.
-      let vy = 0;
-      if (msg.shooter === myId && myLaserPitchQueue.length){
-        const firedPitch = myLaserPitchQueue.shift();
-        vy = Math.sin(firedPitch) * LASER_PROJECTILE_SPEED_VISUAL;
-      }
-      laserMeshes[msg.id] = { mesh, x:wx, z:wz, targetX:wx, targetZ:wz, dir: msg.dir, y: EYE_HEIGHT, vy };
+      laserMeshes[msg.id] = { mesh, x:wx, z:wz, y:wy, targetX:wx, targetZ:wz, targetY:wy, dir: msg.dir };
       playLaser();
       break;
     }
@@ -5258,7 +5560,11 @@ function onGameEvent(msg){
       // prossimo "laser_fire"-like update se serve, altrimenti resta
       // comunque leggibile come lampo luminoso.
       const lz = laserMeshes[msg.id];
-      if (lz){ const wx = msg.x*CELL, wz = msg.y*CELL; lz.targetX = wx; lz.targetZ = wz; }
+      if (lz){
+        const wx = msg.x*CELL, wz = msg.y*CELL;
+        lz.targetX = wx; lz.targetZ = wz;
+        if (typeof msg.z === "number") lz.targetY = msg.z*CELL;
+      }
       break;
     }
     case "laser_end": {
@@ -5743,16 +6049,23 @@ function animate(){
   // bonus 150 punti: proiettili laser, stessa interpolazione morbida
   const LASER_LERP = Math.min(1, dt*14); // leggermente piu' reattivo: il proiettile e' veloce
   Object.values(laserMeshes).forEach(lz => {
-    lz.x += (lz.targetX - lz.x) * LASER_LERP;
-    lz.z += (lz.targetZ - lz.z) * LASER_LERP;
-    // Traiettoria verticale VISIVA (solo i colpi sparati da me hanno un
-    // vy diverso da zero, vedi case "laser_fire"): sale/scende seguendo
-    // il pitch di mira, con un margine per restare sempre visibile senza
-    // sprofondare sotto al pavimento o sfondare il soffitto della scena.
-    if (lz.vy){
-      lz.y = Math.max(0.15, Math.min(3.4, (lz.y ?? EYE_HEIGHT) + lz.vy * dt));
+    // Direzione di volo istantanea = verso il bersaglio corrente
+    // dell'interpolazione (target - posizione attuale), calcolata PRIMA
+    // di muovere lz.x/y/z cosi' il dardo punta esattamente dove sta
+    // per andare in questo frame, sia in linea retta sia dopo un
+    // rimbalzo (laser_bounce/laser_reflect aggiornano solo targetX/Y/Z).
+    const dx = lz.targetX - lz.x;
+    const dz = lz.targetZ - lz.z;
+    const dy = (typeof lz.targetY === "number" && typeof lz.y === "number") ? (lz.targetY - lz.y) : 0;
+    lz.x += dx * LASER_LERP;
+    lz.z += dz * LASER_LERP;
+    // Quota verticale REALE (stessa fonte del server, vedi onState):
+    // interpolata morbidamente come x/z, non piu' stimata in locale.
+    if (typeof lz.targetY === "number"){
+      lz.y = (lz.y ?? lz.targetY) + (lz.targetY - (lz.y ?? lz.targetY)) * LASER_LERP;
     }
     lz.mesh.position.set(lz.x, lz.y ?? EYE_HEIGHT, lz.z);
+    orientLaserBolt(lz.mesh, dx, dy, dz);
   });
   // bonus 400 punti: missile guidato, stessa interpolazione dei laser
   Object.values(missileMeshes).forEach(mz => {
@@ -6323,20 +6636,48 @@ function animate(){
 
   // Bonus 3000 punti: funghi atomici. Statici (nessun lerp, come le mine),
   // solo un lieve ondeggiare di ogni cappella (una sola, o due se e' un
-  // fungo gemello a due teste); il fungo madre trasformato (mega)
-  // sprigiona in piu' tre anelli magnetici che si espandono verso
-  // l'esterno a ripetizione, stessa idea della 2D.
+  // fungo gemello a due teste); il fungo madre trasformato (gigafungo
+  // corazzato, mega) sprigiona un vero effetto "buco nero": anelli che si
+  // espandono a ripetizione, un disco di accrescimento che ruota su se
+  // stesso, un bagliore centrale che respira e il nucleo/calotta corazzata
+  // che pulsa leggermente, molto piu' evidente di prima.
   Object.values(mushroomMeshes).forEach(g => {
     (g.userData.caps||[]).forEach((cap, ci) => {
       const sway = Math.sin(now3d/900 + g.position.x*3 + ci*1.7) * 0.04;
       cap.rotation.z = sway;
     });
-    if (g.userData.mega && g.userData.magRings){
-      g.userData.magRings.forEach((ring, w) => {
-        const f = ((now3d/1600) + w/3) % 1;
-        ring.scale.setScalar(1 + f*28);
-        ring.material.opacity = 0.14*(1-f);
-      });
+    if (g.userData.mega){
+      if (g.userData.magRings){
+        g.userData.magRings.forEach((ring, w) => {
+          const f = ((now3d/1400) + w/4) % 1;
+          ring.scale.setScalar(1 + f*34);
+          ring.material.opacity = 0.24*(1-f);
+        });
+      }
+      // Disco di accrescimento: ruota costantemente su se stesso, come il
+      // vortice di materia risucchiata da un buco nero.
+      if (g.userData.magDisc){
+        g.userData.magDisc.rotation.z = now3d/1100;
+        g.userData.magDisc.material.opacity = 0.08 + 0.04*Math.sin(now3d/500);
+      }
+      // Bagliore/orizzonte degli eventi centrale: pulsa in dimensione e
+      // intensita', bene visibile anche da lontano.
+      if (g.userData.magGlow){
+        const pulse = 0.85 + 0.25*Math.sin(now3d/380);
+        g.userData.magGlow.scale.setScalar(pulse);
+        g.userData.magGlow.material.opacity = 0.35 + 0.25*Math.sin(now3d/380 + 1.2);
+      }
+      // Nucleo/occhio del gigafungo: respiro luminoso lento.
+      if (g.userData.megaCore){
+        const corePulse = 1 + 0.12*Math.sin(now3d/450);
+        g.userData.megaCore.scale.setScalar(corePulse);
+        g.userData.megaCore.material.emissiveIntensity = 1.1 + 0.5*Math.sin(now3d/450);
+      }
+      // Calotta corazzata: leggerissima rotazione, come se "scansionasse"
+      // l'arena in cerca di prede da risucchiare.
+      if (g.userData.helm){
+        g.userData.helm.rotation.y = Math.sin(now3d/2600) * 0.15;
+      }
     }
   });
 
