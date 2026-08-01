@@ -2870,6 +2870,33 @@ function initThree(){
   const sun = new THREE.DirectionalLight(0xffffff, 0.6);
   sun.position.set(0.3, 1, 0.2);
   scene.add(sun);
+  // Seconda direzionale, piu' orizzontale: la sun principale arriva quasi
+  // verticale dall'alto (y=1 dominante), quindi il suo riflesso speculare
+  // sul pavimento (orizzontale) e' ben visibile, ma su una superficie
+  // VERTICALE come i muri finisce quasi sempre fuori dal campo visivo di
+  // chi cammina in prima persona guardando dritto avanti - il materiale
+  // lucido dei muri risultava quindi invisibile pur essendo impostato
+  // correttamente. Questa luce, quasi radente e proveniente di lato,
+  // produce highlight speculari anche sulle facce verticali dei muri.
+  const fill = new THREE.DirectionalLight(0xffffff, 0.35);
+  fill.position.set(1, 0.25, 0.6);
+  scene.add(fill);
+  // Mappa "a giorno": invece di alzare l'intensita' di UNA sola luce
+  // (che e' esattamente cio' che causava lo sbiancamento visto prima,
+  // vedi nota sull'ambientale a 2.4 sopra), si aggiungono altre due
+  // direzionali DEBOLI da direzioni diverse (i due lati non ancora
+  // coperti da sun/fill). Ogni faccia della mappa e' cosi' raggiunta da
+  // almeno una luce anche quando e' "in ombra" rispetto alle prime due,
+  // alzando la luminosita' percepita ovunque - ma nessuna singola
+  // direzione e' abbastanza forte da sommarsi oltre la soglia di
+  // clipping (1.0 per canale) su una faccia esposta, quindi i colori dei
+  // gadget restano fedeli anche da vicino.
+  const fill2 = new THREE.DirectionalLight(0xffffff, 0.3);
+  fill2.position.set(-1, 0.4, -0.5);
+  scene.add(fill2);
+  const fill3 = new THREE.DirectionalLight(0xffffff, 0.25);
+  fill3.position.set(-0.4, 0.6, 1);
+  scene.add(fill3);
   window.addEventListener("resize", () => {
     camera.aspect = window.innerWidth/window.innerHeight;
     camera.updateProjectionMatrix();
