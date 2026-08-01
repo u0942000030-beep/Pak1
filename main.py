@@ -52,7 +52,7 @@ from common import (
     SUPER_ASSASSIN_DURATION_SECONDS, LASER_RANGE_CELLS,
     SPAWN_PROTECT_SECONDS, MIN_SPAWN_DISTANCE, LASER_INTERVAL_SECONDS, LASER_FIRST_DELAY_SECONDS,
     LASER_PROJECTILE_SPEED, LASER_BOUNCE_DISTANCE, MINES_COUNT, SUPERBOMB_COUNT,
-    LASER_EYE_HEIGHT, LASER_MAX_PITCH, PLAYER_HEAD_Z, PLAYER_FEET_Z, PET_HEAD_Z, PET_FEET_Z,
+    LASER_EYE_HEIGHT, LASER_MAX_PITCH, WALL_TOP_Z, PLAYER_HEAD_Z, PLAYER_FEET_Z, PET_HEAD_Z, PET_FEET_Z,
     PLAYER_HITBOX_RADIUS, PET_HITBOX_RADIUS,
     PORTAL_COOLDOWN_SECONDS, PORTAL_ON_SECONDS, PORTAL_OFF_SECONDS,
     MISSILE_SPEED_MULT, MISSILES_COUNT, MISSILE_RETARGET_SECONDS, MISSILE_LOCK_DISTANCE,
@@ -2404,7 +2404,7 @@ class Room:
                 nx, ny = lz["x"] + lz["dx"] * micro_h, lz["y"] + lz["dy"] * micro_h
                 nz = lz.get("z", LASER_EYE_HEIGHT) + micro_z
                 ncx, ncy = int(math.floor(nx)), int(math.floor(ny))
-                if is_wall(self.maze, self.maze_w, self.maze_h, ncx, ncy):
+                if nz < WALL_TOP_Z and is_wall(self.maze, self.maze_w, self.maze_h, ncx, ncy):
                     shooter = self.players.get(lz["owner"])
                     can_bounce = (
                         shooter is not None and shooter.has_bounce
@@ -3356,7 +3356,15 @@ class Room:
         # catena del tasto "1"): piazziamo nella cella libera piu' vicina.
         cell = self.find_nearest_free_cell(player.x, player.y, exclude="mortars")
         if cell is None:
-            return  # mappa satura di gadget: nessuna cella libera trovata
+            # Mappa satura di gadget: nessuna cella libera trovata entro il
+            # raggio di ricerca. Non falliamo in silenzio SENZA consumare
+            # il gradino, altrimenti ogni pressione futura del tasto "1"
+            # ritenterebbe da capo in loop, bloccando per sempre il resto
+            # della catena (attacco aereo compreso): il gradino si
+            # considera comunque esaurito, semplicemente senza mortaio
+            # piazzato in questo round.
+            player.mortar_placed = True
+            return
         px, py = cell
         player.mortar_placed = True
         mortar = {
@@ -3396,7 +3404,11 @@ class Room:
             return
         cell = self.find_nearest_free_cell(player.x, player.y, exclude="superbombs")
         if cell is None:
-            return  # mappa satura di gadget: nessuna cella libera trovata
+            # Mappa satura di gadget: consumiamo comunque un uso (come
+            # sopra) invece di bloccare la catena in loop su questo
+            # gradino.
+            player.superbomb_left -= 1
+            return
         px, py = cell
         player.superbomb_left -= 1
         bomb = {
@@ -3841,7 +3853,10 @@ class Room:
             return
         cell = self.find_nearest_free_cell(player.x, player.y, exclude="blobs")
         if cell is None:
-            return  # mappa satura di gadget: nessuna cella libera trovata
+            # Mappa satura di gadget: gradino comunque esaurito, invece di
+            # bloccare la catena in loop.
+            player.blob_placed = True
+            return
         px, py = cell
         player.blob_placed = True
         blob = {
@@ -4052,7 +4067,10 @@ class Room:
         if self.cell_has_gadget(wx, wy, exclude="spike_walls"):
             cell = self.find_nearest_free_cell(wx, wy, exclude="spike_walls")
             if cell is None:
-                return  # mappa satura di gadget: nessuna cella libera trovata
+                # Mappa satura di gadget: gradino comunque esaurito,
+                # invece di bloccare la catena in loop.
+                player.spike_wall_placed = True
+                return
             wx, wy = cell
         player.spike_wall_placed = True
         # Un singolo blocco di muro, grande esattamente quanto una cella
@@ -4159,7 +4177,10 @@ class Room:
             return
         cell = self.find_nearest_free_cell(player.x, player.y, exclude="teslas")
         if cell is None:
-            return  # mappa satura di gadget: nessuna cella libera trovata
+            # Mappa satura di gadget: gradino comunque esaurito, invece di
+            # bloccare la catena in loop.
+            player.tesla_placed = True
+            return
         px, py = cell
         player.tesla_placed = True
         tesla = {
@@ -4495,7 +4516,10 @@ class Room:
             return
         cell = self.find_nearest_free_cell(player.x, player.y, exclude="bushes")
         if cell is None:
-            return  # mappa satura di gadget: nessuna cella libera trovata
+            # Mappa satura di gadget: gradino comunque esaurito, invece di
+            # bloccare la catena in loop (attacco aereo compreso).
+            player.bush_placed = True
+            return
         px, py = cell
         player.bush_placed = True
         bush = {
@@ -4670,7 +4694,10 @@ class Room:
             return
         cell = self.find_nearest_free_cell(player.x, player.y, exclude="mushrooms")
         if cell is None:
-            return  # mappa satura di gadget: nessuna cella libera trovata
+            # Mappa satura di gadget: gradino comunque esaurito, invece di
+            # bloccare la catena in loop (attacco aereo compreso).
+            player.mushroom_placed = True
+            return
         px, py = cell
         player.mushroom_placed = True
         m = {

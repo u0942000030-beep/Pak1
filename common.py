@@ -145,6 +145,15 @@ LASER_BOUNCE_DISTANCE = 12     # celle percorribili dopo il primo rimbalzo su un
 # coincide esattamente con quello usato per le collisioni lato server.
 LASER_EYE_HEIGHT = 1.6          # celle: altezza degli occhi/canna dello sparatore, quota di partenza del proiettile (asse Z)
 LASER_MAX_PITCH = 1.45          # radianti (~83 gradi): oltre questo il pitch di mira viene comunque limitato, per evitare traiettorie quasi verticali degeneri
+# Altezza reale (asse Z, in celle) della cima dei muri: DEVE combaciare con
+# WALL_TOTAL_H nel client (index.html), calcolata li' come
+# Math.max(1, Math.round(WALL_H/CELL)) * CELL con WALL_H=1.6 e CELL=2, cioe'
+# 1 "cubetto" di lato 2 = 2.0. Usata per far si' che un muro blocchi il
+# proiettile SOLO se il colpo lo attraversa sotto questa quota: prima
+# mancava del tutto, quindi qualunque cella-muro fermava il laser a
+# QUALSIASI altezza, come se il muro fosse una colonna invisibile alta
+# all'infinito anche mirando ben sopra la sua cima visibile.
+WALL_TOP_Z = 2.0                 # celle: quota della cima del muro, sopra la quale un proiettile lo sorvola libero
 PLAYER_HEAD_Z = 1.75            # celle: quota della testa del player (limite superiore della sua hitbox verticale)
 PLAYER_FEET_Z = 0.15            # celle: quota dei piedi del player (limite inferiore della sua hitbox verticale)
 PET_HEAD_Z = 0.55               # celle: quota massima del pet (basso, a terra)

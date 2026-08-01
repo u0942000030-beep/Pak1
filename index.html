@@ -1247,9 +1247,9 @@ function spawnLaserWallImpact(wx, wy, wz, nx, ny, nz){
   const scorch = new THREE.Mesh(new THREE.CircleGeometry(0.07, 14), scorchMat);
   const normal = new THREE.Vector3(nx, ny, nz).normalize();
   scorch.position.set(
-    wx + normal.x*0.011,
-    wy + normal.y*0.011,
-    wz + normal.z*0.011,
+    wx + normal.x*0.015,
+    wy + normal.y*0.015,
+    wz + normal.z*0.015,
   );
   scorch.lookAt(scorch.position.clone().add(normal));
   // leggera rotazione casuale attorno alla normale, cosi' i segni non
@@ -2857,7 +2857,16 @@ function initThree(){
   // debole per dare un minimo di rilievo alle forme senza alterare i
   // colori: cosi' ogni oggetto mantiene il suo colore reale ovunque ci
   // si trovi sulla mappa.
-  scene.add(new THREE.AmbientLight(0xffffff, 2.4));
+  // NB: l'intensita' dell'ambientale era 2.4, ben oltre il range tipico
+  // (~0.1-1.0): sommata alla direzionale, su superfici curve (mine, blob,
+  // mortai, funghi...) viste da un'angolazione quasi frontale la luce
+  // totale superava 1.0 per canale, "clippando" il colore verso il
+  // bianco. L'effetto passava quasi inosservato sui muri (piatti/cubici,
+  // guardati sempre di scorcio) ma diventava vistoso avvicinandosi ai
+  // gadget piccoli e arrotondati, dove ci si ritrova spesso a guardarli
+  // da un'angolazione quasi frontale/dall'alto: da qui il "colore che
+  // sbianca avvicinandosi" ai bonus piazzati.
+  scene.add(new THREE.AmbientLight(0xffffff, 1.0));
   const sun = new THREE.DirectionalLight(0xffffff, 0.6);
   sun.position.set(0.3, 1, 0.2);
   scene.add(sun);
@@ -2927,8 +2936,8 @@ function applyMapData(msg){
   // un "color" scuro sopra la moltiplicherebbe rendendo il pavimento
   // quasi nero/invisibile (bug: il pavimento spariva contro lo sfondo,
   // entrambi vicini a floorColorA che di default e' molto scuro).
-  const floorMatA = new THREE.MeshStandardMaterial({ map:floorTexA.map, normalMap:floorTexA.normalMap, normalScale:new THREE.Vector2(0.8,0.8), roughness:0.55, metalness:0.75 });
-  const floorMatB = new THREE.MeshStandardMaterial({ map:floorTexB.map, normalMap:floorTexB.normalMap, normalScale:new THREE.Vector2(0.8,0.8), roughness:0.55, metalness:0.75 });
+  const floorMatA = new THREE.MeshStandardMaterial({ map:floorTexA.map, normalMap:floorTexA.normalMap, normalScale:new THREE.Vector2(0.8,0.8), roughness:0.15, metalness:0.85 });
+  const floorMatB = new THREE.MeshStandardMaterial({ map:floorTexB.map, normalMap:floorTexB.normalMap, normalScale:new THREE.Vector2(0.8,0.8), roughness:0.15, metalness:0.85 });
   let countA = 0, countB = 0;
   for (let y=0;y<mazeH;y++){
     for (let x=0;x<mazeW;x++){
@@ -2959,7 +2968,7 @@ function applyMapData(msg){
   const floorBaseTex = makeMetalFloorTexture(floorColorA, (mazeTheme.__mapName||"default")+":floorBase");
   const floorBase = new THREE.Mesh(
     new THREE.PlaneGeometry(mazeW*CELL, mazeH*CELL),
-    new THREE.MeshStandardMaterial({ map:floorBaseTex.map, normalMap:floorBaseTex.normalMap, normalScale:new THREE.Vector2(0.8,0.8), roughness:0.55, metalness:0.75 })
+    new THREE.MeshStandardMaterial({ map:floorBaseTex.map, normalMap:floorBaseTex.normalMap, normalScale:new THREE.Vector2(0.8,0.8), roughness:0.15, metalness:0.85 })
   );
   floorBase.material.map.wrapS = floorBase.material.map.wrapT = THREE.RepeatWrapping;
   floorBase.material.normalMap.wrapS = floorBase.material.normalMap.wrapT = THREE.RepeatWrapping;
@@ -3013,8 +3022,13 @@ function applyMapData(msg){
       normalScale: new THREE.Vector2(0.9, 0.9),
       emissive: hexToInt(variant.edge),
       emissiveIntensity: 0.08,
-      roughness: 0.5,
-      metalness: 0.7,
+      // Lucido invece di opaco: roughness bassa concentra il riflesso
+      // della direzionale (sun) in un highlight netto e mobile invece di
+      // spalmarlo diffuso su tutta la superficie; metalness alta rende
+      // quel riflesso tinto del colore del muro (comportamento metallico)
+      // invece che bianco puro (comportamento dielettrico/plastico).
+      roughness: 0.15,
+      metalness: 0.85,
     });
     const inst = countPerVariant[v] > 0
       ? new THREE.InstancedMesh(cubeGeo, mat, countPerVariant[v])
@@ -5935,12 +5949,23 @@ function onGameEvent(msg){
           // reale corrente (target - posizione attuale, sempre aggiornata
           // dal lerp): affidabile anche dopo un rimbalzo/riflessione,
           // a differenza di lz.dir che resta quello di spawn.
-          let dx = lz.targetX - lz.x, dz = lz.targetZ - lz.z;
+          const dx = lz.targetX - lz.x, dz = lz.targetZ - lz.z;
           const dlen = Math.hypot(dx, dz);
-          if (dlen > 1e-4){ dx/=dlen; dz/=dlen; } else { dx = 0; dz = 1; }
-          const wx = msg.x*CELL, wz = msg.y*CELL;
+          let ndx = 0, ndz = 1;
+          if (dlen > 1e-4){ ndx = dx/dlen; ndz = dz/dlen; }
+          // La posizione del server (msg.x,msg.y) e' il punto del
+          // proiettile all'ultimo micro-passo PRIMA di fermarsi: puo'
+          // cadere dentro o appena prima del cubo muro, non esattamente
+          // sulla sua faccia. Si proietta quindi il colpo sulla vera
+          // faccia del muro (bordo della cella colpita, a CELL/2 dal
+          // centro cella) lungo la direzione di volo, cosi' il segno
+          // risulta davvero incassato sulla superficie e non "sospeso"
+          // in rilievo davanti o dentro al cubo.
+          const cellCx = (Math.floor(msg.x)+0.5)*CELL, cellCz = (Math.floor(msg.y)+0.5)*CELL;
+          const wx = cellCx + ndx*(CELL/2);
+          const wz = cellCz + ndz*(CELL/2);
           const wy = (typeof msg.z === "number" ? msg.z*CELL + (lz.yOffset||0) : lz.y);
-          spawnLaserWallImpact(wx, wy, wz, -dx, 0, -dz);
+          spawnLaserWallImpact(wx, wy, wz, -ndx, 0, -ndz);
         }
         scene.remove(lz.mesh);
         delete laserMeshes[msg.id];
