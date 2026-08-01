@@ -2533,7 +2533,7 @@ function makeStoneTextures(baseColorHex, seedStr){
 
   const colorTex = new THREE.CanvasTexture(colorCanvas);
   colorTex.wrapS = colorTex.wrapT = THREE.RepeatWrapping;
-  colorTex.encoding = THREE.sRGBEncoding;
+  colorTex.colorSpace = THREE.SRGBColorSpace;
   const normalTex = new THREE.CanvasTexture(nCanvas);
   normalTex.wrapS = normalTex.wrapT = THREE.RepeatWrapping;
 
@@ -2672,7 +2672,7 @@ function makeMetalFloorTexture(baseColorHex, seedStr){
   nctx.putImageData(nImg, 0, 0);
 
   const colorTex = new THREE.CanvasTexture(colorCanvas);
-  colorTex.encoding = THREE.sRGBEncoding;
+  colorTex.colorSpace = THREE.SRGBColorSpace;
   const normalTex = new THREE.CanvasTexture(nCanvas);
 
   return { map: colorTex, normalMap: normalTex };
@@ -2846,9 +2846,6 @@ function initThree(){
   renderer = new THREE.WebGLRenderer({ antialias:true, powerPreference:"high-performance" });
   renderer.setSize(window.innerWidth, window.innerHeight);
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 3));
-  renderer.outputEncoding = THREE.sRGBEncoding;
-  renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.0;
   document.body.appendChild(renderer.domElement);
   // Illuminazione diffusa (mappa "a giorno", nessuna zona buia): SOLO
   // luci omnidirezionali (Ambient + Hemisphere) piu' una direzionale
@@ -2911,7 +2908,6 @@ function initThree(){
 
     const tex = new THREE.CanvasTexture(cnv);
     tex.mapping = THREE.EquirectangularReflectionMapping;
-    tex.encoding = THREE.sRGBEncoding;
     tex.needsUpdate = true;
     return tex;
   }
