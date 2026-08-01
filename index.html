@@ -2885,49 +2885,60 @@ function initThree(){
     const cnv = document.createElement("canvas");
     cnv.width = w; cnv.height = h;
     const ctx = cnv.getContext("2d");
-    // riga 0 = zenit (sopra), riga h = nadir (sotto); l'orizzonte cade
-    // circa a meta' altezza (riga h/2) - e' li' che i muri riflettono di
-    // piu' guardandoli di fronte, quindi deve restare chiaro.
+    // riga 0 = zenit (sopra), riga h = nadir (sotto), riga h/2 = orizzonte.
+    // Invece di un gradiente chiaro (che sul metallo lucido, per effetto
+    // Fresnel, "sbianca" tutto guardando radente/in lontananza), qui si
+    // simula un vero SOFFITTO SCURO con strisce al neon nette: l'ambiente
+    // riflesso resta scuro quasi ovunque, e il lucido si vede SOLO dove
+    // il riflesso incrocia una striscia di luce - esattamente come un
+    // pavimento/muro lucido sotto le plafoniere di un corridoio, non come
+    // uno specchio che restituisce un cielo uniforme.
+    ctx.fillStyle = "#06070a";
+    ctx.fillRect(0, 0, w, h);
+    // leggero rialzo di tono verso lo zenit (soffitto vero e proprio,
+    // appena percepibile) e verso il nadir un filo piu' scuro
     const grad = ctx.createLinearGradient(0, 0, 0, h);
-    grad.addColorStop(0.00, "#c3ccdc"); // zenit
-    grad.addColorStop(0.30, "#8e99b0"); // cielo alto
-    grad.addColorStop(0.50, "#727e96"); // orizzonte: ancora piu' tenue - i glint sotto danno la vivacita'
-    grad.addColorStop(0.68, "#454e5f"); // appena sotto l'orizzonte
-    grad.addColorStop(1.00, "#15171b"); // nadir: scuro ma non nero puro
+    grad.addColorStop(0.00, "#1c2130");
+    grad.addColorStop(0.45, "#0d0f16");
+    grad.addColorStop(0.55, "#0a0b10");
+    grad.addColorStop(1.00, "#020203");
     ctx.fillStyle = grad;
     ctx.fillRect(0, 0, w, h);
-    // "luci a soffitto" sparse su TUTTO il giro d'orizzonte (non solo 2
-    // vicino allo zenit): un muro verticale visto di fronte riflette quasi
-    // sempre la stessa fascia orizzontale del cielo finto, quindi se li'
-    // ci sono solo 1-2 guizzi concentrati altrove il muro resta piatto e
-    // smorto. Con tanti guizzi distribuiti lungo l'intero anello a quota
-    // "orizzonte/soffitto", qualunque sia l'orientamento del muro o della
-    // camera si intercetta sempre qualche riflesso vivo, proprio come le
-    // luci al neon di un corridoio industriale che scorrono sulle pareti
-    // lucide mentre ci si cammina in mezzo.
-    const glints = [
-      {x:0.06, y:0.42, r:40, a:0.9}, {x:0.16, y:0.55, r:26, a:0.7},
-      {x:0.28, y:0.20, r:70, a:1.0}, {x:0.34, y:0.48, r:34, a:0.85},
-      {x:0.44, y:0.58, r:22, a:0.6}, {x:0.52, y:0.40, r:48, a:0.9},
-      {x:0.60, y:0.60, r:26, a:0.65}, {x:0.68, y:0.46, r:36, a:0.8},
-      {x:0.78, y:0.35, r:55, a:0.9}, {x:0.86, y:0.58, r:24, a:0.6},
-      {x:0.94, y:0.44, r:38, a:0.8}, {x:1.00, y:0.52, r:30, a:0.7},
+
+    // Strisce al neon: rettangoli netti (non blob sfumati) su piu' righe
+    // nella meta' superiore (il soffitto), ripetute tutto intorno ai 360°
+    // cosi' qualunque sia l'orientamento di camera/muro/pavimento si
+    // incrocia sempre qualche striscia viva.
+    function drawStrip(cx, cy, sw, sh, color, glowR){
+      ctx.save();
+      ctx.shadowColor = color;
+      ctx.shadowBlur = glowR;
+      ctx.fillStyle = color;
+      ctx.fillRect(cx - sw/2, cy - sh/2, sw, sh);
+      ctx.restore();
+    }
+    const rows = [
+      { y: 0.06, n: 8,  sw: 34, sh: 6,  color: "#f4f8ff", glow: 14 },
+      { y: 0.16, n: 10, sw: 26, sh: 5,  color: "#eef3ff", glow: 12 },
+      { y: 0.27, n: 12, sw: 20, sh: 4,  color: "#e6ecff", glow: 10 },
+      { y: 0.38, n: 14, sw: 15, sh: 3,  color: "#dbe4ff", glow: 8  },
     ];
-    glints.forEach(g => {
-      const gx = w*g.x, gy = h*g.y;
-      const gg = ctx.createRadialGradient(gx, gy, 0, gx, gy, g.r);
-      gg.addColorStop(0, `rgba(255,255,255,${g.a})`);
-      gg.addColorStop(0.4, `rgba(255,255,255,${g.a*0.4})`);
-      gg.addColorStop(1, "rgba(255,255,255,0)");
-      ctx.fillStyle = gg;
-      ctx.beginPath(); ctx.arc(gx, gy, g.r, 0, Math.PI*2); ctx.fill();
-      // replica vicino al bordo opposto per continuita' nel wrap orizzontale
-      if (g.x < 0.15){
-        ctx.beginPath(); ctx.arc(gx + w, gy, g.r, 0, Math.PI*2); ctx.fill();
-      } else if (g.x > 0.85){
-        ctx.beginPath(); ctx.arc(gx - w, gy, g.r, 0, Math.PI*2); ctx.fill();
+    rows.forEach(row => {
+      for (let i = 0; i < row.n; i++){
+        const x = w * ((i + 0.5) / row.n);
+        const y = h * row.y;
+        drawStrip(x, y, row.sw, row.sh, row.color, row.glow);
       }
     });
+    // qualche accento colorato piu' debole, per non far sembrare tutte
+    // le luci identiche e dare un minimo di varieta' cromatica ai riflessi
+    const accents = [
+      {x:0.10, y:0.20, sw:18, sh:4, color:"#ffd9b0", glow:10},
+      {x:0.42, y:0.10, sw:16, sh:4, color:"#c9e0ff", glow:10},
+      {x:0.66, y:0.30, sw:14, sh:3, color:"#ffe6c9", glow:8},
+      {x:0.88, y:0.15, sw:18, sh:4, color:"#d0e8ff", glow:10},
+    ];
+    accents.forEach(a => drawStrip(w*a.x, h*a.y, a.sw, a.sh, a.color, a.glow));
 
     const tex = new THREE.CanvasTexture(cnv);
     tex.mapping = THREE.EquirectangularReflectionMapping;
@@ -3015,8 +3026,8 @@ function applyMapData(msg){
   // un "color" scuro sopra la moltiplicherebbe rendendo il pavimento
   // quasi nero/invisibile (bug: il pavimento spariva contro lo sfondo,
   // entrambi vicini a floorColorA che di default e' molto scuro).
-  const floorMatA = new THREE.MeshStandardMaterial({ map:floorTexA.map, normalMap:floorTexA.normalMap, normalScale:new THREE.Vector2(0.15,0.15), roughness:0.06, metalness:1.0, envMapIntensity:1.0 });
-  const floorMatB = new THREE.MeshStandardMaterial({ map:floorTexB.map, normalMap:floorTexB.normalMap, normalScale:new THREE.Vector2(0.15,0.15), roughness:0.06, metalness:1.0, envMapIntensity:1.0 });
+  const floorMatA = new THREE.MeshStandardMaterial({ map:floorTexA.map, normalMap:floorTexA.normalMap, normalScale:new THREE.Vector2(0.15,0.15), roughness:0.05, metalness:1.0, envMapIntensity:1.8 });
+  const floorMatB = new THREE.MeshStandardMaterial({ map:floorTexB.map, normalMap:floorTexB.normalMap, normalScale:new THREE.Vector2(0.15,0.15), roughness:0.05, metalness:1.0, envMapIntensity:1.8 });
   let countA = 0, countB = 0;
   for (let y=0;y<mazeH;y++){
     for (let x=0;x<mazeW;x++){
@@ -3047,7 +3058,7 @@ function applyMapData(msg){
   const floorBaseTex = makeMetalFloorTexture(floorColorA, (mazeTheme.__mapName||"default")+":floorBase");
   const floorBase = new THREE.Mesh(
     new THREE.PlaneGeometry(mazeW*CELL, mazeH*CELL),
-    new THREE.MeshStandardMaterial({ map:floorBaseTex.map, normalMap:floorBaseTex.normalMap, normalScale:new THREE.Vector2(0.15,0.15), roughness:0.06, metalness:1.0, envMapIntensity:1.0 })
+    new THREE.MeshStandardMaterial({ map:floorBaseTex.map, normalMap:floorBaseTex.normalMap, normalScale:new THREE.Vector2(0.15,0.15), roughness:0.05, metalness:1.0, envMapIntensity:1.8 })
   );
   floorBase.material.map.wrapS = floorBase.material.map.wrapT = THREE.RepeatWrapping;
   floorBase.material.normalMap.wrapS = floorBase.material.normalMap.wrapT = THREE.RepeatWrapping;
@@ -3108,7 +3119,7 @@ function applyMapData(msg){
       // una direzionale si rifletterebbe verso la camera.
       roughness: 0.06,
       metalness: 1.0,
-      envMapIntensity: 1.6,
+      envMapIntensity: 2.2,
     });
     const inst = countPerVariant[v] > 0
       ? new THREE.InstancedMesh(cubeGeo, mat, countPerVariant[v])
