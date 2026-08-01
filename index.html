@@ -3147,8 +3147,13 @@ function applyMapData(msg){
       // diretta - per questo si vede anche sulle facce VERTICALI dei
       // muri guardandole di fronte, non solo dall'angolo esatto in cui
       // una direzionale si rifletterebbe verso la camera.
+      // metalness allineato a quello del pavimento (0.55 invece di 1.0):
+      // a metalness pieno il colore contava solo come tinta dei riflessi,
+      // qui invece torna a esserci anche una componente diffusa colorata,
+      // cosi' i muri mostrano il colore del tema con la stessa evidenza
+      // del pavimento. roughness resta bassa: la lucentezza non cambia.
       roughness: 0.06,
-      metalness: 1.0,
+      metalness: 0.55,
       envMapIntensity: 2.2,
     });
     const inst = countPerVariant[v] > 0
