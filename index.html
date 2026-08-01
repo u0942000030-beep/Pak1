@@ -2867,6 +2867,15 @@ function initThree(){
   const sun = new THREE.DirectionalLight(0xffffff, 0.35);
   sun.position.set(0.2, 1, 0.15);
   scene.add(sun);
+  // Seconda direzionale, quasi RADENTE (angolo basso, mossa in orizzontale
+  // invece che dall'alto): il "sole" sopra crea il guizzo speculare visto
+  // sul pavimento, ma per pura geometria della riflessione una luce quasi
+  // verticale non puo' quasi mai rimbalzare verso la camera su una faccia
+  // VERTICALE (i muri) - da li' la differenza di lucentezza percepita.
+  // Questa seconda luce, radente, fa lo stesso lavoro ma sui muri.
+  const wallGlint = new THREE.DirectionalLight(0xffffff, 0.4);
+  wallGlint.position.set(1, 0.15, 0.35);
+  scene.add(wallGlint);
 
   // ---- Environment map per i riflessi lucidi di muri/pavimento ----
   // Approccio precedente (scena 3D + CubeCamera) abbandonato: troppo
