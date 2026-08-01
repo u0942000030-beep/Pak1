@@ -1084,7 +1084,7 @@ function hexToInt(h){ return parseInt((h||"#333333").replace("#",""), 16); }
 let scene, camera, renderer;
 let wallMeshGroup = null;
 let floorMeshGroup = null;
-let pelletMeshes = {};   // "x,y" -> THREE.Mesh
+let pelletMeshes = {};   // "x,y" -> THREE.Group (sfera + bagliori)
 let powerPelletCells = new Set();
 let remotePlayers = {};  // id -> {group, targetX, targetZ, colorHex}
 let laserMeshes = {};    // id -> {mesh, x, z, targetX, targetZ} bonus 150 punti: proiettili laser in volo
@@ -2841,6 +2841,88 @@ function triggerMegaPelletSpawnBeam(x, z){
 }
 
 
+/* ---- bagliore dei pallini: texture radiale bianca->trasparente,
+   generata UNA SOLA VOLTA e riutilizzata (colorata via material.color)
+   per il "riflesso" del pallino su pavimento/muri - vedi makePelletGroup.
+   ---- */
+let pelletGlowTex = null;
+function makeGlowTexture(){
+  const SIZE = 64;
+  const cnv = document.createElement("canvas");
+  cnv.width = cnv.height = SIZE;
+  const ctx = cnv.getContext("2d");
+  const g = ctx.createRadialGradient(SIZE/2, SIZE/2, 0, SIZE/2, SIZE/2, SIZE/2);
+  g.addColorStop(0.00, "rgba(255,255,255,1)");
+  g.addColorStop(0.35, "rgba(255,255,255,0.55)");
+  g.addColorStop(1.00, "rgba(255,255,255,0)");
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, SIZE, SIZE);
+  return new THREE.CanvasTexture(cnv);
+}
+
+/* ---- costruisce il pallino completo: sfera ad alta risoluzione +
+   bagliore "riflesso" su pavimento e sui muri adiacenti.
+   IMPORTANTE: il pallino NON aggiunge una vera THREE.Light alla scena (e
+   quindi non "irraggia"/illumina davvero pavimento e muri, ne' costa
+   in performance come una luce dinamica) - il bagliore e' solo una
+   decalcomania piatta e semitrasparente (blending additivo, stesso
+   colore del pallino) appoggiata sulle superfici vicine, che dal punto
+   di vista visivo legge come un riflesso di luce ma e' in realta' una
+   texture finta, economicissima da disegnare.
+   Sul pavimento c'e' sempre (un disco sotto al pallino); sui muri solo
+   nelle direzioni dove la cella adiacente e' davvero un muro (controllo
+   con isWall, la stessa funzione usata per il resto della mappa). ---- */
+const PELLET_WALL_DIRS = [
+  { dx: 0, dz: -1 }, { dx: 0, dz: 1 }, { dx: -1, dz: 0 }, { dx: 1, dz: 0 },
+];
+function makePelletGroup(cellX, cellY, isPower, colorHex){
+  if (!pelletGlowTex) pelletGlowTex = makeGlowTexture();
+  const group = new THREE.Group();
+
+  const sphereGeo = isPower
+    ? new THREE.SphereGeometry(0.22, 24, 18)   // prima: 10, 8 - molto piu' rotondo
+    : new THREE.SphereGeometry(0.09, 20, 16);  // prima: 8, 6
+  const sphereMat = new THREE.MeshStandardMaterial({
+    color: colorHex, emissive: colorHex, emissiveIntensity: isPower ? 1.1 : 0.9,
+  });
+  const sphere = new THREE.Mesh(sphereGeo, sphereMat);
+  const pelletY = isPower ? 0.5 : 0.35;
+  sphere.position.y = pelletY;
+  group.add(sphere);
+
+  const glowSize = isPower ? 1.0 : 0.6;
+  const glowOpacity = isPower ? 0.55 : 0.35;
+  function makeGlowPlane(){
+    return new THREE.Mesh(
+      new THREE.PlaneGeometry(glowSize, glowSize),
+      new THREE.MeshBasicMaterial({
+        map: pelletGlowTex, color: colorHex, transparent: true, opacity: glowOpacity,
+        blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide, fog: false,
+      })
+    );
+  }
+
+  // riflesso sul pavimento: disco piatto appena sopra il pavimento,
+  // esattamente sotto al pallino.
+  const floorGlow = makeGlowPlane();
+  floorGlow.rotation.x = -Math.PI/2;
+  floorGlow.position.y = 0.02; // appena sopra il pavimento, evita z-fighting
+  group.add(floorGlow);
+
+  // riflesso sui muri: un disco per ogni lato adiacente che e' davvero
+  // un muro (isWall), appoggiato contro la sua faccia.
+  PELLET_WALL_DIRS.forEach(({dx, dz}) => {
+    if (!isWall(cellX + dx, cellY + dz)) return;
+    const wallGlow = makeGlowPlane();
+    if (dx !== 0) wallGlow.rotation.y = Math.PI/2; // muro a est/ovest -> piano ruotato sull'asse Y
+    wallGlow.position.set(dx * (CELL/2 - 0.02), pelletY, dz * (CELL/2 - 0.02));
+    group.add(wallGlow);
+  });
+
+  group.position.set(cellX*CELL+CELL/2, 0, cellY*CELL+CELL/2);
+  return group;
+}
+
 function initThree(){
   scene = new THREE.Scene();
   camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.05, 100);
@@ -3159,9 +3241,25 @@ function applyMapData(msg){
       // dando quell'aria di "ferro opaco" invece del "vetro lucido" del
       // pavimento. Tolto, i muri si comportano otticamente come il
       // pavimento e mostrano lo stesso identico grado di lucentezza.
-      roughness: 0.05,
+      // roughness alzata (0.05 -> 0.5) SOLO per i muri: sfoca il riflesso
+      // a specchio (le strisce di luce non si vedono piu' come immagini
+      // nitide riflesse, solo come un bagliore morbido diffuso), ma la
+      // LUCE diffusa che arriva dall'ambiente (ambient/hemisphere/env
+      // irradiance) non dipende dalla roughness, quindi la luminosita'
+      // generale resta la stessa del pavimento - cambia solo quanto
+      // "leggibile a specchio" e' il riflesso, non quanta luce c'e'.
+      // envMapIntensity azzerato SOLO sui muri: prima riflettevano la
+      // texture delle strisce di luce come un'immagine speculare nitida
+      // (visibile a occhio come "forme di luce" sul muro) - qui la
+      // togliamo del tutto. La roughness resta bassa (0.15): il muro
+      // continua a dare un guizzo lucido dalle luci dirette in scena
+      // (ambient/hemisphere/sole), ma senza mostrare l'immagine riflessa
+      // dell'ambiente. La luminosita' generale non cambia: ambient e
+      // hemisphere non dipendono da envMapIntensity, illuminano i muri
+      // esattamente come prima.
+      roughness: 0.15,
       metalness: 0.55,
-      envMapIntensity: 2.2,
+      envMapIntensity: 0,
     });
     const inst = countPerVariant[v] > 0
       ? new THREE.InstancedMesh(cubeGeo, mat, countPerVariant[v])
@@ -3193,16 +3291,12 @@ function applyMapData(msg){
 
   // pallini: quelli "ancora presenti" secondo il server (msg.pellets)
   const remaining = new Set((msg.pellets||[]).map(c => c[0]+","+c[1]));
-  const normalGeo = new THREE.SphereGeometry(0.09, 8, 6);
-  const powerGeo = new THREE.SphereGeometry(0.22, 10, 8);
-  const pelletMat = new THREE.MeshStandardMaterial({ color:pelletColor, emissive:pelletColor, emissiveIntensity:0.6 });
   remaining.forEach(key => {
     const [x,y] = key.split(",").map(Number);
     const isPower = powerPelletCells.has(key);
-    const mesh = new THREE.Mesh(isPower ? powerGeo : normalGeo, pelletMat);
-    mesh.position.set(x*CELL+CELL/2, isPower ? 0.5 : 0.35, y*CELL+CELL/2);
-    scene.add(mesh);
-    pelletMeshes[key] = mesh;
+    const group = makePelletGroup(x, y, isPower, pelletColor);
+    scene.add(group);
+    pelletMeshes[key] = group;
   });
 }
 
@@ -5851,11 +5945,9 @@ function onGameEvent(msg){
         if (pelletMeshes[key]) return;
         const [x,y] = c;
         const isPower = powerPelletCells.has(key);
-        const mat = new THREE.MeshStandardMaterial({ color:hexToInt(mazeTheme.pellet||"#ffb35c"), emissive:hexToInt(mazeTheme.pellet||"#ffb35c"), emissiveIntensity:0.6 });
-        const mesh = new THREE.Mesh(new THREE.SphereGeometry(isPower?0.22:0.09, isPower?10:8, isPower?8:6), mat);
-        mesh.position.set(x*CELL+CELL/2, isPower?0.5:0.35, y*CELL+CELL/2);
-        scene.add(mesh);
-        pelletMeshes[key] = mesh;
+        const group = makePelletGroup(x, y, isPower, hexToInt(mazeTheme.pellet||"#ffb35c"));
+        scene.add(group);
+        pelletMeshes[key] = group;
       });
       break;
     case "kill":
