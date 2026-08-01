@@ -1085,9 +1085,7 @@ let scene, camera, renderer;
 let wallMeshGroup = null;
 // PointLight laterali piazzate lungo i corridoi (vedi applyMapData): fisse
 // rispetto alla mappa, non alla camera, danno rilievo reale alle facce
-// verticali dei muri man mano che ci si passa vicino - cosi' i muri
-// prendono luce/lucentezza laterale come gia' fa il pavimento con la luce
-// dall'alto, invece di restare piatti e opachi.
+// verticali dei muri man mano che ci si passa vicino.
 let corridorLightsGroup = null;
 let floorMeshGroup = null;
 let pelletMeshes = {};   // "x,y" -> THREE.Group (sfera + bagliori)
@@ -2866,29 +2864,8 @@ function triggerMegaPelletSpawnBeam(x, z){
 }
 
 
-/* ---- bagliore dei pallini: texture radiale bianca->trasparente,
-   generata UNA SOLA VOLTA e riutilizzata (colorata via material.color)
-   per il "riflesso" del pallino su pavimento/muri - vedi makePelletGroup.
-   ---- */
-let pelletGlowTex = null;
-function makeGlowTexture(){
-  const SIZE = 64;
-  const cnv = document.createElement("canvas");
-  cnv.width = cnv.height = SIZE;
-  const ctx = cnv.getContext("2d");
-  const g = ctx.createRadialGradient(SIZE/2, SIZE/2, 0, SIZE/2, SIZE/2, SIZE/2);
-  g.addColorStop(0.00, "rgba(255,255,255,1)");
-  g.addColorStop(0.35, "rgba(255,255,255,0.55)");
-  g.addColorStop(1.00, "rgba(255,255,255,0)");
-  ctx.fillStyle = g;
-  ctx.fillRect(0, 0, SIZE, SIZE);
-  return new THREE.CanvasTexture(cnv);
-}
-
-/* ---- costruisce il pallino: solo la sfera emissiva. Il riflesso finto
-   (seconda sfera ribaltata sotto il pavimento per ogni pallino) e' stato
-   rimosso su richiesta: raddoppiava mesh/draw-call su mappe con molti
-   pallini ed era una delle cause del lag. ---- */
+/* ---- costruisce il pallino: semplice sfera emissiva (riflesso a
+   specchio rimosso su richiesta). ---- */
 function makePelletGroup(cellX, cellY, isPower, colorHex){
   const group = new THREE.Group();
 
@@ -2927,8 +2904,7 @@ function initThree(){
   // PointLight piazzate lungo i corridoi (vedi dopo la costruzione dei
   // muri in applyMapData): sono fisse rispetto alla mappa, non alla camera,
   // quindi illuminano localmente man mano che ci si passa vicino senza
-  // "inseguire" il giocatore - e fanno prendere lucentezza anche ai muri,
-  // non solo al pavimento.
+  // "inseguire" il giocatore.
   scene.add(new THREE.AmbientLight(0xffffff, 1.3));
   scene.add(new THREE.HemisphereLight(0xffffff, 0xe8e8e8, 0.6));
   const sun = new THREE.DirectionalLight(0xffffff, 0.35);
@@ -3026,15 +3002,21 @@ function initThree(){
     tex.needsUpdate = true;
     return tex;
   }
-  // Niente piu' environment map / PMREM per riflessi speculari su
-  // muri/pavimento (rimossa su richiesta: il calcolo IBL su ogni
-  // materiale metallico della scena, ricalcolato ad ogni frame/angolo,
-  // era una delle cause principali del lag). Teniamo pero' la stessa
-  // texture "a strisce di neon" solo per disegnare la cupola del cielo
-  // qui sotto: e' un singolo mesh statico, costo trascurabile.
+  // IMPORTANTE: una texture equirettangolare "grezza" assegnata
+  // direttamente a scene.environment NON viene filtrata per i vari
+  // livelli di roughness (serve il formato CubeUV pre-filtrato che usa
+  // il calcolo IBL speculare di MeshStandardMaterial). Senza questo
+  // passaggio il riflesso risultava di fatto assente: si vedeva solo il
+  // contributo diffuso piatto delle luci ambient/hemisphere. Il
+  // PMREMGenerator converte la texture nel formato corretto.
+  const pmremGenerator = new THREE.PMREMGenerator(renderer);
+  pmremGenerator.compileEquirectangularShader();
   const rawEnvTex = makeEnvReflectionTexture();
+  const envRenderTarget = pmremGenerator.fromEquirectangular(rawEnvTex);
+  scene.environment = envRenderTarget.texture;
+  pmremGenerator.dispose();
 
-  // ---- Cupola del cielo con le STESSE luci di prima ----
+  // ---- Cupola del cielo con le STESSE luci dei riflessi ----
   // Prima la texture "rawEnvTex" (le strisce al neon) veniva usata SOLO
   // come environment map per i riflessi lucidi di pavimento/muri, e mai
   // disegnata davvero: guardando in alto si vedeva solo il colore di
@@ -3219,12 +3201,8 @@ function applyMapData(msg){
       map: metalTex.map,
       normalMap: metalTex.normalMap,
       normalScale: new THREE.Vector2(0.15, 0.15),
-      // Niente piu' riflesso a specchio via envMap (rimosso su richiesta),
-      // ma i muri restano lucidi grazie alla luce vera: stessi identici
-      // valori di roughness/metalness del pavimento (0.05 / 0.55), non
-      // solo simili, cosi' le PointLight laterali dei corridoi ci
-      // disegnano sopra lo stesso identico guizzo speculare che si vede
-      // gia' sul pavimento.
+      // Stessa lucentezza del pavimento (roughness/metalness identici),
+      // cosi' anche i muri mostrano i riflessi netti della env map.
       roughness: 0.05,
       metalness: 0.55,
     });
@@ -3300,7 +3278,10 @@ const PACMAN_MOUTH_MAX = 0.62; // apertura massima della bocca, in radianti per 
 
 function makeCharacterMesh(colorHex){
   const g = new THREE.Group();
-  const mat = new THREE.MeshStandardMaterial({ color:colorHex, emissive:colorHex, emissiveIntensity:0.18 });
+  // envMapIntensity a 0: il personaggio non deve mostrare alcun riflesso
+  // ambientale (rimosso su richiesta), a differenza di muri/pavimento che
+  // restano lucidi.
+  const mat = new THREE.MeshStandardMaterial({ color:colorHex, emissive:colorHex, emissiveIntensity:0.18, envMapIntensity:0 });
 
   // testa: sfera piena come base, sopra si incollano le due mascelle che
   // "mangiano" lo spazio della bocca aperta, cosi' non si vede mai un
