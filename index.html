@@ -1083,6 +1083,12 @@ function hexToInt(h){ return parseInt((h||"#333333").replace("#",""), 16); }
 
 let scene, camera, renderer;
 let wallMeshGroup = null;
+// Strisce luminose (mesh auto-illuminate, NON vere THREE.Light) applicate
+// alle facce dei muri esposte ai corridoi: servono a dare ai riflessi a
+// specchio di muri/pavimento qualcosa di colorato e vicino da mostrare
+// lateralmente. Senza queste, il probe dinamico specchia solo corridoi bui
+// e i muri risultano "opachi" nonostante roughness/metalness bassi.
+let wallAccentGroup = null;
 let floorMeshGroup = null;
 // ---- sonda di riflessione dinamica (vero specchio) ----
 // Una CubeCamera piazzata vicino al giocatore fotografa la scena reale
@@ -1100,6 +1106,13 @@ const ENV_PROBE_UPDATE_EVERY = 2; // aggiorna 1 frame ogni 2 (prima 3): i giocat
 let pelletMeshes = {};   // "x,y" -> THREE.Group (sfera + bagliori)
 let powerPelletCells = new Set();
 let remotePlayers = {};  // id -> {group, targetX, targetZ, colorHex}
+// Mesh del giocatore locale: non esisteva prima (in prima persona non serve
+// vedersi direttamente), ma senza di esso non c'e' nulla da riflettere negli
+// specchi/pavimento quando la sonda (envProbeCamera) fotografa la scena.
+// Resta invisibile per la camera principale (niente corpo che ostruisce la
+// vista in prima persona) e viene reso visibile SOLO per l'istante in cui la
+// sonda cattura la cubemap, cosi' appare unicamente nei riflessi.
+let myPlayerMesh = null;
 let laserMeshes = {};    // id -> {mesh, x, z, targetX, targetZ} bonus 150 punti: proiettili laser in volo
 let missileMeshes = {};  // id -> {mesh, x, z, targetX, targetZ} bonus 400 punti: missile guidato in volo
 let mineMeshes = {};     // id -> mesh bonus 200 punti: mine posate, statiche (nessuna interpolazione)
@@ -3106,6 +3119,7 @@ function applyMapData(msg){
 
   // ripulisce la scena (muri/pallini della mappa precedente, se ce n'era una)
   if (wallMeshGroup) scene.remove(wallMeshGroup);
+  if (wallAccentGroup) scene.remove(wallAccentGroup);
   Object.values(pelletMeshes).forEach(m => scene.remove(m));
   pelletMeshes = {};
 
@@ -3304,6 +3318,64 @@ function applyMapData(msg){
   wallMeshGroup = new THREE.Group();
   wallMeshesPerVariant.forEach(inst => { if (inst) wallMeshGroup.add(inst); });
   scene.add(wallMeshGroup);
+
+  // ---- strisce di accento sui muri (vedi commento su wallAccentGroup) ----
+  // Per ogni cella di muro, controlla le 4 facce: se il vicino in quella
+  // direzione e' un corridoio (non muro), la faccia e' "esposta" e puo'
+  // ricevere una striscia. Sottocampionate (1 ogni ~6) per restare leggere:
+  // bastano per rompere il buio laterale, non serve una su ogni cella.
+  const accentColor = hexToInt(mazeTheme.glow || "#9df6ff");
+  const accentH = WALL_TOTAL_H * 0.5;
+  const stripLen = CELL * 0.7;
+  const stripThick = 0.05;
+  const stripHeight = 0.22;
+  const NBRS = [
+    { dx: 1, dy: 0, ox: CELL/2, oz: 0, along: "z" },
+    { dx:-1, dy: 0, ox:-CELL/2, oz: 0, along: "z" },
+    { dx: 0, dy: 1, ox: 0, oz: CELL/2, along: "x" },
+    { dx: 0, dy:-1, ox: 0, oz:-CELL/2, along: "x" },
+  ];
+  const facesZ = []; // facce lungo X (striscia estesa in Z)
+  const facesX = []; // facce lungo Z (striscia estesa in X)
+  for (let y=0;y<mazeH;y++){
+    for (let x=0;x<mazeW;x++){
+      if (!isWall(x,y)) continue;
+      NBRS.forEach(n => {
+        const nx=x+n.dx, ny=y+n.dy;
+        if (nx<0||ny<0||nx>=mazeW||ny>=mazeH) return;
+        if (isWall(nx,ny)) return;
+        // sottocampionamento deterministico (stessa mappa -> stesse strisce)
+        if (((x*13 + y*7 + (n.dx+2)*3 + (n.dy+2)) % 6) !== 0) return;
+        const wx = x*CELL + CELL/2 + n.ox * 1.02; // leggero distacco dalla faccia, niente z-fighting
+        const wz = y*CELL + CELL/2 + n.oz * 1.02;
+        (n.along === "z" ? facesZ : facesX).push({ wx, wz });
+      });
+    }
+  }
+  const accentMat = new THREE.MeshBasicMaterial({ color: accentColor });
+  const geoZ = new THREE.BoxGeometry(stripThick, stripHeight, stripLen);
+  const geoX = new THREE.BoxGeometry(stripLen, stripHeight, stripThick);
+  const dummyAccent = new THREE.Object3D();
+  wallAccentGroup = new THREE.Group();
+  if (facesZ.length){
+    const instZ = new THREE.InstancedMesh(geoZ, accentMat, facesZ.length);
+    facesZ.forEach((f, i) => {
+      dummyAccent.position.set(f.wx, accentH, f.wz);
+      dummyAccent.updateMatrix();
+      instZ.setMatrixAt(i, dummyAccent.matrix);
+    });
+    wallAccentGroup.add(instZ);
+  }
+  if (facesX.length){
+    const instX = new THREE.InstancedMesh(geoX, accentMat, facesX.length);
+    facesX.forEach((f, i) => {
+      dummyAccent.position.set(f.wx, accentH, f.wz);
+      dummyAccent.updateMatrix();
+      instX.setMatrixAt(i, dummyAccent.matrix);
+    });
+    wallAccentGroup.add(instX);
+  }
+  scene.add(wallAccentGroup);
 
   // pallini: quelli "ancora presenti" secondo il server (msg.pellets)
   const remaining = new Set((msg.pellets||[]).map(c => c[0]+","+c[1]));
@@ -5258,6 +5330,23 @@ function onState(msg){
       myTargetX = wx; myTargetZ = wz;
       if (!myInited){ myRenderX = wx; myRenderZ = wz; myInited = true; } // solo al primo stato: niente scivolata dall'origine
       myState = p; // usato dal tasto "1" per decidere quale messaggio inviare (vedi mineChainNextMsg)
+
+      // Corpo del giocatore locale: creato una sola volta (stesso modello
+      // usato per i giocatori remoti), tenuto invisibile per la camera
+      // principale - viene mostrato solo per l'istante della cattura della
+      // sonda di riflessione (vedi animate()), cosi' ci si vede negli
+      // specchi senza intralciare la visuale in prima persona.
+      if (!myPlayerMesh){
+        const hex = playerColorHex[p.id];
+        myPlayerMesh = makeCharacterMesh(hex);
+        myPlayerMesh.visible = false;
+        scene.add(myPlayerMesh);
+      }
+      myPlayerMesh.visible = false; // resta nascosto finche' non e' il turno della sonda
+      if (p.facing){
+        const ang = { right:Math.PI/2, left:-Math.PI/2, down:Math.PI, up:0 }[p.facing];
+        if (ang !== undefined) myPlayerMesh.rotation.y = ang;
+      }
       document.getElementById("hudScore").textContent = "punti: " + (p.points||0);
       document.getElementById("hudLives").textContent = "vite: " + (p.lives||0);
       document.getElementById("deadBanner").classList.toggle("hidden", p.alive !== false);
@@ -7673,6 +7762,11 @@ function animate(){
   if (starsGroup) starsGroup.position.set(myRenderX, 0, myRenderZ);
   if (skyLightsDome) skyLightsDome.position.set(myRenderX, 0, myRenderZ);
 
+  // il corpo del giocatore locale segue la stessa posizione interpolata
+  // della camera (myRenderX/Z), cosi' la sonda lo fotografa esattamente
+  // dove ci si trova davvero, non dov'era all'ultimo pacchetto di rete.
+  if (myPlayerMesh) myPlayerMesh.position.set(myRenderX, 0, myRenderZ);
+
   // minimappa: ridisegnata anche qui (non solo ad ogni "state" di rete)
   // cosi' la freccia del giocatore ruota morbidamente insieme allo sguardo
   // invece di scattare solo quando arriva un nuovo pacchetto dal server.
@@ -7687,7 +7781,12 @@ function animate(){
     envProbeFrameCounter++;
     if (envProbeFrameCounter % ENV_PROBE_UPDATE_EVERY === 0){
       envProbeCamera.position.set(myRenderX, EYE_HEIGHT * 0.6, myRenderZ);
+      // il corpo locale compare SOLO durante questo scatto (mai nel render
+      // principale in prima persona): cosi' si vede riflesso negli specchi
+      // senza mai apparire davanti alla camera del giocatore.
+      if (myPlayerMesh) myPlayerMesh.visible = (myState.alive !== false);
       envProbeCamera.update(renderer, scene);
+      if (myPlayerMesh) myPlayerMesh.visible = false;
     }
   }
 
