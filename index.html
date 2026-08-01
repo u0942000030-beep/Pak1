@@ -2533,7 +2533,7 @@ function makeStoneTextures(baseColorHex, seedStr){
 
   const colorTex = new THREE.CanvasTexture(colorCanvas);
   colorTex.wrapS = colorTex.wrapT = THREE.RepeatWrapping;
-  colorTex.colorSpace = THREE.SRGBColorSpace;
+  colorTex.encoding = THREE.sRGBEncoding;
   const normalTex = new THREE.CanvasTexture(nCanvas);
   normalTex.wrapS = normalTex.wrapT = THREE.RepeatWrapping;
 
@@ -2672,7 +2672,7 @@ function makeMetalFloorTexture(baseColorHex, seedStr){
   nctx.putImageData(nImg, 0, 0);
 
   const colorTex = new THREE.CanvasTexture(colorCanvas);
-  colorTex.colorSpace = THREE.SRGBColorSpace;
+  colorTex.encoding = THREE.sRGBEncoding;
   const normalTex = new THREE.CanvasTexture(nCanvas);
 
   return { map: colorTex, normalMap: normalTex };
@@ -2846,7 +2846,7 @@ function initThree(){
   renderer = new THREE.WebGLRenderer({ antialias:true, powerPreference:"high-performance" });
   renderer.setSize(window.innerWidth, window.innerHeight);
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 3));
-  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  renderer.outputEncoding = THREE.sRGBEncoding;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.toneMappingExposure = 1.0;
   document.body.appendChild(renderer.domElement);
@@ -2863,72 +2863,59 @@ function initThree(){
   scene.add(sun);
 
   // ---- Environment map per i riflessi lucidi di muri/pavimento ----
-  // Un riflesso "agganciato" a una luce diretta e' visibile SOLO
-  // nell'esatto angolo in cui quella luce si riflette verso la camera:
-  // per il pavimento (orizzontale) quell'angolo capita spesso guardando
-  // in basso, ma per i muri (verticali) quasi mai guardando avanti -
-  // risultato: pavimento lucido, muri "opachi" (o viceversa a seconda
-  // di dove si guarda). Una env map risolve alla radice: il riflesso
-  // viene dall'AMBIENTE circostante (sempre presente in ogni direzione),
-  // non da una sorgente puntuale, quindi resta visibile su qualsiasi
-  // superficie da qualsiasi angolo di vista. Generata UNA SOLA VOLTA con
-  // una piccola scena procedurale (cielo chiaro sopra, pavimento scuro
-  // sotto: coerente col tema industriale/notturno del gioco) e mai piu'
-  // aggiornata: costo trascurabile, i riflessi restano "ambiente
-  // generico" invece di rispecchiare la mappa reale, sufficiente per
-  // l'effetto lucido voluto senza il costo di un CubeCamera dinamico
-  // ricalcolato ad ogni frame.
-  const envScene = new THREE.Scene();
-  const envSky = new THREE.Color(0xaebdd0);
-  const envGround = new THREE.Color(0x06070a);
-  const envGeo = new THREE.SphereGeometry(50, 32, 32);
-  const envHorizon = new THREE.Color(0xd8e0ee); // fascia chiara all'altezza dell'orizzonte
-  const envGradColors = [];
-  const envPos = envGeo.attributes.position;
-  for (let i = 0; i < envPos.count; i++){
-    const y = envPos.getY(i);
-    const t = Math.max(0, Math.min(1, (y / 50) * 0.5 + 0.5)); // 0=sotto, 0.5=orizzonte, 1=sopra
-    const tc = Math.pow(t, 1.5);
-    let c = envGround.clone().lerp(envSky, tc);
-    // Senza questa fascia, un muro VERTICALE (normale orizzontale) riflette
-    // quasi sempre il colore all'altezza dell'orizzonte (t~0.5), che con la
-    // curva sopra risulta quasi nero: ecco perche' il pavimento (che
-    // riflette piu' spesso verso l'alto, zone chiare) risultava lucido
-    // mentre i muri restavano piatti/opachi. Una fascia chiara concentrata
-    // proprio a t=0.5 da' ai muri qualcosa di luminoso da riflettere da
-    // qualsiasi angolo di vista, non solo guardando in basso/in alto.
-    const horizonBand = Math.exp(-Math.pow((t-0.5)/0.22, 2));
-    c = c.lerp(envHorizon, horizonBand*0.7);
-    envGradColors.push(c.r, c.g, c.b);
-  }
-  envGeo.setAttribute("color", new THREE.Float32BufferAttribute(envGradColors, 3));
-  const envMat = new THREE.MeshBasicMaterial({ vertexColors:true, side:THREE.BackSide, fog:false });
-  envScene.add(new THREE.Mesh(envGeo, envMat));
-  // piccolo "sole" puntiforme molto luminoso: senza un hotspot concentrato
-  // un metallo lucido non mostra mai quel guizzo di luce netto tipico
-  // dell'acciaio a specchio, solo una tinta uniforme.
-  const sunGeo = new THREE.SphereGeometry(3.5, 12, 12);
-  const sunMat = new THREE.MeshBasicMaterial({ color:0xffffff, fog:false });
-  const sunMesh = new THREE.Mesh(sunGeo, sunMat);
-  sunMesh.position.set(-22, 32, -14);
-  envScene.add(sunMesh);
+  // Approccio precedente (scena 3D + CubeCamera) abbandonato: troppo
+  // indiretto, con un gradiente verticale che rendeva scuro esattamente
+  // cio' che i MURI riflettono di solito (l'altezza dell'orizzonte),
+  // risultando "opachi" nonostante roughness/metalness corretti. Qui
+  // invece disegniamo DIRETTAMENTE una texture equirettangolare su
+  // canvas 2D: nessuna scena da renderizzare, nessun CubeCamera, nessun
+  // rischio di doppia compressione col tone mapping - quello che vedi nel
+  // canvas e' esattamente quello che verra' riflesso. Chiara quasi
+  // ovunque (sopra E all'altezza dell'orizzonte, dove cadono la maggior
+  // parte dei riflessi su pavimento E muri) con un punto luce netto per
+  // il guizzo speculare tipico dell'acciaio lucidato, scura solo in un
+  // piccolo cono verso il basso (raramente riflesso da superfici di gioco).
+  function makeEnvReflectionTexture(){
+    const w = 512, h = 256;
+    const cnv = document.createElement("canvas");
+    cnv.width = w; cnv.height = h;
+    const ctx = cnv.getContext("2d");
+    // riga 0 = zenit (sopra), riga h = nadir (sotto); l'orizzonte cade
+    // circa a meta' altezza (riga h/2) - e' li' che i muri riflettono di
+    // piu' guardandoli di fronte, quindi deve restare chiaro.
+    const grad = ctx.createLinearGradient(0, 0, 0, h);
+    grad.addColorStop(0.00, "#f0f4fb"); // zenit: quasi bianco
+    grad.addColorStop(0.30, "#d3dbe8"); // cielo alto
+    grad.addColorStop(0.50, "#b7c1d2"); // orizzonte: ancora chiaro, MAI nero
+    grad.addColorStop(0.68, "#7a8494"); // appena sotto l'orizzonte
+    grad.addColorStop(1.00, "#23272e"); // nadir: scuro ma non nero puro
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, w, h);
+    // guizzo speculare netto ("sole"), per dare quel punto di luce vivo
+    // tipico di una superficie a specchio invece di un grigio uniforme
+    const sunX = w*0.30, sunY = h*0.20, sunR = 70;
+    const sunGrad = ctx.createRadialGradient(sunX, sunY, 0, sunX, sunY, sunR);
+    sunGrad.addColorStop(0, "#ffffff");
+    sunGrad.addColorStop(0.35, "rgba(255,255,255,0.65)");
+    sunGrad.addColorStop(1, "rgba(255,255,255,0)");
+    ctx.fillStyle = sunGrad;
+    ctx.beginPath(); ctx.arc(sunX, sunY, sunR, 0, Math.PI*2); ctx.fill();
+    // secondo guizzo piu' debole dal lato opposto, per riflessi credibili
+    // guardando in qualsiasi direzione, non solo verso il primo
+    const sun2X = w*0.78, sun2Y = h*0.35, sun2R = 55;
+    const sun2Grad = ctx.createRadialGradient(sun2X, sun2Y, 0, sun2X, sun2Y, sun2R);
+    sun2Grad.addColorStop(0, "rgba(255,255,255,0.85)");
+    sun2Grad.addColorStop(1, "rgba(255,255,255,0)");
+    ctx.fillStyle = sun2Grad;
+    ctx.beginPath(); ctx.arc(sun2X, sun2Y, sun2R, 0, Math.PI*2); ctx.fill();
 
-  const envCubeTarget = new THREE.WebGLCubeRenderTarget(512, {
-    generateMipmaps: true, minFilter: THREE.LinearMipmapLinearFilter,
-  });
-  const envCubeCamera = new THREE.CubeCamera(0.1, 100, envCubeTarget);
-  // IMPORTANTE: la cattura della env map deve avvenire SENZA tone mapping.
-  // Il renderer ha ACESFilmicToneMapping attivo (vedi sopra) per la resa
-  // finale a schermo; se e' attivo anche qui, i colori vengono compressi/
-  // schiariti UNA VOLTA dentro la texture catturata e poi DI NUOVO quando
-  // quella texture viene letta come riflesso e ri-renderizzata a schermo -
-  // la doppia compressione e' esattamente cio' che spegneva ogni colore
-  // verso un bianco slavato invece di un riflesso nitido.
-  const prevToneMapping = renderer.toneMapping;
-  renderer.toneMapping = THREE.NoToneMapping;
-  envCubeCamera.update(renderer, envScene);
-  renderer.toneMapping = prevToneMapping;
-  scene.environment = envCubeTarget.texture;
+    const tex = new THREE.CanvasTexture(cnv);
+    tex.mapping = THREE.EquirectangularReflectionMapping;
+    tex.encoding = THREE.sRGBEncoding;
+    tex.needsUpdate = true;
+    return tex;
+  }
+  scene.environment = makeEnvReflectionTexture();
 
   window.addEventListener("resize", () => {
     camera.aspect = window.innerWidth/window.innerHeight;
