@@ -2848,7 +2848,7 @@ function initThree(){
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 3));
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.15;
+  renderer.toneMappingExposure = 1.0;
   document.body.appendChild(renderer.domElement);
   // Illuminazione diffusa (mappa "a giorno", nessuna zona buia): SOLO
   // luci omnidirezionali (Ambient + Hemisphere) piu' una direzionale
@@ -2879,26 +2879,51 @@ function initThree(){
   // l'effetto lucido voluto senza il costo di un CubeCamera dinamico
   // ricalcolato ad ogni frame.
   const envScene = new THREE.Scene();
-  const envSky = new THREE.Color(0xd8e4f2);
-  const envGround = new THREE.Color(0x0a0b0d);
-  const envGeo = new THREE.SphereGeometry(50, 16, 16);
+  const envSky = new THREE.Color(0xaebdd0);
+  const envGround = new THREE.Color(0x06070a);
+  const envGeo = new THREE.SphereGeometry(50, 32, 32);
   const envGradColors = [];
   const envPos = envGeo.attributes.position;
   for (let i = 0; i < envPos.count; i++){
     const y = envPos.getY(i);
     const t = Math.max(0, Math.min(1, (y / 50) * 0.5 + 0.5));
-    const c = envGround.clone().lerp(envSky, t);
+    // curva (invece di lerp lineare) cosi' la banda chiara resta piu'
+    // stretta vicino all'orizzonte/zenit e il resto scende verso lo scuro:
+    // un riflesso di metallo lucido legge come "specchio" solo se nell'
+    // ambiente ci sono zone chiare E scure ben distinte, non un unico
+    // grigio uniforme (che e' esattamente cio' che dava l'effetto
+    // "bianco slavato" lamentato).
+    const tc = Math.pow(t, 2.2);
+    const c = envGround.clone().lerp(envSky, tc);
     envGradColors.push(c.r, c.g, c.b);
   }
   envGeo.setAttribute("color", new THREE.Float32BufferAttribute(envGradColors, 3));
   const envMat = new THREE.MeshBasicMaterial({ vertexColors:true, side:THREE.BackSide, fog:false });
   envScene.add(new THREE.Mesh(envGeo, envMat));
+  // piccolo "sole" puntiforme molto luminoso: senza un hotspot concentrato
+  // un metallo lucido non mostra mai quel guizzo di luce netto tipico
+  // dell'acciaio a specchio, solo una tinta uniforme.
+  const sunGeo = new THREE.SphereGeometry(3.5, 12, 12);
+  const sunMat = new THREE.MeshBasicMaterial({ color:0xffffff, fog:false });
+  const sunMesh = new THREE.Mesh(sunGeo, sunMat);
+  sunMesh.position.set(-22, 32, -14);
+  envScene.add(sunMesh);
 
   const envCubeTarget = new THREE.WebGLCubeRenderTarget(512, {
     generateMipmaps: true, minFilter: THREE.LinearMipmapLinearFilter,
   });
   const envCubeCamera = new THREE.CubeCamera(0.1, 100, envCubeTarget);
+  // IMPORTANTE: la cattura della env map deve avvenire SENZA tone mapping.
+  // Il renderer ha ACESFilmicToneMapping attivo (vedi sopra) per la resa
+  // finale a schermo; se e' attivo anche qui, i colori vengono compressi/
+  // schiariti UNA VOLTA dentro la texture catturata e poi DI NUOVO quando
+  // quella texture viene letta come riflesso e ri-renderizzata a schermo -
+  // la doppia compressione e' esattamente cio' che spegneva ogni colore
+  // verso un bianco slavato invece di un riflesso nitido.
+  const prevToneMapping = renderer.toneMapping;
+  renderer.toneMapping = THREE.NoToneMapping;
   envCubeCamera.update(renderer, envScene);
+  renderer.toneMapping = prevToneMapping;
   scene.environment = envCubeTarget.texture;
 
   window.addEventListener("resize", () => {
@@ -2967,8 +2992,8 @@ function applyMapData(msg){
   // un "color" scuro sopra la moltiplicherebbe rendendo il pavimento
   // quasi nero/invisibile (bug: il pavimento spariva contro lo sfondo,
   // entrambi vicini a floorColorA che di default e' molto scuro).
-  const floorMatA = new THREE.MeshStandardMaterial({ map:floorTexA.map, normalMap:floorTexA.normalMap, normalScale:new THREE.Vector2(0.5,0.5), roughness:0.04, metalness:1.0, envMapIntensity:2.4 });
-  const floorMatB = new THREE.MeshStandardMaterial({ map:floorTexB.map, normalMap:floorTexB.normalMap, normalScale:new THREE.Vector2(0.5,0.5), roughness:0.04, metalness:1.0, envMapIntensity:2.4 });
+  const floorMatA = new THREE.MeshStandardMaterial({ map:floorTexA.map, normalMap:floorTexA.normalMap, normalScale:new THREE.Vector2(0.15,0.15), roughness:0.02, metalness:1.0, envMapIntensity:1.5 });
+  const floorMatB = new THREE.MeshStandardMaterial({ map:floorTexB.map, normalMap:floorTexB.normalMap, normalScale:new THREE.Vector2(0.15,0.15), roughness:0.02, metalness:1.0, envMapIntensity:1.5 });
   let countA = 0, countB = 0;
   for (let y=0;y<mazeH;y++){
     for (let x=0;x<mazeW;x++){
@@ -2999,7 +3024,7 @@ function applyMapData(msg){
   const floorBaseTex = makeMetalFloorTexture(floorColorA, (mazeTheme.__mapName||"default")+":floorBase");
   const floorBase = new THREE.Mesh(
     new THREE.PlaneGeometry(mazeW*CELL, mazeH*CELL),
-    new THREE.MeshStandardMaterial({ map:floorBaseTex.map, normalMap:floorBaseTex.normalMap, normalScale:new THREE.Vector2(0.5,0.5), roughness:0.04, metalness:1.0, envMapIntensity:2.4 })
+    new THREE.MeshStandardMaterial({ map:floorBaseTex.map, normalMap:floorBaseTex.normalMap, normalScale:new THREE.Vector2(0.15,0.15), roughness:0.02, metalness:1.0, envMapIntensity:1.5 })
   );
   floorBase.material.map.wrapS = floorBase.material.map.wrapT = THREE.RepeatWrapping;
   floorBase.material.normalMap.wrapS = floorBase.material.normalMap.wrapT = THREE.RepeatWrapping;
@@ -3050,7 +3075,7 @@ function applyMapData(msg){
     const mat = new THREE.MeshStandardMaterial({
       map: metalTex.map,
       normalMap: metalTex.normalMap,
-      normalScale: new THREE.Vector2(0.9, 0.9),
+      normalScale: new THREE.Vector2(0.15, 0.15),
       emissive: hexToInt(variant.edge),
       emissiveIntensity: 0.08,
       // Lucido percepibile da qualsiasi angolo: il riflesso viene dalla
@@ -3058,9 +3083,9 @@ function applyMapData(msg){
       // diretta - per questo si vede anche sulle facce VERTICALI dei
       // muri guardandole di fronte, non solo dall'angolo esatto in cui
       // una direzionale si rifletterebbe verso la camera.
-      roughness: 0.04,
+      roughness: 0.02,
       metalness: 1.0,
-      envMapIntensity: 2.4,
+      envMapIntensity: 1.5,
     });
     const inst = countPerVariant[v] > 0
       ? new THREE.InstancedMesh(cubeGeo, mat, countPerVariant[v])
