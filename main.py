@@ -2383,6 +2383,13 @@ class Room:
         survivors = []
         for lz in self.lasers:
             destroyed = False
+            # Traccia PERCHE' il proiettile finisce (muro, vicolo cieco senza
+            # rimbalzo, giocatore, pet, golem): il client ne ha bisogno per
+            # decidere se mostrare la scintilla/segno di impatto sul muro
+            # (solo per "wall") oppure niente di speciale per gli altri casi,
+            # dove l'effetto di colpo e' gia' gestito altrove (morte del
+            # giocatore, distruzione del pet, ecc.).
+            destroy_reason = None
             last_cell = (int(math.floor(lz["x"])), int(math.floor(lz["y"])))
             # Passo orizzontale scalato da horiz_scale (cos(pitch)) e passo
             # verticale da vz: sommati danno sempre la stessa velocita'
@@ -2405,6 +2412,7 @@ class Room:
                     )
                     if not can_bounce:
                         destroyed = True
+                        destroy_reason = "wall"
                         break
                     # Sceglie una direzione cardinale libera a caso (diversa
                     # da quella che ha appena portato al muro, se
@@ -2423,6 +2431,7 @@ class Room:
                         # Vicolo cieco: nessuna via libera nemmeno tornando
                         # indietro, il proiettile si estingue qui.
                         destroyed = True
+                        destroy_reason = "wall"
                         break
                     lz["dx"], lz["dy"] = random.choice(options)
                     lz["x"], lz["y"] = cx + 0.5, cy + 0.5
@@ -2437,6 +2446,7 @@ class Room:
                     })
                     if lz["bounce_left"] is not None and lz["bounce_left"] <= 0:
                         destroyed = True
+                        destroy_reason = "wall"
                         break
                     continue  # riprova nel prossimo micro-passo, stesso tick
                 # Bonus 2200 punti: un muro di spunzoni AVVERSARIO ferma il
@@ -2445,6 +2455,7 @@ class Room:
                 # del muro invece lo attraversano liberamente.
                 if self.spike_wall_blocking(ncx, ncy, lz["owner"]) is not None:
                     destroyed = True
+                    destroy_reason = "wall"
                     break
                 lz["x"], lz["y"], lz["z"] = nx, ny, nz
                 entered_new_cell = (ncx, ncy) != last_cell
@@ -2541,7 +2552,7 @@ class Room:
                     destroyed = True
                     break
             if destroyed:
-                self.push_event({"kind": "laser_end", "id": lz["id"], "x": lz["x"], "y": lz["y"], "z": lz.get("z", LASER_EYE_HEIGHT)})
+                self.push_event({"kind": "laser_end", "id": lz["id"], "x": lz["x"], "y": lz["y"], "z": lz.get("z", LASER_EYE_HEIGHT), "reason": destroy_reason})
             else:
                 survivors.append(lz)
         self.lasers = survivors

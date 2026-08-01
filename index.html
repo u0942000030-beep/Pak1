@@ -1081,7 +1081,7 @@ function simulateEvolvedTurrets(dt, now){
 }
 function hexToInt(h){ return parseInt((h||"#333333").replace("#",""), 16); }
 
-let scene, camera, renderer, torch;
+let scene, camera, renderer;
 let wallMeshGroup = null;
 let floorMeshGroup = null;
 let pelletMeshes = {};   // "x,y" -> THREE.Mesh
@@ -1207,6 +1207,56 @@ function spawnExplosion(wx, wz, colorHex){
   mesh.position.set(wx, 0.55, wz);
   scene.add(mesh);
   explosions.push({ mesh, start: performance.now() });
+}
+
+/* ============================================================
+   IMPATTO LASER SU SUPERFICIE DURA (muro/spunzoni): prima il
+   proiettile spariva nel nulla (laser_end rimuoveva solo la mesh
+   del dardo), dando l'impressione di attraversare il muro invece
+   di infrangercisi contro. Ora, quando il server segnala reason
+   "wall", spawniamo DUE effetti nello stesso punto:
+   1) una scintilla che esplode e sparisce in fretta (~250ms),
+      stesso schema di spawnExplosion ma piu' piccola/rapida e
+      bianco-accecante, per il "botto" dell'impatto;
+   2) un piccolo disco scorticato/bruciato, appiattito CONTRO la
+      faccia del muro colpita (orientato secondo la normale
+      dell'impatto), che resta visibile per qualche secondo e poi
+      sfuma lentamente - il "segno" persistente richiesto.
+   ============================================================ */
+let laserImpacts = []; // { mesh, start, life } - dischi di bruciatura persistenti sul muro
+const LASER_SCORCH_LIFE_MS = 4500; // quanto resta visibile il segno prima di svanire del tutto
+const LASER_SCORCH_FADE_MS = 900;  // durata della dissolvenza finale (ultima parte della vita)
+
+function spawnLaserWallImpact(wx, wy, wz, nx, ny, nz){
+  // 1) scintilla rapida: piccola sfera bianco-calda che si espande e
+  // sfuma quasi subito, per dare peso fisico al colpo.
+  const sparkMat = new THREE.MeshBasicMaterial({ color: 0xfff2c0, transparent:true, opacity:0.95 });
+  const spark = new THREE.Mesh(new THREE.SphereGeometry(0.09, 8, 6), sparkMat);
+  spark.position.set(wx, wy, wz);
+  scene.add(spark);
+  explosions.push({ mesh: spark, start: performance.now() });
+
+  // 2) segno bruciato: un disco scuro, leggermente sollevato dalla
+  // superficie (evita z-fighting) e orientato secondo la normale
+  // dell'impatto (nx,ny,nz) cosi' resta "incollato" alla faccia del
+  // muro colpita, qualunque essa sia (frontale, laterale, dall'alto).
+  const scorchMat = new THREE.MeshBasicMaterial({
+    color: 0x120a06, transparent:true, opacity:0.85,
+    depthWrite:false, side: THREE.DoubleSide,
+  });
+  const scorch = new THREE.Mesh(new THREE.CircleGeometry(0.16, 14), scorchMat);
+  const normal = new THREE.Vector3(nx, ny, nz).normalize();
+  scorch.position.set(
+    wx + normal.x*0.011,
+    wy + normal.y*0.011,
+    wz + normal.z*0.011,
+  );
+  scorch.lookAt(scorch.position.clone().add(normal));
+  // leggera rotazione casuale attorno alla normale, cosi' i segni non
+  // sembrano tutti stampati con lo stesso identico stampino
+  scorch.rotateOnWorldAxis(normal, Math.random()*Math.PI*2);
+  scene.add(scorch);
+  laserImpacts.push({ mesh: scorch, start: performance.now() });
 }
 
 // Bonus 2800 punti (arbusto spinoso): una casella di ROVI-FILO SPINATO,
@@ -2490,6 +2540,144 @@ function makeStoneTextures(baseColorHex, seedStr){
   return { map: colorTex, normalMap: normalTex };
 }
 
+/* ---- texture procedurale per il pavimento: pannello metallico da
+   "arena industriale" invece della tinta piatta di prima. Stessa
+   tecnica di makeStoneTextures (color map + height map -> normal map
+   via canvas), ma con un linguaggio visivo diverso: piastra rettangolare
+   con bordo a rivetti, spazzolatura direzionale (righe sottili tutte
+   nello stesso verso, tipico dell'acciaio spazzolato) e chiazze di
+   ruggine/usura sparse invece di muschio. Seminata su x,y,variante cosi'
+   ogni cella del pavimento ha la sua piastra unica ma deterministica
+   (stessa mappa => stesso pavimento ad ogni partita). ---- */
+function makeMetalFloorTexture(baseColorHex, seedStr){
+  const rng = mulberry32(hashSeed(seedStr));
+  const SIZE = 256;
+
+  const colorCanvas = document.createElement("canvas");
+  colorCanvas.width = colorCanvas.height = SIZE;
+  const cctx = colorCanvas.getContext("2d");
+
+  const heightCanvas = document.createElement("canvas");
+  heightCanvas.width = heightCanvas.height = SIZE;
+  const hctx = heightCanvas.getContext("2d");
+
+  const base = new THREE.Color(baseColorHex);
+  const toCss = (c) => `rgb(${Math.round(c.r*255)},${Math.round(c.g*255)},${Math.round(c.b*255)})`;
+
+  cctx.fillStyle = toCss(base);
+  cctx.fillRect(0, 0, SIZE, SIZE);
+  hctx.fillStyle = "#808080";
+  hctx.fillRect(0, 0, SIZE, SIZE);
+
+  // 1) spazzolatura direzionale: tante righe sottili orizzontali,
+  // leggermente piu' chiare o scure della base, che imitano la finitura
+  // "brushed" dell'acciaio spazzolato sotto luce radente.
+  const brushAngle = 0; // stesso verso per ogni piastra: coerenza visiva del pavimento
+  for (let i = 0; i < 340; i++){
+    const y = rng()*SIZE;
+    const shade = base.clone().offsetHSL(0, 0, (rng()-0.5)*0.10);
+    cctx.strokeStyle = toCss(shade);
+    cctx.globalAlpha = 0.12 + rng()*0.10;
+    cctx.lineWidth = 0.5 + rng()*0.6;
+    cctx.beginPath();
+    cctx.moveTo(0, y);
+    cctx.lineTo(SIZE, y + (rng()-0.5)*3);
+    cctx.stroke();
+  }
+  cctx.globalAlpha = 1;
+
+  // 2) chiazze di ruggine/usura: macchie morbide arancio-brune, piu'
+  // concentrate ai bordi della piastra (dove il metallo si consuma di
+  // piu'), analoghe alle chiazze di muschio dei muri ma con tinta calda.
+  const rustCount = 2 + Math.floor(rng()*4);
+  for (let i = 0; i < rustCount; i++){
+    const x = rng()*SIZE, y = rng()*SIZE;
+    const rad = SIZE*(0.05 + rng()*0.10);
+    const grad = cctx.createRadialGradient(x, y, 0, x, y, rad);
+    const rust = new THREE.Color(0x8a4a20).offsetHSL((rng()-0.5)*0.04, 0, (rng()-0.5)*0.1);
+    grad.addColorStop(0, toCss(rust));
+    grad.addColorStop(1, "rgba(0,0,0,0)");
+    cctx.fillStyle = grad;
+    cctx.globalAlpha = 0.18 + rng()*0.14;
+    cctx.beginPath(); cctx.arc(x, y, rad, 0, Math.PI*2); cctx.fill();
+    const hgrad = hctx.createRadialGradient(x, y, 0, x, y, rad);
+    hgrad.addColorStop(0, "rgba(90,90,90,0.5)");
+    hgrad.addColorStop(1, "rgba(128,128,128,0)");
+    hctx.fillStyle = hgrad;
+    hctx.beginPath(); hctx.arc(x, y, rad, 0, Math.PI*2); hctx.fill();
+  }
+  cctx.globalAlpha = 1;
+
+  // 3) giunto incassato sul perimetro + smusso: fa leggere ogni piastra
+  // come un pannello a se stante imbullonato al successivo, non come una
+  // superficie continua.
+  const edgeW = SIZE * 0.05;
+  const seam = base.clone().offsetHSL(0, 0, -0.45);
+  cctx.strokeStyle = toCss(seam);
+  cctx.globalAlpha = 0.6;
+  cctx.lineWidth = edgeW * 0.5;
+  cctx.strokeRect(edgeW*0.25, edgeW*0.25, SIZE-edgeW*0.5, SIZE-edgeW*0.5);
+  cctx.globalAlpha = 1;
+  hctx.strokeStyle = "#404040";
+  hctx.lineWidth = edgeW * 0.5;
+  hctx.strokeRect(edgeW*0.25, edgeW*0.25, SIZE-edgeW*0.5, SIZE-edgeW*0.5);
+
+  // 4) rivetti agli angoli: quattro dischetti metallici rialzati, il
+  // dettaglio che piu' di ogni altro comunica "piastra imbullonata".
+  const rivetR = SIZE * 0.028;
+  const rivetPos = [
+    [edgeW, edgeW], [SIZE-edgeW, edgeW],
+    [edgeW, SIZE-edgeW], [SIZE-edgeW, SIZE-edgeW],
+  ];
+  rivetPos.forEach(([rx, ry]) => {
+    const rg = cctx.createRadialGradient(rx-rivetR*0.3, ry-rivetR*0.3, 0, rx, ry, rivetR);
+    rg.addColorStop(0, toCss(base.clone().offsetHSL(0,0,0.25)));
+    rg.addColorStop(1, toCss(base.clone().offsetHSL(0,0,-0.15)));
+    cctx.fillStyle = rg;
+    cctx.beginPath(); cctx.arc(rx, ry, rivetR, 0, Math.PI*2); cctx.fill();
+    const hg = hctx.createRadialGradient(rx, ry, 0, rx, ry, rivetR);
+    hg.addColorStop(0, "#e8e8e8");
+    hg.addColorStop(1, "#808080");
+    hctx.fillStyle = hg;
+    hctx.beginPath(); hctx.arc(rx, ry, rivetR, 0, Math.PI*2); hctx.fill();
+  });
+
+  // height map -> normal map (stesso metodo sobel di makeStoneTextures)
+  const hData = hctx.getImageData(0, 0, SIZE, SIZE).data;
+  const nCanvas = document.createElement("canvas");
+  nCanvas.width = nCanvas.height = SIZE;
+  const nctx = nCanvas.getContext("2d");
+  const nImg = nctx.createImageData(SIZE, SIZE);
+  const heightAt = (x,y) => {
+    const cx = Math.max(0, Math.min(SIZE-1, x)), cy = Math.max(0, Math.min(SIZE-1, y));
+    return hData[(cy*SIZE+cx)*4] / 255;
+  };
+  const strength = 1.8;
+  for (let y = 0; y < SIZE; y++){
+    for (let x = 0; x < SIZE; x++){
+      const hl = heightAt(x-1,y), hr = heightAt(x+1,y);
+      const hu = heightAt(x,y-1), hd = heightAt(x,y+1);
+      let nx = (hl - hr) * strength;
+      let ny = (hu - hd) * strength;
+      let nz = 1.0;
+      const len = Math.sqrt(nx*nx + ny*ny + nz*nz);
+      nx/=len; ny/=len; nz/=len;
+      const idx = (y*SIZE+x)*4;
+      nImg.data[idx]   = Math.round((nx*0.5+0.5)*255);
+      nImg.data[idx+1] = Math.round((ny*0.5+0.5)*255);
+      nImg.data[idx+2] = Math.round((nz*0.5+0.5)*255);
+      nImg.data[idx+3] = 255;
+    }
+  }
+  nctx.putImageData(nImg, 0, 0);
+
+  const colorTex = new THREE.CanvasTexture(colorCanvas);
+  colorTex.colorSpace = THREE.SRGBColorSpace;
+  const normalTex = new THREE.CanvasTexture(nCanvas);
+
+  return { map: colorTex, normalMap: normalTex };
+}
+
 /* ---- cielo stellato: campo di puntini bianchi disposti casualmente su
    una grande sfera che avvolge la scena, usando THREE.Points (un'unica
    draw call, economico) invece di tante piccole mesh separate. La sfera
@@ -2659,10 +2847,20 @@ function initThree(){
   renderer.setSize(window.innerWidth, window.innerHeight);
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   document.body.appendChild(renderer.domElement);
-  scene.add(new THREE.AmbientLight(0xffffff, 1.1));
-  torch = new THREE.PointLight(0xffffff, 2.2, 16, 1.6);
-  scene.add(torch);
-  scene.add(new THREE.HemisphereLight(0xbfc8ff, 0x3a2a20, 0.9));
+  // Illuminazione neutra e uniforme su tutta la mappa: niente torcia
+  // attaccata al giocatore (era un PointLight colorato e troppo intenso,
+  // che schiacciava di luce/tinta forte solo cio' che aveva vicino e
+  // lasciava il resto quasi al buio, distorcendo i colori reali di muri
+  // e personaggi) e niente HemisphereLight con toni cielo/terra (anche
+  // quella tingeva leggermente tutto di blu dall'alto e marrone dal
+  // basso). Solo luce bianca pura, ambientale + una direzionale bianca
+  // debole per dare un minimo di rilievo alle forme senza alterare i
+  // colori: cosi' ogni oggetto mantiene il suo colore reale ovunque ci
+  // si trovi sulla mappa.
+  scene.add(new THREE.AmbientLight(0xffffff, 2.4));
+  const sun = new THREE.DirectionalLight(0xffffff, 0.6);
+  sun.position.set(0.3, 1, 0.2);
+  scene.add(sun);
   window.addEventListener("resize", () => {
     camera.aspect = window.innerWidth/window.innerHeight;
     camera.updateProjectionMatrix();
@@ -2687,7 +2885,6 @@ function applyMapData(msg){
   const pelletColor= hexToInt(mazeTheme.pellet|| "#ffb35c");
   scene.background = new THREE.Color(bgColor);
   scene.fog = new THREE.Fog(bgColor, 10, 40);
-  torch.color = new THREE.Color(hexToInt(mazeTheme.glow || "#ff5a4d"));
 
   // Cielo stellato: un campo di puntini bianchi sparsi su una grande
   // sfera che avvolge tutta la scena, per dare l'idea di essere nello
@@ -2723,8 +2920,10 @@ function applyMapData(msg){
   const floorColorA = bgColor;
   const floorColorB = hexToInt(lightenHex(mazeTheme.bg || "#0d0202", 0.05));
   const floorGeo = new THREE.PlaneGeometry(CELL, CELL);
-  const floorMatA = new THREE.MeshStandardMaterial({ color:floorColorA, roughness:1 });
-  const floorMatB = new THREE.MeshStandardMaterial({ color:floorColorB, roughness:1 });
+  const floorTexA = makeMetalFloorTexture(floorColorA, (mazeTheme.__mapName||"default")+":floorA");
+  const floorTexB = makeMetalFloorTexture(floorColorB, (mazeTheme.__mapName||"default")+":floorB");
+  const floorMatA = new THREE.MeshStandardMaterial({ map:floorTexA.map, normalMap:floorTexA.normalMap, normalScale:new THREE.Vector2(0.8,0.8), color:floorColorA, roughness:0.55, metalness:0.75 });
+  const floorMatB = new THREE.MeshStandardMaterial({ map:floorTexB.map, normalMap:floorTexB.normalMap, normalScale:new THREE.Vector2(0.8,0.8), color:floorColorB, roughness:0.55, metalness:0.75 });
   let countA = 0, countB = 0;
   for (let y=0;y<mazeH;y++){
     for (let x=0;x<mazeW;x++){
@@ -2752,10 +2951,15 @@ function applyMapData(msg){
   if (floorInstB) floorMeshGroup.add(floorInstB);
   // base piena sotto ai muri (evita buchi/fondo nero nelle celle non
   // percorribili quando la telecamera guarda tra i cubetti dei muri)
+  const floorBaseTex = makeMetalFloorTexture(floorColorA, (mazeTheme.__mapName||"default")+":floorBase");
   const floorBase = new THREE.Mesh(
     new THREE.PlaneGeometry(mazeW*CELL, mazeH*CELL),
-    new THREE.MeshStandardMaterial({ color:floorColorA, roughness:1 })
+    new THREE.MeshStandardMaterial({ map:floorBaseTex.map, normalMap:floorBaseTex.normalMap, normalScale:new THREE.Vector2(0.8,0.8), color:floorColorA, roughness:0.55, metalness:0.75 })
   );
+  floorBase.material.map.wrapS = floorBase.material.map.wrapT = THREE.RepeatWrapping;
+  floorBase.material.normalMap.wrapS = floorBase.material.normalMap.wrapT = THREE.RepeatWrapping;
+  floorBase.material.map.repeat.set(mazeW, mazeH);
+  floorBase.material.normalMap.repeat.set(mazeW, mazeH);
   floorBase.rotation.x = -Math.PI/2;
   floorBase.position.set(mazeW*CELL/2, -0.01, mazeH*CELL/2);
   floorMeshGroup.add(floorBase);
@@ -2791,20 +2995,21 @@ function applyMapData(msg){
   const writeIdx = new Array(nVariants).fill(0);
   for (let v=0; v<nVariants; v++){
     const variant = themeWallVariants[v];
-    // texture di pietra procedurale, seminata sul nome mappa + indice
-    // variante: stessa mappa => stessi blocchi di pietra ad ogni
-    // partita, ma ogni variante di colore ha la propria "cava" di pietra.
-    const stoneTex = makeStoneTextures(hexToInt(variant.wall), (mazeTheme.__mapName||"default")+":stone:"+v);
-    stoneTex.map.repeat.set(1, 1);
-    stoneTex.normalMap.repeat.set(1, 1);
+    // Stesso linguaggio visivo del pavimento (arena industriale): pannelli
+    // metallici a rivetti invece di blocchi di pietra, seminati su nome
+    // mappa + indice variante cosi' la stessa mappa produce sempre le
+    // stesse piastre, ma ogni variante di colore ha la propria "lastra".
+    const metalTex = makeMetalFloorTexture(hexToInt(variant.wall), (mazeTheme.__mapName||"default")+":wallmetal:"+v);
+    metalTex.map.repeat.set(1, 1);
+    metalTex.normalMap.repeat.set(1, 1);
     const mat = new THREE.MeshStandardMaterial({
-      map: stoneTex.map,
-      normalMap: stoneTex.normalMap,
-      normalScale: new THREE.Vector2(1.1, 1.1),
+      map: metalTex.map,
+      normalMap: metalTex.normalMap,
+      normalScale: new THREE.Vector2(0.9, 0.9),
       emissive: hexToInt(variant.edge),
       emissiveIntensity: 0.08,
-      roughness: 0.95,
-      metalness: 0.02,
+      roughness: 0.5,
+      metalness: 0.7,
     });
     const inst = countPerVariant[v] > 0
       ? new THREE.InstancedMesh(cubeGeo, mat, countPerVariant[v])
@@ -4666,6 +4871,9 @@ function exitGame(){
    ping lo rende necessario).
    ============================================================ */
 let myRenderX = 0, myRenderZ = 0, myInited = false;
+let myTargetX = 0, myTargetZ = 0; // ultima posizione confermata dal server: myRenderX/Z la insegue
+                                   // con un lerp nel render loop, invece di scattarci sopra di colpo
+                                   // (stesso schema gia' usato per remotePlayers, vedi animate())
 let myState = {}; // ultimo stato noto del giocatore locale (aggiornato in onState): serve al tasto "1"
                    // per decidere QUALE messaggio inviare nella catena mine -> mortaio -> ... (vedi sotto)
 
@@ -4787,8 +4995,8 @@ function onState(msg){
     playerColorHex[p.id] = hexToInt(COLOR_HEX[(p.colors||[])[0]] || "#5ab8ff");
 
     if (p.id === myId){
-      if (!myInited){ myRenderX = wx; myRenderZ = wz; myInited = true; }
-      else { myRenderX = wx; myRenderZ = wz; } // target aggiornato, il lerp e' nel render loop
+      myTargetX = wx; myTargetZ = wz;
+      if (!myInited){ myRenderX = wx; myRenderZ = wz; myInited = true; } // solo al primo stato: niente scivolata dall'origine
       myState = p; // usato dal tasto "1" per decidere quale messaggio inviare (vedi mineChainNextMsg)
       document.getElementById("hudScore").textContent = "punti: " + (p.points||0);
       document.getElementById("hudLives").textContent = "vite: " + (p.lives||0);
@@ -5727,7 +5935,22 @@ function onGameEvent(msg){
     }
     case "laser_end": {
       const lz = laserMeshes[msg.id];
-      if (lz){ scene.remove(lz.mesh); delete laserMeshes[msg.id]; }
+      if (lz){
+        if (msg.reason === "wall"){
+          // Normale dell'impatto = verso opposto alla direzione di volo
+          // reale corrente (target - posizione attuale, sempre aggiornata
+          // dal lerp): affidabile anche dopo un rimbalzo/riflessione,
+          // a differenza di lz.dir che resta quello di spawn.
+          let dx = lz.targetX - lz.x, dz = lz.targetZ - lz.z;
+          const dlen = Math.hypot(dx, dz);
+          if (dlen > 1e-4){ dx/=dlen; dz/=dlen; } else { dx = 0; dz = 1; }
+          const wx = msg.x*CELL, wz = msg.y*CELL;
+          const wy = (typeof msg.z === "number" ? msg.z*CELL + (lz.yOffset||0) : lz.y);
+          spawnLaserWallImpact(wx, wy, wz, -dx, 0, -dz);
+        }
+        scene.remove(lz.mesh);
+        delete laserMeshes[msg.id];
+      }
       break;
     }
     case "missile_fire": {
@@ -6786,6 +7009,20 @@ function animate(){
     ex.mesh.material.opacity = Math.max(0, 0.9 * (1 - t));
   }
 
+  // segni di bruciatura dei laser sul muro: restano pieni per la maggior
+  // parte della vita, poi sfumano dolcemente negli ultimi
+  // LASER_SCORCH_FADE_MS millisecondi prima di sparire per davvero.
+  for (let i = laserImpacts.length - 1; i >= 0; i--){
+    const li = laserImpacts[i];
+    const age = now3d - li.start;
+    if (age >= LASER_SCORCH_LIFE_MS){ scene.remove(li.mesh); li.mesh.geometry.dispose(); li.mesh.material.dispose(); laserImpacts.splice(i, 1); continue; }
+    const fadeStart = LASER_SCORCH_LIFE_MS - LASER_SCORCH_FADE_MS;
+    if (age > fadeStart){
+      const ft = (age - fadeStart) / LASER_SCORCH_FADE_MS;
+      li.mesh.material.opacity = 0.85 * (1 - ft);
+    }
+  }
+
   // Bonus 2800 punti: arbusto spinoso. Ogni casella sboccia gradualmente
   // (scala 0 -> 1, ease-out) invece di comparire di colpo, e ondeggia
   // piano come mossa dal vento - stessa idea della 2D (bushCellBirth +
@@ -7095,6 +7332,15 @@ function animate(){
   // muovendo (WASD), a meno che il mouse non l'abbia appena presa in mano.
   steerCameraTowardsMovement(dt);
 
+  // stessa interpolazione morbida gia' usata per remotePlayers (vedi sopra
+  // LERP = Math.min(1, dt*10)): prima la camera scattava di colpo sull'ultima
+  // posizione ricevuta dal server ad ogni "state", ora la insegue frame per
+  // frame, cosi' il movimento del giocatore locale e' fluido quanto quello
+  // degli avversari anche quando lo stato arriva ogni N tick e non ogni frame.
+  const MY_LERP = Math.min(1, dt*10);
+  myRenderX += (myTargetX - myRenderX) * MY_LERP;
+  myRenderZ += (myTargetZ - myRenderZ) * MY_LERP;
+
   camera.rotation.order = "YXZ";
   camera.rotation.y = yaw;
   camera.rotation.x = pitch;
@@ -7103,7 +7349,6 @@ function animate(){
   // le stelle restano sempre alla stessa "distanza infinita" qualunque
   // punto della mappa si stia visitando, come un vero cielo notturno.
   if (starsGroup) starsGroup.position.set(myRenderX, 0, myRenderZ);
-  torch.position.set(myRenderX, 2, myRenderZ);
 
   // minimappa: ridisegnata anche qui (non solo ad ogni "state" di rete)
   // cosi' la freccia del giocatore ruota morbidamente insieme allo sguardo
