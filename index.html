@@ -2881,11 +2881,11 @@ function initThree(){
     // circa a meta' altezza (riga h/2) - e' li' che i muri riflettono di
     // piu' guardandoli di fronte, quindi deve restare chiaro.
     const grad = ctx.createLinearGradient(0, 0, 0, h);
-    grad.addColorStop(0.00, "#f0f4fb"); // zenit: quasi bianco
-    grad.addColorStop(0.30, "#d3dbe8"); // cielo alto
-    grad.addColorStop(0.50, "#c4cddc"); // orizzonte: schiarito ulteriormente (e' la fascia che i muri riflettono guardandoli di fronte)
-    grad.addColorStop(0.68, "#7a8494"); // appena sotto l'orizzonte
-    grad.addColorStop(1.00, "#23272e"); // nadir: scuro ma non nero puro
+    grad.addColorStop(0.00, "#dbe2ee"); // zenit: chiaro ma non accecante
+    grad.addColorStop(0.30, "#aab4c8"); // cielo alto
+    grad.addColorStop(0.50, "#8b96ac"); // orizzonte: medio - i glint sotto danno la vivacita', non serve che la base sia quasi bianca (altrimenti col Fresnel il pavimento visto radente/in lontananza "sbianca")
+    grad.addColorStop(0.68, "#565f70"); // appena sotto l'orizzonte
+    grad.addColorStop(1.00, "#1c1f24"); // nadir: scuro ma non nero puro
     ctx.fillStyle = grad;
     ctx.fillRect(0, 0, w, h);
     // "luci a soffitto" sparse su TUTTO il giro d'orizzonte (non solo 2
@@ -3007,8 +3007,8 @@ function applyMapData(msg){
   // un "color" scuro sopra la moltiplicherebbe rendendo il pavimento
   // quasi nero/invisibile (bug: il pavimento spariva contro lo sfondo,
   // entrambi vicini a floorColorA che di default e' molto scuro).
-  const floorMatA = new THREE.MeshStandardMaterial({ map:floorTexA.map, normalMap:floorTexA.normalMap, normalScale:new THREE.Vector2(0.15,0.15), roughness:0.02, metalness:1.0, envMapIntensity:1.5 });
-  const floorMatB = new THREE.MeshStandardMaterial({ map:floorTexB.map, normalMap:floorTexB.normalMap, normalScale:new THREE.Vector2(0.15,0.15), roughness:0.02, metalness:1.0, envMapIntensity:1.5 });
+  const floorMatA = new THREE.MeshStandardMaterial({ map:floorTexA.map, normalMap:floorTexA.normalMap, normalScale:new THREE.Vector2(0.15,0.15), roughness:0.02, metalness:1.0, envMapIntensity:1.1 });
+  const floorMatB = new THREE.MeshStandardMaterial({ map:floorTexB.map, normalMap:floorTexB.normalMap, normalScale:new THREE.Vector2(0.15,0.15), roughness:0.02, metalness:1.0, envMapIntensity:1.1 });
   let countA = 0, countB = 0;
   for (let y=0;y<mazeH;y++){
     for (let x=0;x<mazeW;x++){
@@ -3039,7 +3039,7 @@ function applyMapData(msg){
   const floorBaseTex = makeMetalFloorTexture(floorColorA, (mazeTheme.__mapName||"default")+":floorBase");
   const floorBase = new THREE.Mesh(
     new THREE.PlaneGeometry(mazeW*CELL, mazeH*CELL),
-    new THREE.MeshStandardMaterial({ map:floorBaseTex.map, normalMap:floorBaseTex.normalMap, normalScale:new THREE.Vector2(0.15,0.15), roughness:0.02, metalness:1.0, envMapIntensity:1.5 })
+    new THREE.MeshStandardMaterial({ map:floorBaseTex.map, normalMap:floorBaseTex.normalMap, normalScale:new THREE.Vector2(0.15,0.15), roughness:0.02, metalness:1.0, envMapIntensity:1.1 })
   );
   floorBase.material.map.wrapS = floorBase.material.map.wrapT = THREE.RepeatWrapping;
   floorBase.material.normalMap.wrapS = floorBase.material.normalMap.wrapT = THREE.RepeatWrapping;
@@ -3100,7 +3100,7 @@ function applyMapData(msg){
       // una direzionale si rifletterebbe verso la camera.
       roughness: 0.02,
       metalness: 1.0,
-      envMapIntensity: 2.2,
+      envMapIntensity: 3.0,
     });
     const inst = countPerVariant[v] > 0
       ? new THREE.InstancedMesh(cubeGeo, mat, countPerVariant[v])
