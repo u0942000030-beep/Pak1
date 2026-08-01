@@ -2867,15 +2867,6 @@ function initThree(){
   const sun = new THREE.DirectionalLight(0xffffff, 0.35);
   sun.position.set(0.2, 1, 0.15);
   scene.add(sun);
-  // Seconda direzionale, quasi RADENTE (angolo basso, mossa in orizzontale
-  // invece che dall'alto): il "sole" sopra crea il guizzo speculare visto
-  // sul pavimento, ma per pura geometria della riflessione una luce quasi
-  // verticale non puo' quasi mai rimbalzare verso la camera su una faccia
-  // VERTICALE (i muri) - da li' la differenza di lucentezza percepita.
-  // Questa seconda luce, radente, fa lo stesso lavoro ma sui muri.
-  const wallGlint = new THREE.DirectionalLight(0xffffff, 0.4);
-  wallGlint.position.set(1, 0.15, 0.35);
-  scene.add(wallGlint);
 
   // ---- Environment map per i riflessi lucidi di muri/pavimento ----
   // Approccio precedente (scena 3D + CubeCamera) abbandonato: troppo
@@ -2906,11 +2897,18 @@ function initThree(){
     ctx.fillStyle = "#06070a";
     ctx.fillRect(0, 0, w, h);
     // leggero rialzo di tono verso lo zenit (soffitto vero e proprio,
-    // appena percepibile) e verso il nadir un filo piu' scuro
+    // appena percepibile) e verso il nadir un filo piu' scuro.
+    // La fascia d'ORIZZONTE (0.45-0.55) e' portata quasi alla luminosita'
+    // dello zenit invece di essere la piu' scura: e' la zona da cui
+    // pescano la luce ambientale le facce VERTICALI (i muri), mentre il
+    // pavimento (normale verso l'alto) pesca soprattutto dallo zenit -
+    // se l'orizzonte resta il punto piu' buio della texture, i muri
+    // sembreranno sempre piu' opachi del pavimento indipendentemente da
+    // quanto si alzino roughness/metalness/envMapIntensity sul materiale.
     const grad = ctx.createLinearGradient(0, 0, 0, h);
     grad.addColorStop(0.00, "#1c2130");
-    grad.addColorStop(0.45, "#0d0f16");
-    grad.addColorStop(0.55, "#0a0b10");
+    grad.addColorStop(0.45, "#1a1f2c");
+    grad.addColorStop(0.55, "#171b26");
     grad.addColorStop(1.00, "#020203");
     ctx.fillStyle = grad;
     ctx.fillRect(0, 0, w, h);
@@ -2932,6 +2930,12 @@ function initThree(){
       { y: 0.16, n: 10, sw: 26, sh: 5,  color: "#eef3ff", glow: 12 },
       { y: 0.27, n: 12, sw: 20, sh: 4,  color: "#e6ecff", glow: 10 },
       { y: 0.38, n: 14, sw: 15, sh: 3,  color: "#dbe4ff", glow: 8  },
+      // Riga aggiuntiva proprio a livello ORIZZONTE (y=0.50): tutte le
+      // altre righe stanno nella meta' "soffitto" e i muri, guardando di
+      // lato, non ne intercettano quasi nessuna - qui invece incrociano
+      // sempre qualche guizzo netto, come gia' succede al pavimento con
+      // le righe sopra.
+      { y: 0.50, n: 16, sw: 12, sh: 3,  color: "#d6e0ff", glow: 9  },
     ];
     rows.forEach(row => {
       for (let i = 0; i < row.n; i++){
@@ -3149,30 +3153,15 @@ function applyMapData(msg){
       map: metalTex.map,
       normalMap: metalTex.normalMap,
       normalScale: new THREE.Vector2(0.15, 0.15),
-      emissive: hexToInt(variant.edge),
-      emissiveIntensity: 0.08,
-      // Lucido percepibile da qualsiasi angolo: il riflesso viene dalla
-      // env map (scene.environment, vedi initThree), non da una luce
-      // diretta - per questo si vede anche sulle facce VERTICALI dei
-      // muri guardandole di fronte, non solo dall'angolo esatto in cui
-      // una direzionale si rifletterebbe verso la camera.
-      // metalness allineato a quello del pavimento (0.55 invece di 1.0):
-      // a metalness pieno il colore contava solo come tinta dei riflessi,
-      // qui invece torna a esserci anche una componente diffusa colorata,
-      // cosi' i muri mostrano il colore del tema con la stessa evidenza
-      // del pavimento. roughness resta bassa: la lucentezza non cambia.
-      // envMapIntensity piu' alto di quello del pavimento (3.6 contro 2.2):
-      // la texture usata per i riflessi (vedi makeEnvReflectionTexture) e'
-      // disegnata piu' chiara verso lo zenit e piu' scura verso l'orizzonte
-      // (imita un soffitto illuminato). Il pavimento, con la normale
-      // rivolta in su, pesca luce dalla zona chiara; le facce VERTICALI dei
-      // muri invece pescano soprattutto dalla fascia d'orizzonte, la piu'
-      // scura - a parita' di metalness/roughness risultavano quindi sempre
-      // piu' opache. Alzando l'intensita' solo qui si compensa la
-      // differenza senza toccare l'aspetto del pavimento o del cielo.
-      roughness: 0.06,
+      // Materiale allineato esattamente a quello del pavimento (stessa
+      // roughness, stesso envMapIntensity, NESSUN emissive): l'emissive
+      // aggiungeva una tinta piatta costante che appiattiva il riflesso,
+      // dando quell'aria di "ferro opaco" invece del "vetro lucido" del
+      // pavimento. Tolto, i muri si comportano otticamente come il
+      // pavimento e mostrano lo stesso identico grado di lucentezza.
+      roughness: 0.05,
       metalness: 0.55,
-      envMapIntensity: 3.6,
+      envMapIntensity: 2.2,
     });
     const inst = countPerVariant[v] > 0
       ? new THREE.InstancedMesh(cubeGeo, mat, countPerVariant[v])
