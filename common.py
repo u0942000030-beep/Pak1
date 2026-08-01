@@ -175,6 +175,20 @@ PET_FEET_Z = 0.0                # celle: quota minima del pet (a livello pavimen
 # un ingombro maggiore del pet, piccolo e basso a terra.
 PLAYER_HITBOX_RADIUS = 0.35   # celle: raggio della hitbox del player (giocatore)
 PET_HITBOX_RADIUS = 0.28      # celle: raggio della hitbox del pet, piu' piccolo del player
+# La sonda (bonus 3600 punti) si muove per celle intere sulla griglia
+# autoritativa (g["x"]/g["y"] sono interi, vedi try_place_golem/
+# golem_public in main.py: solo la posizione INTERPOLATA per il client e'
+# continua), quindi il suo "centro" hitbox coincide sempre col centro
+# esatto della cella che occupa. PRIMA laser e missile la colpivano con un
+# confronto "stessa cella intera" (g["x"]==cx and g["y"]==cy), diverso e
+# piu' permissivo della vera hitbox euclidea gia' usata per player/pet:
+# equivaleva a un raggio effettivo fino a ~0.7 celle sulla diagonale
+# (mezza diagonale della cella) invece di un cerchio uniforme in ogni
+# direzione. Ora usa hitbox_hit come tutto il resto, con un raggio
+# leggermente piu' grande di quello del player: la sonda e' un corpo
+# solido e voluminoso (vedi makeSondaMesh nel client), non deve sfuggire
+# ai colpi piu' facilmente di un giocatore.
+GOLEM_HITBOX_RADIUS = 0.40    # celle: raggio della hitbox della sonda (ex golem spaccapietra)
 
 MINES_COUNT = 1                # numero di mine disponibili una volta sbloccato il bonus 200 punti (ridotto da 2 a 1)
 MINE_DOUBLE_TAP_MS = 350       # finestra (ms) del doppio tocco freccia destra/D che sgancia una mina (uso lato client)
@@ -334,8 +348,14 @@ SUPERBOMB_RADIUS_CELLS = 8          # raggio dell'esplosione concentrica (casell
 BALLOON_THRESHOLD = 1600
 BALLOON_SPEED = 1.1                       # celle al secondo: vaga lentamente su tutta la mappa (dimezzata: il doppio piu' lenta)
 BALLOON_BOMB_INTERVAL_SECONDS = 3.0       # cadenza di sgancio bombe
-BALLOON_BOMB_RADIUS_CELLS = 4             # raggio dell'esplosione istantanea (caselle, distanza Manhattan)
+BALLOON_BOMB_RADIUS_CELLS = 3             # raggio dell'esplosione istantanea (caselle, distanza Manhattan)
 BALLOON_RETARGET_EPSILON = 0.15           # sotto questa distanza dalla meta' ne sceglie subito una nuova a caso
+# Ogni mongolfiera ha ora una vera barra vita, come il golem spaccapietra
+# (bonus 3600 punti): non basta piu' un solo colpo/reazione a catena per
+# abbatterla, servono BALLOON_HP colpi in totale (un colpo a evento di
+# danno: bombolone, reazione a catena di un'altra mongolfiera, laser,
+# missile... vedi damage_balloon in main.py).
+BALLOON_HP = 150                          # punti vita totali di ciascuna mongolfiera
 
 # ---- bonus 1800 punti: blob gelatinoso (tasto "1", DOPO la mongolfiera) ----
 # Il tasto "1" e' lo STESSO usato per mortaio (1200), bombolone (1400) e
@@ -349,11 +369,15 @@ BALLOON_RETARGET_EPSILON = 0.15           # sotto questa distanza dalla meta' ne
 # mina: resta li' pronto a mangiare anche il prossimo che ci passa sopra.
 # E' permanente: resta sulla mappa per tutto il resto del round, anche se il
 # proprietario muore o si disconnette (come mortaio/torretta/mongolfiera).
-# L'UNICO modo per rimuoverlo dalla strada e' sparargli: un colpo laser o un
-# missile guidato che lo colpiscono lo distruggono all'istante (vedi
-# move_lasers/move_missiles in main.py); niente altro lo scalfisce (non le
-# esplosioni di bombolone/mongolfiera, non la corazza laser).
+# E' immune al fuoco amico, al laser e al missile guidato: solo bombolone,
+# Tesla, terremoto, attacco aereo e fungo atomico avversari gli infliggono
+# danno (vedi damage_blob in main.py).
 BLOB_THRESHOLD = 1800
+# Il blob ha una vera barra vita, come il golem spaccapietra e le
+# mongolfiere: non basta piu' un solo colpo di bombolone/Tesla/terremoto
+# per distruggerlo, servono BLOB_HP colpi in totale (vedi damage_blob in
+# main.py).
+BLOB_HP = 100                             # punti vita totali del blob
 
 # ---- bonus 2000 punti: blob VIVO/vagante (tasto "1", DOPO il blob fermo) ----
 # Il tasto "1" e' lo STESSO usato per mortaio (1200), bombolone (1400),
@@ -572,7 +596,7 @@ POTION_SLOW_MULT = 0.5           # rallentamento dei giocatori dentro il cerchio
 # vita al secondo finche' ci resta dentro (GOLEM_POISON_TICK_SECONDS), e
 # lo stesso vale per il terremoto della pozione.
 GOLEM_THRESHOLD = 3600
-GOLEM_HP = 15                    # colpi totali necessari per abbatterlo
+GOLEM_HP = 50                    # colpi totali necessari per abbatterlo
 GOLEM_WAKE_SECONDS = 30.0        # dorme cosi' a lungo dopo il piazzamento
 GOLEM_SPEED = 0.5                # celle al secondo (lento, e' un macigno)
 GOLEM_EAT_RANGE_CELLS = 1        # distanza (a scacchi/Chebyshev) a cui divora i gadget

@@ -53,7 +53,7 @@ from common import (
     SPAWN_PROTECT_SECONDS, MIN_SPAWN_DISTANCE, LASER_INTERVAL_SECONDS, LASER_FIRST_DELAY_SECONDS,
     LASER_PROJECTILE_SPEED, LASER_BOUNCE_DISTANCE, MINES_COUNT, SUPERBOMB_COUNT,
     LASER_EYE_HEIGHT, LASER_MAX_PITCH, WALL_TOP_Z, PLAYER_HEAD_Z, PLAYER_FEET_Z, PET_HEAD_Z, PET_FEET_Z,
-    PLAYER_HITBOX_RADIUS, PET_HITBOX_RADIUS,
+    PLAYER_HITBOX_RADIUS, PET_HITBOX_RADIUS, GOLEM_HITBOX_RADIUS,
     PORTAL_COOLDOWN_SECONDS, PORTAL_ON_SECONDS, PORTAL_OFF_SECONDS,
     MISSILE_SPEED_MULT, MISSILES_COUNT, MISSILE_RETARGET_SECONDS, MISSILE_LOCK_DISTANCE,
     TRAP_THRESHOLD, TRAP_DURATION_SECONDS, TRAP_RANGE, TRAP_MAX_USES,
@@ -70,8 +70,8 @@ from common import (
     POISON_DURATION_SECONDS, POISON_TICK_SECONDS, POISON_RADIUS_CELLS,
     SUPERBOMB_THRESHOLD, SUPERBOMB_FUSE_SECONDS, SUPERBOMB_RADIUS_CELLS,
     BALLOON_THRESHOLD, BALLOON_SPEED, BALLOON_BOMB_INTERVAL_SECONDS,
-    BALLOON_BOMB_RADIUS_CELLS, BALLOON_RETARGET_EPSILON,
-    BLOB_THRESHOLD,
+    BALLOON_BOMB_RADIUS_CELLS, BALLOON_RETARGET_EPSILON, BALLOON_HP,
+    BLOB_THRESHOLD, BLOB_HP,
     BLOB_ALIVE_THRESHOLD, BLOB_ALIVE_SPEED_MULT,
     BLOB_POISON_DURATION_SECONDS, BLOB_EAT_RANGE_CELLS,
     SPIKE_WALL_THRESHOLD, SPIKE_WALL_HIT_RANGE,
@@ -2460,11 +2460,26 @@ class Room:
                 lz["x"], lz["y"], lz["z"] = nx, ny, nz
                 entered_new_cell = (ncx, ncy) != last_cell
                 last_cell = (ncx, ncy)
-                if not entered_new_cell:
-                    # Ancora nella stessa cella di prima: nessuna nuova
-                    # collisione da controllare in questo micro-passo.
-                    continue
-                if lz["bounce_left"] is not None:
+                # PRIMA il controllo hitbox (player/pet/sonda, tutte le
+                # righe qui sotto) scattava SOLO in questo "if
+                # entered_new_cell", cioe' una volta sola per cella intera
+                # attraversata: con una vera hitbox euclidea (raggio
+                # PLAYER_HITBOX_RADIUS/PET_HITBOX_RADIUS/GOLEM_HITBOX_RADIUS,
+                # non piu' "stessa cella") questo poteva far MANCARE un
+                # bersaglio vicino al bordo tra due celle, perche' il
+                # proiettile continuava ad avanzare micro-passo dopo
+                # micro-passo restando nella "stessa cella intera" (nessun
+                # nuovo controllo) pur entrando/uscendo davvero dal cerchio
+                # della hitbox. Ora il controllo hitbox gira ad OGNI
+                # micro-passo (fino a 0.4 celle l'uno, vedi n_steps sopra),
+                # quindi la precisione del colpo dipende solo dalla vera
+                # distanza euclidea istante per istante, mai dal
+                # posizionamento dei confini della griglia. Il consumo del
+                # raggio residuo dopo un rimbalzo (bounce_left, sotto)
+                # resta invece legato al cambio di cella intera: e' una
+                # misura di "quante celle ha percorso dopo l'urto", non una
+                # hitbox, e deve restare granulare a cella come da sempre.
+                if entered_new_cell and lz["bounce_left"] is not None:
                     # Dopo il primo rimbalzo, il raggio percorribile residuo
                     # si consuma una cella alla volta, come nella versione
                     # originale (LASER_BOUNCE_DISTANCE celle dopo l'urto).
@@ -2539,12 +2554,18 @@ class Room:
                         self.destroy_pet(pet, "laser", lz["owner"])
                     destroyed = True
                     break
-                # Bonus 3600 punti: il golem spaccapietra incassa il colpo
-                # laser NEMICO (una vita) e lo ferma col suo corpo di
-                # pietra, come un muro.
+                # Bonus 3600 punti: la sonda (ex golem spaccapietra) incassa
+                # il colpo laser NEMICO (una vita) e lo ferma col suo corpo,
+                # come un muro. Vera hitbox euclidea (GOLEM_HITBOX_RADIUS),
+                # non piu' un confronto "stessa cella intera": la sonda si
+                # muove su celle intere lato server (g["x"]/g["y"]), ma un
+                # colpo che sfiora il bordo della sua cella deve comunque
+                # poterla mancare o colpire in base alla distanza reale,
+                # esattamente come gia' avviene per player e pet.
                 golem_victims = [
                     g for g in self.golems
-                    if self.is_enemy_ids(g["owner"], lz["owner"]) and g["x"] == ncx and g["y"] == ncy
+                    if self.is_enemy_ids(g["owner"], lz["owner"])
+                    and hitbox_hit(lz["x"], lz["y"], g["x"], g["y"], GOLEM_HITBOX_RADIUS)
                 ]
                 if golem_victims:
                     for g in golem_victims:
@@ -3080,9 +3101,18 @@ class Room:
                     # Bonus 3600 punti: il golem spaccapietra incassa
                     # anche il missile guidato NEMICO (una vita) e lo fa
                     # detonare sul suo corpo di pietra.
+                    # Bonus 3600 punti: la sonda (ex golem spaccapietra)
+                    # incassa anche il missile guidato NEMICO (una vita) e lo
+                    # fa detonare sul suo corpo. Vera hitbox euclidea
+                    # (GOLEM_HITBOX_RADIUS), stessa correzione applicata al
+                    # laser qui sopra: prima un confronto "stessa cella
+                    # intera" la rendeva colpibile fino a ~0.7 celle sulla
+                    # diagonale, un raggio non uniforme e piu' permissivo di
+                    # quello reale del suo corpo.
                     golem_victims = [
                         g for g in self.golems
-                        if self.is_enemy_ids(g["owner"], mz["owner"]) and g["x"] == nx and g["y"] == ny
+                        if self.is_enemy_ids(g["owner"], mz["owner"])
+                        and hitbox_hit(nx, ny, g["x"], g["y"], GOLEM_HITBOX_RADIUS)
                     ]
                     if golem_victims:
                         for g in golem_victims:
@@ -3585,12 +3615,13 @@ class Room:
         # Ogni mongolfiera avversaria in volo nel raggio non viene abbattuta
         # in silenzio: sgancia la propria bomba (con la propria onda
         # d'urto indipendente) esattamente come se il suo timer fosse
-        # scaduto in quell'istante, poi esce di scena.
+        # scaduto in quell'istante, e incassa anche un colpo sulla propria
+        # barra vita (BALLOON_HP): solo se scende a 0 esce di scena.
         for bal in list(self.balloons):
             if (self.is_enemy_ids(bal["owner"], owner) and not bal.get("destroyed")
                     and abs(bal["x"] - ox) + abs(bal["y"] - oy) <= SUPERBOMB_RADIUS_CELLS):
-                bal["destroyed"] = True
                 self.explode_balloon_bomb(bal)
+                self.damage_balloon(bal, owner, "superbomb")
 
         # Distrugge anche il blob gelatinoso avversario nel raggio: a
         # differenza della bomba di mongolfiera, il bombolone non risparmia
@@ -3601,7 +3632,7 @@ class Room:
             and abs(blob["x"] - ox) + abs(blob["y"] - oy) <= SUPERBOMB_RADIUS_CELLS
         ]
         for blob in blob_victims:
-            self.destroy_blob(blob, "superbomb", owner)
+            self.damage_blob(blob, owner, "superbomb")
 
         # Bonus 3600 punti: l'onda d'urto colpisce (una vita) anche ogni
         # golem spaccapietra avversario nel raggio.
@@ -3667,6 +3698,7 @@ class Room:
                 "x": float(player.x), "y": float(player.y),
                 "tx": tx, "ty": ty,
                 "bomb_cd": BALLOON_BOMB_INTERVAL_SECONDS,
+                "hp": BALLOON_HP,
             }
             self.balloons.append(balloon)
             self.push_event({
@@ -3678,7 +3710,35 @@ class Room:
         return {
             "id": b["id"], "x": round(b["x"], 3), "y": round(b["y"], 3),
             "owner": b["owner"],
+            "hp": b.get("hp", BALLOON_HP), "max_hp": BALLOON_HP,
         }
+
+    def damage_balloon(self, b, by, cause):
+        """Un colpo (una vita) alla mongolfiera, con QUALSIASI causa di
+        danno (bombolone, reazione a catena della bomba di un'altra
+        mongolfiera, laser, missile...). Ritorna True se il colpo l'ha
+        abbattuta (e rimossa dal volo). In 2v2 i compagni di squadra non
+        possono farle alcun danno. Stessa identica logica di
+        damage_golem."""
+        if by is not None and not self.is_enemy_ids(b["owner"], by):
+            return False
+        if b not in self.balloons or b.get("destroyed"):
+            return True
+        b["hp"] = b.get("hp", BALLOON_HP) - 1
+        self.push_event({
+            "kind": "balloon_hit", "id": b["id"],
+            "x": b["x"], "y": b["y"], "hp": b["hp"], "max_hp": BALLOON_HP,
+            "by": by, "cause": cause,
+        })
+        if b["hp"] <= 0:
+            b["destroyed"] = True
+            self.push_event({
+                "kind": "balloon_destroyed", "id": b["id"],
+                "x": b["x"], "y": b["y"], "owner": b["owner"],
+                "by": by, "cause": cause,
+            })
+            return True
+        return False
 
     def update_balloons(self):
         """Ogni mongolfiera in volo non ha alcun bersaglio: vaga a caso su
@@ -3844,8 +3904,10 @@ class Room:
         cella e "mangia" (fa perdere una vita) chiunque non sia il
         proprietario ci passi sopra (vedi check_blobs) - senza pero'
         consumarsi: resta li' pronto a mangiare anche il prossimo che ci
-        passa, finche' qualcuno non gli spara (vedi move_lasers/
-        move_missiles).
+        passa. Ha una barra vita di BLOB_HP: solo bombolone, Tesla,
+        terremoto, attacco aereo e fungo atomico avversari gliela
+        intaccano (vedi damage_blob); e' invece immune al fuoco amico,
+        al laser e al missile guidato.
 
         Se il giocatore e' intrappolato dalla trappola di un avversario,
         NON puo' usare alcun bonus finche' non torna libero di muoversi."""
@@ -3863,6 +3925,7 @@ class Room:
             "id": uuid.uuid4().hex[:8],
             "owner": player.id,
             "x": px, "y": py,
+            "hp": BLOB_HP,
         }
         self.blobs.append(blob)
         self.push_event({
@@ -3889,7 +3952,35 @@ class Room:
             "id": b["id"], "x": round(fx, 4), "y": round(fy, 4),
             "owner": b["owner"],
             "alive": b.get("alive", False),
+            "hp": b.get("hp", BLOB_HP), "max_hp": BLOB_HP,
         }
+
+    def damage_blob(self, b, by, cause):
+        """Un colpo alla barra vita del blob (BLOB_HP totali), con
+        QUALSIASI causa di danno che prima lo distruggeva all'istante
+        (bombolone, Tesla, terremoto, attacco aereo, fungo atomico...).
+        Ritorna True se il colpo lo ha abbattuto (e rimosso dalla mappa).
+        In 2v2 i compagni di squadra non possono fargli alcun danno.
+        Stessa identica logica di damage_golem/damage_balloon."""
+        if by is not None and not self.is_enemy_ids(b["owner"], by):
+            return False
+        if b not in self.blobs:
+            return True
+        b["hp"] = b.get("hp", BLOB_HP) - 1
+        self.push_event({
+            "kind": "blob_hit", "id": b["id"],
+            "x": b["x"], "y": b["y"], "hp": b["hp"], "max_hp": BLOB_HP,
+            "by": by, "cause": cause,
+        })
+        if b["hp"] <= 0:
+            self.blobs.remove(b)
+            self.push_event({
+                "kind": "blob_destroyed", "id": b["id"],
+                "x": b["x"], "y": b["y"], "owner": b["owner"],
+                "by": by, "cause": cause,
+            })
+            return True
+        return False
 
     def check_blobs(self):
         """Fa "mangiare" al blob chiunque si trovi sulla sua cella o su una
@@ -4017,11 +4108,13 @@ class Room:
                 self.update_blob_wander(b)
 
     def destroy_blob(self, blob, cause, by=None):
-        """Unica via per rimuovere un blob dalla mappa: colpito dal
-        bombolone (bonus 1400 punti) di un giocatore AVVERSARIO (vedi
-        explode_superbomb). Il blob e' immune al fuoco amico e a
-        qualsiasi altra arma o esplosione del gioco (laser, missile
-        guidato, mortaio, mina, fulmine, mongolfiera, torretta...)."""
+        """Rimozione ISTANTANEA e incondizionata di un blob dalla mappa,
+        senza passare dalla sua barra vita (BLOB_HP): usata SOLO dal golem
+        spaccapietra (bonus 3600 punti, vedi golem_eat), che semplicemente
+        "mangia" per intero il gadget nemico che trova, invece di
+        danneggiarlo colpo per colpo. Ogni altra arma o esplosione del
+        gioco (bombolone, Tesla, terremoto, attacco aereo, fungo atomico)
+        infligge invece un danno graduale tramite damage_blob."""
         if blob in self.blobs:
             self.blobs.remove(blob)
         self.push_event({
@@ -4361,8 +4454,8 @@ class Room:
             if (self.is_enemy_ids(bal["owner"], owner) and not bal.get("destroyed")
                     and abs(bal["x"] - ox) + abs(bal["y"] - oy) <= TESLA_RANGE_CELLS):
                 hits.append([bal["x"], bal["y"]])
-                bal["destroyed"] = True
                 self.explode_balloon_bomb(bal)
+                self.damage_balloon(bal, owner, "tesla")
 
         blob_victims = [
             blob for blob in self.blobs
@@ -4371,7 +4464,7 @@ class Room:
         ]
         for blob in blob_victims:
             hits.append([blob["x"], blob["y"]])
-            self.destroy_blob(blob, "tesla", owner)
+            self.damage_blob(blob, owner, "tesla")
 
         if self.spike_walls:
             remaining_walls = []
@@ -4970,16 +5063,16 @@ class Room:
                 bomb["destroyed"] = True
                 self.explode_superbomb(bomb)
 
-        # Mongolfiere in volo: sgancio a catena.
+        # Mongolfiere in volo: sgancio a catena + un colpo sulla barra vita.
         for bal in list(self.balloons):
             if (self.is_enemy_ids(bal["owner"], by) and not bal.get("destroyed")
                     and abs(bal["x"] - ox) + abs(bal["y"] - oy) <= R):
-                bal["destroyed"] = True
                 self.explode_balloon_bomb(bal)
+                self.damage_balloon(bal, by, "quake")
 
         for blob in list(self.blobs):
             if self.is_enemy_ids(blob["owner"], by) and abs(blob["x"] - ox) + abs(blob["y"] - oy) <= R:
-                self.destroy_blob(blob, "quake", by)
+                self.damage_blob(blob, by, "quake")
 
         if self.spike_walls:
             remaining_walls = []
@@ -5622,18 +5715,29 @@ class Room:
                     self.superbombs.remove(bomb)
                     swallow(bomb["x"], bomb["y"])
 
-            # Mongolfiere: risucchiate in volo, senza sgancio a catena.
+            # Mongolfiere: ora hanno una barra vita (BALLOON_HP) come il
+            # golem, quindi non vengono piu' risucchiate in un colpo solo:
+            # subiscono una vita al secondo finche' restano nel raggio.
+            bal_cds = m.setdefault("balloon_cd", {})
             for bal in list(self.balloons):
-                if (self.is_enemy_ids(bal["owner"], owner) and not bal.get("destroyed")
-                        and near(bal["x"], bal["y"])):
-                    bal["destroyed"] = True
-                    self.balloons.remove(bal)
-                    swallow(bal["x"], bal["y"])
+                if not self.is_enemy_ids(bal["owner"], owner) or bal.get("destroyed") or not near(bal["x"], bal["y"]):
+                    continue
+                bal_cds[bal["id"]] = max(0.0, bal_cds.get(bal["id"], 0.0) - TICK_DT)
+                if bal_cds[bal["id"]] <= 0:
+                    bal_cds[bal["id"]] = MEGA_MUSHROOM_GOLEM_TICK_SECONDS
+                    if self.damage_balloon(bal, owner, "mega_mushroom"):
+                        swallow(bal["x"], bal["y"])
 
+            # Blob: stessa logica, ora ha una barra vita (BLOB_HP).
+            blob_cds = m.setdefault("blob_cd", {})
             for blob in list(self.blobs):
-                if self.is_enemy_ids(blob["owner"], owner) and near(blob["x"], blob["y"]):
-                    swallow(blob["x"], blob["y"])
-                    self.destroy_blob(blob, "mega_mushroom", owner)
+                if not self.is_enemy_ids(blob["owner"], owner) or not near(blob["x"], blob["y"]):
+                    continue
+                blob_cds[blob["id"]] = max(0.0, blob_cds.get(blob["id"], 0.0) - TICK_DT)
+                if blob_cds[blob["id"]] <= 0:
+                    blob_cds[blob["id"]] = MEGA_MUSHROOM_GOLEM_TICK_SECONDS
+                    if self.damage_blob(blob, owner, "mega_mushroom"):
+                        swallow(blob["x"], blob["y"])
 
             if self.spike_walls:
                 remaining = []
@@ -5826,16 +5930,17 @@ class Room:
                     bomb["destroyed"] = True
                     self.explode_superbomb(bomb)
 
-            # Mongolfiere in volo sulla fila: colpite, sgancio a catena.
+            # Mongolfiere in volo sulla fila: colpite, sgancio a catena +
+            # un colpo sulla barra vita.
             for bal in list(self.balloons):
                 if (self.is_enemy_ids(bal["owner"], owner) and not bal.get("destroyed")
                         and hit(bal["x"], bal["y"])):
-                    bal["destroyed"] = True
                     self.explode_balloon_bomb(bal)
+                    self.damage_balloon(bal, owner, "airstrike")
 
             for blob in list(self.blobs):
                 if self.is_enemy_ids(blob["owner"], owner) and hit(blob["x"], blob["y"]):
-                    self.destroy_blob(blob, "airstrike", owner)
+                    self.damage_blob(blob, owner, "airstrike")
 
             if self.spike_walls:
                 remaining = []
@@ -6025,17 +6130,18 @@ class Room:
                 other["destroyed"] = True
                 self.explode_superbomb(other)
 
-        # Mongolfiere avversarie in volo: sgancio a catena.
+        # Mongolfiere avversarie in volo: sgancio a catena + un colpo sulla
+        # barra vita.
         for bal in list(self.balloons):
             if (self.is_enemy_ids(bal["owner"], owner) and not bal.get("destroyed")
                     and abs(bal["x"] - ox) + abs(bal["y"] - oy) <= MUSHROOM_BLAST_RADIUS_CELLS):
-                bal["destroyed"] = True
                 self.explode_balloon_bomb(bal)
+                self.damage_balloon(bal, owner, "mushroom")
 
-        # Blob avversari: distrutti.
+        # Blob avversari: incassano un colpo sulla barra vita.
         for blob in list(self.blobs):
             if self.is_enemy_ids(blob["owner"], owner) and abs(blob["x"] - ox) + abs(blob["y"] - oy) <= MUSHROOM_BLAST_RADIUS_CELLS:
-                self.destroy_blob(blob, "mushroom", owner)
+                self.damage_blob(blob, owner, "mushroom")
 
         # Muri di spunzoni avversari: sgretolati (stesso evento del
         # fulmine di Tesla, riusato dal client per suono/effetto).

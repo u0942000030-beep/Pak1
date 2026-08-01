@@ -1827,208 +1827,144 @@ function makeMushroomMesh(hex, mega, seedVal, twin){
   return g;
 }
 
-/* ---- bonus 3600 punti: golem spaccapietra — creatura di roccia GROSSA
-   (circa 1.6 volte un giocatore, come nella 2D), costruita a blocchi
-   irregolari invece della sagoma piatta a bezier della 2D: un corpo
-   principale scolpito da poligoni low-poly leggermente deformati (ogni
-   vertice spostato di un piccolo offset deterministico), spalle/pugni
-   sporgenti separati, e due occhi a fessura nel colore del proprietario
-   che si accendono solo da sveglio (stessa idea della 2D). Le macchie
-   del colore proprietario sulla 2D diventano qui vene minerali
-   luminescenti incise nella roccia. Costruito una sola volta per id,
-   poi solo traslato/ruotato leggendo lo stato ad ogni frame (vedi
-   animate()), coerente con lo schema {group,x,z,targetX,targetZ} gia'
-   usato per pet/missili in questa 3D. ---- */
-function deformGeometry(geo, amount, seedBase){
-  // Deforma leggermente ogni vertice di una BoxGeometry/SphereGeometry con
-  // un piccolo rumore deterministico (seedBase), per rompere la perfezione
-  // geometrica e dare un aspetto "scolpito a mano" tipico della roccia,
-  // senza dipendere da librerie esterne di noise.
-  // NB: la classica formula "noise" GLSL (sin(seed)*43758.5453 % 1) in
-  // JS non va bene cosi' com'e': sin() puo' restituire valori negativi e
-  // il prodotto per una costante enorme, passato a "%", da' un resto che
-  // NON e' garantito piccolo e stabile in floating point — il risultato
-  // erano offset giganteschi che facevano esplodere la geometria in
-  // schegge invece di limarla appena (il bug del golem "a pezzi"). Qui
-  // si prende solo la parte frazionaria positiva (fract-like), sempre in
-  // [0,1), prima di ricentrare su [-0.5, 0.5).
-  function hashFrac(x){
-    const v = Math.sin(x) * 43758.5453;
-    return v - Math.floor(v);
-  }
-  // SECONDO bug, piu' subdolo del primo: le BufferGeometry di three.js
-  // r128 (Box/Icosahedron ecc.) sono "non indicizzate", cioe' ogni faccia
-  // ha copie proprie dei vertici che condivide con le facce vicine (serve
-  // per lo shading piatto). Se si sposta ogni vertice con un rumore
-  // indipendente per indice, le copie che dovrebbero coincidere allo
-  // stesso spigolo si separano fisicamente: il solido si "sfalda" in
-  // schegge scollegate — la massa bianca frastagliata vista sul golem in
-  // game. Fix: fondere prima i vertici duplicati (merge by position) cosi'
-  // ogni punto nello spazio ha UN solo indice, spostarlo una volta sola,
-  // poi riscrivere lo stesso spostamento su tutte le copie: ogni faccia
-  // si sposta in blocco invece di lacerarsi ai bordi.
-  function mergeVerticesByPosition(g, tolerance){
-    const p = g.attributes.position;
-    const tol = tolerance || 1e-5;
-    const key = v => Math.round(v[0]/tol)+","+Math.round(v[1]/tol)+","+Math.round(v[2]/tol);
-    const map = new Map();
-    const uniquePos = [];
-    const indexOfVertex = new Array(p.count);
-    for (let i = 0; i < p.count; i++){
-      const v = [p.getX(i), p.getY(i), p.getZ(i)];
-      const k = key(v);
-      if (map.has(k)){
-        indexOfVertex[i] = map.get(k);
-      } else {
-        const newIdx = uniquePos.length;
-        map.set(k, newIdx);
-        uniquePos.push(v);
-        indexOfVertex[i] = newIdx;
-      }
-    }
-    return { uniquePos, indexOfVertex };
-  }
-  const posAttr = geo.attributes.position;
-  const { uniquePos, indexOfVertex } = mergeVerticesByPosition(geo);
-  // Sposta ogni vertice UNICO una sola volta (un solo rumore per punto
-  // condiviso), cosi' gli spigoli fusi restano saldati dopo la deformazione.
-  const displaced = uniquePos.map((v, u) => {
-    const seed = seedBase + u * 37.13;
-    const nx = hashFrac(seed);
-    const ny = hashFrac(seed * 1.7 + 11);
-    const nz = hashFrac(seed * 2.3 + 23);
-    return [
-      v[0] + (nx - 0.5) * amount,
-      v[1] + (ny - 0.5) * amount,
-      v[2] + (nz - 0.5) * amount,
-    ];
-  });
-  // Riscrive la posizione originale (non indicizzata) leggendo, per ogni
-  // vertice-copia, lo spostamento del suo corrispondente vertice unico.
-  for (let i = 0; i < posAttr.count; i++){
-    const d = displaced[indexOfVertex[i]];
-    posAttr.setXYZ(i, d[0], d[1], d[2]);
-  }
-  geo.computeVertexNormals();
-  return geo;
-}
-function makeGolemMesh(colorHex){
+/* ---- bonus 3600 punti: SONDA (ex golem spaccapietra) — stessa logica
+   di gioco di sempre (dorme, poi si sveglia e vaga divorando gadget
+   nemici, 50 colpi per abbatterla, non uccide ma blocca i giocatori),
+   ma ridisegnata come una piccola sonda robotica SENZA FACCIA che
+   fluttua sopra il pavimento invece di camminare: riprende alla lettera
+   il linguaggio visivo del muro di spunzoni (makeSpikeWallMesh) — corpo
+   sferoidale a icosaedro sfaccettato "corazzato", nucleo interno
+   luminoso pulsante, fasce metalliche curve a rivetti nel colore del
+   proprietario, spunzoni acuminati che spuntano radialmente dal guscio
+   — ma in scala ridotta (una sonda mobile, non un blocco fermo grande
+   quanto una cella) e senza il teschio: nessun volto, nessun occhio,
+   solo metallo e punte. Fluttua con un leggero ondeggiamento verticale
+   e una lenta rotazione su se stessa quando e' sveglia e in movimento;
+   da addormentata resta ferma e bassa sul pavimento con gli "Zzz"
+   fluttuanti sopra, stessa idea del vecchio golem. Costruita una sola
+   volta per id, poi solo traslata/ruotata leggendo lo stato ad ogni
+   frame (vedi animate()), coerente con lo schema
+   {group,x,z,targetX,targetZ} gia' usato per pet/missili in questa 3D. ---- */
+function makeSondaMesh(colorHex){
   const g = new THREE.Group();
-  const S = 1.6; // il golem e' GROSSO: ~1.6 caselle, stessa proporzione della 2D
-  const ROCK = 0x7c7f86, ROCK_DARK = 0x4a4d53, ROCK_LIGHT = 0x9a9da4;
+  // Scala della sonda: molto piu' piccola del vecchio golem (che era
+  // grosso quanto 1.6 celle), qui e' un oggetto mobile compatto, circa
+  // mezza cella di diametro, cosi' si legge chiaramente come "sonda" e
+  // non come un blocco fisso da labirinto.
+  const R = CELL * 0.30; // raggio complessivo del corpo sferoidale
 
-  // Alone/ombra a terra, stesso linguaggio degli altri gadget piazzabili.
+  // Alone/ombra a terra, stesso linguaggio degli altri gadget piazzabili
+  // (l'ombra resta proiettata a terra anche se la sonda fluttua sopra).
   const halo = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.42*S, 0.42*S, 0.02, 18),
+    new THREE.CylinderGeometry(R * 1.15, R * 1.15, 0.02, 20),
     new THREE.MeshBasicMaterial({ color: colorHex, transparent:true, opacity:0.15 })
   );
   halo.position.y = 0.01;
   g.add(halo);
   const shadow = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.34*S, 0.34*S, 0.02, 18),
+    new THREE.CylinderGeometry(R * 0.85, R * 0.85, 0.02, 20),
     new THREE.MeshBasicMaterial({ color:0x000000, transparent:true, opacity:0.32 })
   );
   shadow.position.y = 0.015;
   g.add(shadow);
 
-  // Sotto-gruppo "corpo": tutto cio' che deve dondolare/muoversi durante la
-  // camminata (bob verticale) vive qui, MAI l'alone/ombra a terra.
+  // Sotto-gruppo "corpo": tutto cio' che deve fluttuare/ruotare vive qui,
+  // MAI l'alone/ombra a terra (stesso schema del vecchio golem).
   const body = new THREE.Group();
   g.add(body);
 
-  const rockMat = new THREE.MeshStandardMaterial({ color: ROCK, roughness:0.95, flatShading:true });
-  const rockDarkMat = new THREE.MeshStandardMaterial({ color: ROCK_DARK, roughness:0.95, flatShading:true });
-
-  // Busto-testa fuso: un unico blocco scolpito (icosaedro deformato,
-  // schiacciato in altezza) che fa da torace E testa insieme, come nella
-  // statuetta di riferimento della 2D dove la sagoma e' un unico pezzo.
-  const torsoGeo = deformGeometry(new THREE.IcosahedronGeometry(0.30*S, 1), 0.05*S, 1.234);
-  torsoGeo.scale(1, 1.35, 0.85);
-  const torso = new THREE.Mesh(torsoGeo, rockMat);
-  torso.position.y = 0.58*S;
-  body.add(torso);
-
-  // Spalle: due blocchi tozzi ai lati del busto, leggermente sporgenti.
-  const shoulderGeo = deformGeometry(new THREE.BoxGeometry(0.22*S, 0.18*S, 0.24*S), 0.04*S, 5.5);
-  [-1, 1].forEach(side => {
-    const sh = new THREE.Mesh(shoulderGeo.clone(), rockMat);
-    sh.position.set(side * 0.28*S, 0.50*S, 0);
-    sh.rotation.z = side * 0.12;
-    body.add(sh);
-  });
-
-  // Braccia + pugni: cilindri esagonali tozzi con un pugno-cubo deformato
-  // in fondo, sospesi ai lati come nella statuetta (braccia corte e grosse).
-  const armGeo = new THREE.CylinderGeometry(0.075*S, 0.09*S, 0.30*S, 7);
-  const fistGeo = deformGeometry(new THREE.BoxGeometry(0.16*S, 0.16*S, 0.16*S), 0.03*S, 9.1);
-  const arms = [];
-  [-1, 1].forEach(side => {
-    const arm = new THREE.Mesh(armGeo, rockDarkMat);
-    arm.position.set(side * 0.36*S, 0.34*S, 0);
-    arm.rotation.z = side * 0.22;
-    body.add(arm);
-    const fist = new THREE.Mesh(fistGeo.clone(), rockMat);
-    fist.position.set(side * 0.40*S, 0.18*S, 0);
-    body.add(fist);
-    arms.push(arm);
-  });
-
-  // Gambe: due tronchi tozzi con la caratteristica "V" scavata al centro
-  // (spaziatura variabile in animate() per il ciclo del passo).
-  const legGeo = new THREE.CylinderGeometry(0.10*S, 0.13*S, 0.26*S, 7);
-  const legL = new THREE.Mesh(legGeo, rockDarkMat);
-  legL.position.set(-0.12*S, 0.13*S, 0);
-  body.add(legL);
-  const legR = new THREE.Mesh(legGeo.clone(), rockDarkMat);
-  legR.position.set(0.12*S, 0.13*S, 0);
-  body.add(legR);
-
-  // Crepa verticale sottile sul busto (una striscia scura incisa),
-  // stessa idea decorativa della 2D.
-  const crack = new THREE.Mesh(
-    new THREE.BoxGeometry(0.015*S, 0.32*S, 0.02*S),
-    new THREE.MeshBasicMaterial({ color: 0x14161a })
+  // Corpo principale: icosaedro sferoidale "corazzato", identica idea del
+  // muro di spunzoni (makeSpikeWallMesh) ma qui sferico anziche' allungato
+  // in verticale, dato che la sonda non deve sostituire un muro.
+  const shell = new THREE.Mesh(
+    new THREE.IcosahedronGeometry(R, 2),
+    new THREE.MeshStandardMaterial({ color: colorHex, transparent:true, opacity:0.88, flatShading:true, roughness:0.55, metalness:0.3 })
   );
-  crack.position.set(0.01*S, 0.58*S, 0.24*S);
-  body.add(crack);
+  body.add(shell);
 
-  // Vene minerali luminescenti nel colore del proprietario, incise sul
-  // busto: la controparte 3D delle "macchie" semitrasparenti della 2D,
-  // qui rese come sottili tratti emissivi che si notano anche da lontano.
-  const veinMat = new THREE.MeshStandardMaterial({ color: colorHex, emissive: colorHex, emissiveIntensity: 0.5, roughness:0.6 });
-  const veinPositions = [
-    [-0.14, 0.68, 0.20, 0.3], [0.16, 0.64, 0.19, -0.4], [0.0, 0.48, 0.22, 0.1],
-    [-0.08, 0.36, 0.20, 0.5], [0.10, 0.34, 0.20, -0.2],
-  ];
-  veinPositions.forEach(v => {
-    const vein = new THREE.Mesh(new THREE.BoxGeometry(0.03*S, 0.09*S, 0.008*S), veinMat);
-    vein.position.set(v[0]*S, v[1]*S, v[2]*S);
-    vein.rotation.z = v[3];
-    body.add(vein);
+  // Nucleo interno luminoso sferico, visibile attraverso il guscio: pulsa
+  // di continuo nel render loop (vedi animate()), stessa idea del muro di
+  // spunzoni/bombolone.
+  const core = new THREE.Mesh(
+    new THREE.SphereGeometry(R * 0.55, 18, 14),
+    new THREE.MeshBasicMaterial({ color: colorHex, transparent:true, opacity:0.5 })
+  );
+  body.add(core);
+
+  // Fasce metalliche CURVE a rivetti che avvolgono il corpo su 2 anelli,
+  // stesso identico schema del muro di spunzoni ma con un anello in meno
+  // (corpo piu' piccolo).
+  const bandMat = new THREE.MeshStandardMaterial({ color: 0x141416, roughness:0.4, metalness:0.6 });
+  const rivetMat = new THREE.MeshStandardMaterial({ color: colorHex, roughness:0.3, metalness:0.5, emissive: colorHex, emissiveIntensity:0.25 });
+  [-0.3, 0.3].forEach(yFrac => {
+    const bandRadiusFactor = Math.sqrt(Math.max(0.0001, 1 - yFrac*yFrac)) * 1.04;
+    const band = new THREE.Mesh(new THREE.TorusGeometry(1, R*0.05, 8, 28), bandMat);
+    band.rotation.x = Math.PI / 2;
+    band.scale.set(R*bandRadiusFactor, R*bandRadiusFactor, 1);
+    band.position.y = yFrac * R;
+    body.add(band);
+    const rivetCount = 8;
+    for (let i = 0; i < rivetCount; i++){
+      const ang = (i / rivetCount) * Math.PI * 2;
+      const rivet = new THREE.Mesh(new THREE.SphereGeometry(R*0.055, 6, 6), rivetMat);
+      rivet.position.set(Math.sin(ang) * R*bandRadiusFactor, yFrac * R, Math.cos(ang) * R*bandRadiusFactor);
+      body.add(rivet);
+    }
   });
 
-  // Occhi a fessura: spente/sottilissime da addormentato, luminose nel
-  // colore del proprietario da sveglio (stessa logica della 2D).
-  const eyeGeoAwake = new THREE.BoxGeometry(0.05*S, 0.028*S, 0.02*S);
-  const eyeGeoAsleep = new THREE.BoxGeometry(0.045*S, 0.006*S, 0.02*S);
-  const eyeMatAwake = new THREE.MeshStandardMaterial({ color: colorHex, emissive: colorHex, emissiveIntensity: 1.1 });
-  const eyeMatAsleep = new THREE.MeshBasicMaterial({ color: 0x14161a });
-  const eyes = [];
-  [-1, 1].forEach(side => {
-    const eye = new THREE.Mesh(eyeGeoAsleep.clone(), eyeMatAsleep);
-    eye.position.set(side * 0.10*S, 0.66*S, 0.23*S);
-    body.add(eye);
-    eyes.push(eye);
+  // Spunzoni acuminati radiali che bucano fuori dal guscio: stessa idea
+  // ESATTA del muro di spunzoni (addRadialSpike), qui distribuiti su
+  // tutta la sfera (2 fasce d'altezza x 7 angoli) invece che su un corpo
+  // allungato in verticale. Nessun volto/teschio: la sonda e' anonima,
+  // solo metallo e punte.
+  const spikeMat = new THREE.MeshStandardMaterial({ color: 0xcfcfd4, roughness:0.05, metalness:0.55 });
+  const spikeBaseMat = new THREE.MeshStandardMaterial({ color: 0x8a8a90, roughness:0.05, metalness:0.55 });
+  const spikeLen = R * 0.55, spikeR = R * 0.14;
+  function addRadialSpike(yFrac, angFrac){
+    const ang = angFrac * Math.PI * 2;
+    const ringFactor = Math.sqrt(Math.max(0.0001, 1 - yFrac*yFrac));
+    const px = Math.sin(ang) * R * ringFactor;
+    const pz = Math.cos(ang) * R * ringFactor;
+    const py = yFrac * R;
+    const dir = new THREE.Vector3(px, py*0.5, pz).normalize();
+
+    const base = new THREE.Mesh(new THREE.CylinderGeometry(spikeR * 1.3, spikeR * 1.6, spikeR * 0.6, 8), spikeBaseMat);
+    base.position.set(px, py, pz);
+    base.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0), dir);
+    body.add(base);
+    const spike = new THREE.Mesh(new THREE.ConeGeometry(spikeR, spikeLen, 6), spikeMat);
+    spike.position.set(px + dir.x*spikeLen*0.4, py + dir.y*spikeLen*0.4, pz + dir.z*spikeLen*0.4);
+    spike.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0), dir);
+    body.add(spike);
+  }
+  [-0.6, -0.2, 0.2, 0.6].forEach((yFrac, row) => {
+    for (let i = 0; i < 7; i++){
+      addRadialSpike(yFrac, (i + (row % 2 === 0 ? 0 : 0.5)) / 7);
+    }
   });
 
-  // "Zzz" fluttuante mentre dorme: tre piccoli cubi luminosi impilati in
-  // diagonale, controparte 3D della lettera "z" della 2D (i font non
-  // renderizzano bene in una scena three.js senza librerie extra).
+  // Anello di piccole faville/scintille sospese appena sotto il corpo,
+  // nel colore del proprietario: danno l'idea di una sonda "viva" anche
+  // da ferma, stessa idea decorativa del muro di spunzoni/bombolone.
+  const sparkMat = new THREE.MeshBasicMaterial({ color: colorHex });
+  const sparkCount = 8;
+  const sparks = [];
+  for (let i = 0; i < sparkCount; i++){
+    const ang = (i / sparkCount) * Math.PI * 2 + 0.3;
+    const spark = new THREE.Mesh(new THREE.SphereGeometry(R*0.06, 5, 5), sparkMat);
+    spark.userData.ang = ang;
+    spark.userData.rad = R * 1.1;
+    body.add(spark);
+    sparks.push(spark);
+  }
+
+  // "Zzz" fluttuante mentre dorme: stessa idea del vecchio golem, tre
+  // piccoli cubi luminosi impilati in diagonale.
   const zzzGroup = new THREE.Group();
   const zzzMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent:true, opacity:0.85 });
   for (let i = 0; i < 3; i++){
-    const cube = new THREE.Mesh(new THREE.BoxGeometry(0.05*S*(1-i*0.15), 0.05*S*(1-i*0.15), 0.02), zzzMat.clone());
-    cube.position.set(0.30*S + i*0.05*S, 0.85*S + i*0.10*S, 0.10*S);
+    const cube = new THREE.Mesh(new THREE.BoxGeometry(R*0.18*(1-i*0.15), R*0.18*(1-i*0.15), 0.02), zzzMat.clone());
+    cube.position.set(R*0.6 + i*R*0.18, R*0.9 + i*R*0.3, R*0.3);
     zzzGroup.add(cube);
   }
   body.add(zzzGroup);
@@ -2036,21 +1972,20 @@ function makeGolemMesh(colorHex){
   // Lampo bianco (colpo incassato): sfera semitrasparente attorno al
   // corpo, mostrata/nascosta in animate() leggendo golemHitFlashes.
   const hitFlash = new THREE.Mesh(
-    new THREE.SphereGeometry(0.44*S, 12, 8),
+    new THREE.SphereGeometry(R * 1.3, 12, 8),
     new THREE.MeshBasicMaterial({ color: 0xffffff, transparent:true, opacity:0, depthWrite:false })
   );
-  hitFlash.position.y = 0.5*S;
   body.add(hitFlash);
 
-  // Barra vita sopra la testa, sempre rivolta verso la camera (sprite),
-  // stessa lettura a colpo d'occhio della 2D.
+  // Barra vita sopra la sonda, sempre rivolta verso la camera (sprite),
+  // stessa lettura a colpo d'occhio del vecchio golem.
   const hpBar = makeGolemHpBarSprite();
-  hpBar.position.y = 1.05*S;
-  g.add(hpBar); // FUORI da "body": non deve dondolare con la camminata
+  hpBar.position.y = R * 2.6;
+  g.add(hpBar); // FUORI da "body": non deve ruotare insieme al guscio
 
   g.userData = {
-    body, torso, arms, legL, legR, eyes, eyeGeoAwake, eyeGeoAsleep, eyeMatAwake, eyeMatAsleep,
-    zzzGroup, hitFlash, halo, hpBar, awake: false, facing: 1, walkPhase: 0,
+    body, shell, core, sparks, hitFlash, halo, hpBar, awake: false, facing: 1,
+    floatPhase: Math.random() * Math.PI * 2, spinY: 0, baseY: R * 1.35,
   };
   return g;
 }
@@ -3982,7 +3917,7 @@ function makeSuperbombMesh(colorHex){
    "bobbing" verticale per farla sembrare sospesa nell'aria invece che
    ferma. Il movimento orizzontale usa lo stesso lerp gia' collaudato per
    pet/missili (vedi onState/animate), non serve interpolazione dedicata. ---- */
-const BALLOON_BOMB_RADIUS_CELLS = 4; // deve restare identica a BALLOON_BOMB_RADIUS_CELLS in common.py
+const BALLOON_BOMB_RADIUS_CELLS = 3; // deve restare identica a BALLOON_BOMB_RADIUS_CELLS in common.py
 const BALLOON_SCALE = 3;             // mongolfiera 3 volte piu' grande rispetto all'originale
 const BALLOON_LIFT_HEIGHT = (WALL_TOTAL_H + 1.4) * 1.3; // vola chiaramente sopra la cima dei muri (WALL_TOTAL_H), non piu' alla stessa quota — +30% di altitudine su richiesta
 function makeBalloonMesh(colorHex){
@@ -4111,9 +4046,17 @@ function makeBalloonMesh(colorHex){
   skull.position.set(0, R * 0.35, R * 1.1);
   body.add(skull);
 
+  // Barra vita sopra il pallone (bonus 1600 punti, ora con BALLOON_HP
+  // punti vita come il golem spaccapietra): stesso sprite riusabile
+  // rivolto sempre verso la camera.
+  const hpBar = makeGolemHpBarSprite();
+  hpBar.position.y = R * 1.9;
+  body.add(hpBar);
+
   g.userData.shadow = shadow;
   g.userData.body = body;
   g.userData.core = core;
+  g.userData.hpBar = hpBar;
   return g;
 }
 
@@ -4177,18 +4120,6 @@ function makeBlobMesh(colorHex){
     mesh.position.set(l.dx, l.dy, l.dz);
     body.add(mesh);
   });
-  // Contorno visivo: un guscio leggermente piu' grande, disegnato in
-  // wireframe sottile sopra i lumps centrali (stesso ruolo dello
-  // stroke() nella 2D, senza dover unire le geometrie). Scurito rispetto
-  // a colorHex (invece di usarlo identico) cosi' resta leggibile anche
-  // ora che il corpo e' dello stesso colore del proprietario.
-  const rimColor = new THREE.Color(colorHex).offsetHSL(0, 0, -0.22);
-  const rim = new THREE.Mesh(
-    new THREE.SphereGeometry(0.31, 20, 16),
-    new THREE.MeshBasicMaterial({ color: rimColor, wireframe:true, transparent:true, opacity:0.6 })
-  );
-  rim.position.set(0, 0.20, 0);
-  body.add(rim);
 
   // NIENTE occhi: sopracciglia aggrottate (due listelli inclinati verso
   // il centro) sopra una bocca scura a zanne.
@@ -4219,8 +4150,16 @@ function makeBlobMesh(colorHex){
     body.add(fangBottom);
   }
 
+  // Barra vita sopra il blob (ora con BLOB_HP punti vita, come il golem
+  // spaccapietra): stesso sprite riusabile rivolto sempre verso la
+  // camera, FUORI da "body" per non farla scalare col "respiro"/wob.
+  const hpBar = makeGolemHpBarSprite();
+  hpBar.position.y = 0.62 * BLOB_SCALE;
+  g.add(hpBar);
+
   g.userData.body = body;
   g.userData.halo = halo;
+  g.userData.hpBar = hpBar;
   g.userData.alive = false; // aggiornato ad ogni state (b.alive, bonus 2000 punti)
   return g;
 }
@@ -5297,7 +5236,7 @@ function onState(msg){
         hudMines.classList.remove("hidden");
       } else if (p.golem && !p.golem_placed){
         // Bonus 3600 punti: golem spaccapietra.
-        hudMines.textContent = "golem spaccapietra: premi 1 per piazzarlo";
+        hudMines.textContent = "sonda: premi 1 per piazzarla";
         hudMines.classList.remove("hidden");
       } else if (p.mega_mushroom && !p.mega_mushroom_used){
         // Bonus 3800 punti: trasformazione del fungo madre. Serve solo se
@@ -5581,6 +5520,7 @@ function onState(msg){
       entry = balloonMeshes[bl.id] = { group, x:wx, z:wz, targetX:wx, targetZ:wz };
     }
     entry.targetX = wx; entry.targetZ = wz;
+    updateGolemHpBarSprite(entry.group.userData.hpBar, bl.hp != null ? bl.hp : 150, bl.max_hp || 150);
   });
   Object.keys(balloonMeshes).forEach(id => {
     if (!seenBalloons.has(id)){ scene.remove(balloonMeshes[id].group); delete balloonMeshes[id]; }
@@ -5606,6 +5546,7 @@ function onState(msg){
     }
     entry.targetX = wx; entry.targetZ = wz;
     entry.group.userData.alive = !!bb.alive;
+    updateGolemHpBarSprite(entry.group.userData.hpBar, bb.hp != null ? bb.hp : 100, bb.max_hp || 100);
   });
   Object.keys(blobMeshes).forEach(id => {
     if (!seenBlobs.has(id)){ scene.remove(blobMeshes[id].group); delete blobMeshes[id]; }
@@ -5852,7 +5793,7 @@ function onState(msg){
     let entry = golemMeshes[gm.id];
     if (!entry){
       const hex = playerColorHex[gm.owner] !== undefined ? playerColorHex[gm.owner] : 0x9be7ff;
-      const group = makeGolemMesh(hex);
+      const group = makeSondaMesh(hex);
       group.position.set(wx, 0, wz);
       scene.add(group);
       entry = golemMeshes[gm.id] = { group, x:wx, z:wz, targetX:wx, targetZ:wz };
@@ -5975,7 +5916,7 @@ function onGameEvent(msg){
         bush: "ARBUSTO SPINOSO SBLOCCATO! premi 1 (a fine catena) per piantarlo \u00b7 uccide al contatto e cresce di una casella al minuto, SOLO negli spazi liberi (mai dentro i muri) \u00b7 lo distruggono solo bombolone, mongolfiera e scudo",
         mushroom: "FUNGO ATOMICO SBLOCCATO! premi 1 (a fine catena) per piazzarlo \u00b7 nascosto come una mina (visibile solo da 3 caselle) \u00b7 se calpestato distrugge TUTTO in un raggio di 8 caselle",
         potion: "POZIONE TERREMOTO SBLOCCATA! premi 1 (a fine catena) per mirare \u00b7 ripremi 1 per lanciarla a 5 caselle, anche oltre i muri \u00b7 terremoto raggio 8 caselle per 5 secondi: rallenta i giocatori del 50% e distrugge OGNI struttura nemica nel cerchio",
-        golem: "GOLEM SPACCAPIETRA SBLOCCATO! premi 1 (a fine catena) per piazzarlo \u00b7 dorme 30 secondi, poi vaga divorando ogni gadget avversario \u00b7 100 colpi per abbatterlo \u00b7 non uccide i giocatori ma li blocca come un muro",
+        golem: "SONDA SBLOCCATA! premi 1 (a fine catena) per piazzarla \u00b7 dorme 30 secondi, poi vaga divorando ogni gadget avversario \u00b7 50 colpi per abbatterla \u00b7 non uccide i giocatori ma li blocca come un muro",
         mega_mushroom: "FUNGO MADRE MAGNETICO SBLOCCATO! premi 1 (a fine catena) per trasformare il fungo madre, se \u00e8 ancora vivo \u00b7 diventa alto come una Tesla e visibile a tutti \u00b7 onde magnetiche a 3 caselle: attirano nemici e gadget come un buco nero, uccidendo al contatto",
         airstrike: "ATTACCO AEREO SBLOCCATO! premi 1 (a fine catena) per mirare: resti immobile, rotella del mouse per scegliere la fila \u00b7 ripremi 1: un aereo col teschio percorre TUTTA la fila bombardando ogni cosa nemica",
       };
@@ -5990,16 +5931,16 @@ function onGameEvent(msg){
       // stesso comportamento di mortar_place/superbomb_place.
       playGolemThud();
       if (msg.player === myId){
-        showToast("Golem piazzato! Dorme per " + Math.round(msg.wake || 30) + " secondi, poi si sveglia affamato di gadget nemici.");
+        showToast("Sonda piazzata! Dorme per " + Math.round(msg.wake || 30) + " secondi, poi si sveglia affamata di gadget nemici.");
       } else {
-        showToast("Un giocatore ha piazzato un golem spaccapietra!");
+        showToast("Un giocatore ha piazzato una sonda!");
       }
       break;
     }
     case "golem_wake": {
       playGolemRoar();
-      const whoseGolem = (msg.player === myId) ? "Il tuo golem" : "Il golem avversario";
-      showToast(whoseGolem + " si \u00e8 SVEGLIATO: divora ogni gadget che trova!");
+      const whoseGolem = (msg.player === myId) ? "La tua sonda" : "La sonda avversaria";
+      showToast(whoseGolem + " si \u00e8 SVEGLIATA: divora ogni gadget che trova!");
       break;
     }
     case "golem_hit": {
@@ -6014,7 +5955,7 @@ function onGameEvent(msg){
       spawnExplosion(msg.x*CELL+CELL/2, msg.y*CELL+CELL/2, 0x8b8f98);
       spawnExplosion(msg.x*CELL+CELL/2, msg.y*CELL+CELL/2, hex);
       delete golemHitFlashes[msg.id];
-      showToast("Un golem spaccapietra \u00e8 stato abbattuto (100 colpi incassati)!");
+      showToast("Una sonda \u00e8 stata abbattuta (50 colpi incassati)!");
       break;
     }
     case "golem_eat": {
@@ -6393,7 +6334,7 @@ function onGameEvent(msg){
     case "balloon_bomb_drop": {
       // Bomba sganciata dalla mongolfiera (bonus 1600 punti): nessuna
       // miccia, esplode ISTANTANEAMENTE nel punto esatto in cui si trova
-      // (raggio BALLOON_BOMB_RADIUS_CELLS = 4 caselle). Le strutture
+      // (raggio BALLOON_BOMB_RADIUS_CELLS = 3 caselle). Le strutture
       // avversarie colpite arrivano come eventi separati (mine_destroyed/
       // turret_destroyed/ecc. con cause "balloon"), stessa idea del
       // bombolone: qui basta l'effetto visivo/sonoro nel punto d'impatto.
@@ -6405,11 +6346,35 @@ function onGameEvent(msg){
       playBalloonBomb();
       break;
     }
+    case "balloon_hit": {
+      // Bonus 1600 punti: la mongolfiera ha una barra vita (BALLOON_HP)
+      // come il golem spaccapietra. La barra vera e propria si aggiorna
+      // gia' al prossimo onState (blocco msg.balloons, bl.hp) - qui basta
+      // un piccolo feedback visivo/sonoro sul colpo incassato.
+      playGolemHit();
+      spawnExplosion(msg.x*CELL+CELL/2, msg.y*CELL+CELL/2, 0xffd9a0);
+      break;
+    }
+    case "balloon_destroyed": {
+      // La mongolfiera e' scesa a 0 HP: abbattuta per davvero.
+      const balDestHex = playerColorHex[msg.owner] !== undefined ? playerColorHex[msg.owner] : 0xffb347;
+      spawnExplosion(msg.x*CELL+CELL/2, msg.y*CELL+CELL/2, balDestHex);
+      playGolemCrumble();
+      if (msg.by === myId) showToast("Mongolfiera avversaria abbattuta (150 colpi incassati)!");
+      if (msg.id !== undefined){
+        const balm = balloonMeshes[msg.id];
+        if (balm){ scene.remove(balm.group); delete balloonMeshes[msg.id]; }
+      }
+      break;
+    }
     case "blob_place": {
       // Bonus 1800 punti: la mesh vera e propria viene creata dal
       // prossimo onState (blocco msg.blobs) - qui serve solo il feedback
-      // per chi l'ha piazzato, stesso comportamento di mortar_place.
-      if (msg.player === myId) showToast("Blob piazzato! Blocca la strada finche' non gli spari.");
+      // per chi l'ha piazzato, stesso comportamento di mortar_place. Ha
+      // una barra vita (BLOB_HP): serve un bombolone, la Tesla, il
+      // terremoto, l'attacco aereo o il fungo atomico avversari per
+      // consumarla del tutto (e' immune a laser/missile/fuoco amico).
+      if (msg.player === myId) showToast("Blob piazzato! Blocca la strada finche' non viene colpito abbastanza da distruggerlo.");
       playBlobPlace();
       break;
     }
@@ -6423,16 +6388,25 @@ function onGameEvent(msg){
       playBlobAnimate();
       break;
     }
+    case "blob_hit": {
+      // Il blob ha una barra vita (BLOB_HP) come il golem spaccapietra e
+      // le mongolfiere. La barra vera e propria si aggiorna gia' al
+      // prossimo onState (blocco msg.blobs, bb.hp) - qui basta un piccolo
+      // feedback visivo/sonoro sul colpo incassato.
+      playGolemHit();
+      spawnExplosion(msg.x*CELL+CELL/2, msg.y*CELL+CELL/2, 0xd8a8ff);
+      break;
+    }
     case "blob_destroyed": {
-      // Il blob (bonus 1800 punti) e' stato distrutto da un laser o da un
-      // missile guidato: l'unico modo per rimuoverlo dalla strada. La
-      // mesh viene rimossa qui; se l'evento arriva prima che la mesh
-      // esista ancora (race condition di rete rara) non succede nulla di
-      // grave, il prossimo onState la terrebbe comunque fuori dal set
-      // "seenBlobs" e la ripulirebbe al giro successivo.
+      // Il blob e' sceso a 0 HP (o e' stato divorato per intero dal golem
+      // spaccapietra, cause "golem"): rimosso dalla mappa. La mesh viene
+      // rimossa qui; se l'evento arriva prima che la mesh esista ancora
+      // (race condition di rete rara) non succede nulla di grave, il
+      // prossimo onState la terrebbe comunque fuori dal set "seenBlobs" e
+      // la ripulirebbe al giro successivo.
       spawnExplosion(msg.x*CELL+CELL/2, msg.y*CELL+CELL/2, 0x7cff5a);
       playBlobDestroyed();
-      if (msg.by === myId) showToast("Blob avversario distrutto!");
+      if (msg.by === myId) showToast("Blob avversario distrutto (100 colpi incassati)!");
       if (msg.id !== undefined){
         const bm = blobMeshes[msg.id];
         if (bm){ scene.remove(bm.group); delete blobMeshes[msg.id]; }
@@ -6855,48 +6829,45 @@ function animate(){
     g.userData.halo.material.opacity = tracking ? 0.30 : 0.18;
   });
 
-  // bonus 3600 punti: golem spaccapietra. Si muove con lo stesso lerp
-  // morbido di pet/missili; mentre e' sveglio e in movimento cammina con
-  // un lieve dondolio verticale e le gambe si aprono a "V" come nella 2D,
-  // e si specchia verso il senso di marcia. Da addormentato mostra invece
-  // gli "Zzz" fluttuanti e i secondi al risveglio (qui semplificati: la
-  // sprite "Zzz" resta visibile, il countdown preciso non serve quanto
-  // in 2D dato che il colore occhi/corpo gia' comunica lo stato).
+  // bonus 3600 punti: SONDA (ex golem spaccapietra). Si muove con lo
+  // stesso lerp morbido di pet/missili, ma invece di camminare FLUTTUA:
+  // ondeggia su e giu' con una sinusoide continua (piu' ampia e veloce
+  // quando e' sveglia e in movimento, appena percettibile da ferma/
+  // addormentata) e ruota lentamente su se stessa attorno all'asse
+  // verticale, senza bisogno di "specchiarsi" verso il senso di marcia
+  // (nessuna faccia da orientare). Da addormentata mostra gli "Zzz"
+  // fluttuanti sopra, stessa idea del vecchio golem.
   Object.values(golemMeshes).forEach(entry => {
-    const prevX = entry.x, prevZ = entry.z;
     entry.x += (entry.targetX - entry.x) * LERP;
     entry.z += (entry.targetZ - entry.z) * LERP;
-    entry.group.position.set(entry.x, 0, entry.z);
     const ud = entry.group.userData;
-    const dx = entry.x - prevX;
-    if (dx > 0.0006) ud.facing = 1;
-    else if (dx < -0.0006) ud.facing = -1;
-    // Specchia SOLO il corpo (non il gruppo intero): la barra vita e' uno
-    // sprite figlio di "g" e deve restare sempre leggibile, mai ribaltata.
-    ud.body.scale.x = ud.facing;
 
     const moving = Math.abs(entry.targetX - entry.x) > 0.01 || Math.abs(entry.targetZ - entry.z) > 0.01;
-    if (ud.awake && moving){
-      ud.walkPhase += dt * 6.2;
-      const bob = Math.sin(ud.walkPhase) * 0.03;
-      const legSpread = Math.sin(ud.walkPhase) * 0.05;
-      ud.body.position.y = bob;
-      ud.legL.position.x = -0.12*1.6 - legSpread;
-      ud.legR.position.x = 0.12*1.6 + legSpread;
-    } else {
-      ud.body.position.y += (0 - ud.body.position.y) * 0.2;
-    }
+    const floatSpeed = ud.awake && moving ? 5.5 : 1.8;
+    const floatAmp = ud.awake && moving ? 0.10 : 0.045;
+    ud.floatPhase += dt * floatSpeed;
+    const hover = Math.sin(ud.floatPhase) * floatAmp;
+    entry.group.position.set(entry.x, ud.baseY + hover, entry.z);
 
-    // Occhi: spenti/fessura sottile da addormentato, accesi nel colore
-    // proprietario da sveglio (stessa logica della 2D).
-    ud.eyes.forEach(eye => {
-      const wantAwake = !!ud.awake;
-      if (eye.userData.isAwake !== wantAwake){
-        eye.userData.isAwake = wantAwake;
-        eye.geometry = wantAwake ? ud.eyeGeoAwake : ud.eyeGeoAsleep;
-        eye.material = wantAwake ? ud.eyeMatAwake : ud.eyeMatAsleep;
-      }
+    // Rotazione continua su se stessa: piu' veloce da sveglia/in
+    // movimento, un lento giro "di sorveglianza" da ferma/addormentata.
+    ud.spinY += dt * (ud.awake && moving ? 1.6 : 0.4);
+    ud.body.rotation.y = ud.spinY;
+
+    // Nucleo interno: pulsa di continuo (stessa idea del muro di
+    // spunzoni), piu' intenso e rapido da sveglia.
+    const pulseSpeed = ud.awake ? 260 : 900;
+    const pulse = 0.5 + 0.5 * Math.sin(nowMortar / pulseSpeed);
+    ud.core.material.opacity = ud.awake ? 0.35 + 0.35*pulse : 0.25 + 0.15*pulse;
+
+    // Faville orbitanti attorno al corpo, stessa idea decorativa del
+    // muro di spunzoni ma qui davvero in movimento vista la mobilita'
+    // della sonda.
+    ud.sparks.forEach((spark, si) => {
+      const a = spark.userData.ang + nowMortar/700 + si*0.3;
+      spark.position.set(Math.sin(a)*spark.userData.rad, Math.sin(nowMortar/300 + si)*0.03, Math.cos(a)*spark.userData.rad);
     });
+
     ud.zzzGroup.visible = !ud.awake;
     if (!ud.awake){
       const zf = (nowMortar / 900) % 1;
