@@ -88,13 +88,14 @@
      Mostra il labirinto dall'alto, il giocatore locale (freccia bianca
      orientata come lo sguardo) e gli avversari vivi (pallini colorati,
      stesso colore del loro personaggio) cosi' ci si orienta a colpo
-     d'occhio senza doversi girare con la telecamera. */
+     d'occhio senza doversi girare con la telecamera. Nessun bordo/pannello
+     scuro intorno (rimosso su richiesta): solo una leggera ombra a
+     staccare il canvas dallo sfondo del gioco. */
   #minimapWrap {
     position:fixed; top:12px; right:12px; z-index:5;
-    background:#00000070; border:1px solid #4a141460; border-radius:6px;
-    padding:6px; box-shadow:0 0 12px #00000080;
+    filter: drop-shadow(0 0 10px #00000090);
   }
-  #minimap { display:block; border-radius:3px; }
+  #minimap { display:block; border-radius:8px; }
 
 </style>
 </head>
@@ -148,7 +149,7 @@
   <div id="hudRobot" class="hidden" style="color:#c6ff3f;"></div>
 </div>
 <div id="minimapWrap" class="hidden">
-  <canvas id="minimap" width="240" height="240"></canvas>
+  <canvas id="minimap" width="320" height="320"></canvas>
 </div>
 <div id="toast"></div>
 <div id="hint" class="hidden">Click per guardarti intorno — WASD = avanti/sinistra/indietro/destra rispetto allo sguardo, la visuale sterza da sola verso la direzione presa — tasto sinistro = spara laser · 1 = mina/mortaio · 3 = missile · 5 = torretta · 8 = pet · 9 = evolvi torretta (se sbloccati) · tasto destro = scorciatoia universale (usa il prossimo gadget disponibile)</div>
@@ -1083,10 +1084,6 @@ function hexToInt(h){ return parseInt((h||"#333333").replace("#",""), 16); }
 
 let scene, camera, renderer;
 let wallMeshGroup = null;
-// PointLight laterali piazzate lungo i corridoi (vedi applyMapData): fisse
-// rispetto alla mappa, non alla camera, danno rilievo reale alle facce
-// verticali dei muri man mano che ci si passa vicino.
-let corridorLightsGroup = null;
 let floorMeshGroup = null;
 let pelletMeshes = {};   // "x,y" -> THREE.Group (sfera + bagliori)
 let powerPelletCells = new Set();
@@ -3054,7 +3051,6 @@ function applyMapData(msg){
 
   // ripulisce la scena (muri/pallini della mappa precedente, se ce n'era una)
   if (wallMeshGroup) scene.remove(wallMeshGroup);
-  if (corridorLightsGroup) scene.remove(corridorLightsGroup);
   Object.values(pelletMeshes).forEach(m => scene.remove(m));
   pelletMeshes = {};
 
@@ -3233,24 +3229,6 @@ function applyMapData(msg){
   wallMeshGroup = new THREE.Group();
   wallMeshesPerVariant.forEach(inst => { if (inst) wallMeshGroup.add(inst); });
   scene.add(wallMeshGroup);
-
-  // ---- PointLight lungo i corridoi (vedi corridorLightsGroup) ----
-  // Sottocampionate su una griglia (1 ogni 4 celle circa) per restare
-  // leggere: bastano per dare rilievo laterale ai muri vicini senza
-  // sommare troppe luci attive in una volta sola (costoso per il fragment
-  // shader). Colore preso dall'accento del tema (mazeTheme.glow).
-  const corridorLightColor = hexToInt(mazeTheme.glow || "#9df6ff");
-  corridorLightsGroup = new THREE.Group();
-  for (let y=0;y<mazeH;y++){
-    for (let x=0;x<mazeW;x++){
-      if (isWall(x,y)) continue;
-      if ((x % 4 !== 0) || (y % 4 !== 0)) continue;
-      const light = new THREE.PointLight(corridorLightColor, 0.6, CELL * 3.2, 2);
-      light.position.set(x*CELL + CELL/2, WALL_TOTAL_H * 0.55, y*CELL + CELL/2);
-      corridorLightsGroup.add(light);
-    }
-  }
-  scene.add(corridorLightsGroup);
 
   // pallini: quelli "ancora presenti" secondo il server (msg.pellets)
   const remaining = new Set((msg.pellets||[]).map(c => c[0]+","+c[1]));
@@ -5067,7 +5045,18 @@ document.addEventListener("mousedown", e => {
 
 function enterGame(){
   showScreen("game");
-  if (renderer) renderer.domElement.addEventListener("click", () => renderer.domElement.requestPointerLock());
+  if (renderer) renderer.domElement.addEventListener("click", () => {
+    renderer.domElement.requestPointerLock();
+    // schermo intero al primo click in partita: va richiesto dentro un
+    // gestore di un vero gesto dell'utente (i browser bloccano la chiamata
+    // programmatica altrimenti), quindi la agganciamo alla stessa click
+    // gia' usata per il pointer lock. .catch() silenzioso: se il browser
+    // nega il permesso (es. iframe, iOS Safari) il gioco resta comunque
+    // giocabile in finestra normale.
+    if (!document.fullscreenElement && document.documentElement.requestFullscreen){
+      document.documentElement.requestFullscreen().catch(() => {});
+    }
+  });
 }
 function exitGame(){
   document.getElementById("deadBanner").classList.add("hidden");
@@ -5109,16 +5098,31 @@ function drawMinimap(players){
   const offX = (W - cell * mazeW) / 2, offY = (H - cell * mazeH) / 2;
 
   minimapCtx.clearRect(0, 0, W, H);
-  minimapCtx.fillStyle = "#0a0303";
+  // sfondo: leggera sfumatura sul colore d'accento del tema invece del
+  // nero piatto di prima, cosi' la minimappa si legge meglio e non sembra
+  // un buco nero dentro la cornice.
+  const themeGlow = (mazeTheme && mazeTheme.glow) || "#9df6ff";
+  const bgGrad = minimapCtx.createRadialGradient(W/2, H/2, 0, W/2, H/2, Math.max(W,H)*0.7);
+  bgGrad.addColorStop(0, "#160a0a");
+  bgGrad.addColorStop(1, "#0a0404");
+  minimapCtx.fillStyle = bgGrad;
   minimapCtx.fillRect(0, 0, W, H);
 
-  // muri del labirinto
-  minimapCtx.fillStyle = "#5a2a2a";
+  // muri del labirinto: quadretti leggermente smussati con un filo di
+  // bagliore nel colore d'accento del tema, invece del blocco piatto.
+  minimapCtx.fillStyle = "#6a3232";
+  minimapCtx.strokeStyle = themeGlow + "40";
+  minimapCtx.lineWidth = 1;
+  const r = Math.min(2, cell*0.25);
   for (let y = 0; y < mazeH; y++){
     const row = maze[y];
     for (let x = 0; x < mazeW; x++){
       if (row[x] === "#"){
-        minimapCtx.fillRect(offX + x*cell, offY + y*cell, cell + 0.5, cell + 0.5);
+        const cx = offX + x*cell, cy = offY + y*cell, cw = cell + 0.5, ch = cell + 0.5;
+        minimapCtx.beginPath();
+        if (minimapCtx.roundRect) minimapCtx.roundRect(cx, cy, cw, ch, r);
+        else minimapCtx.rect(cx, cy, cw, ch);
+        minimapCtx.fill();
       }
     }
   }
