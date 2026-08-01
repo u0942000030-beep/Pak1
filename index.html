@@ -1088,29 +1088,9 @@ let wallMeshGroup = null;
 // verticali dei muri man mano che ci si passa vicino.
 let corridorLightsGroup = null;
 let floorMeshGroup = null;
-// ---- sonda di riflessione dinamica (vero specchio) ----
-// Una CubeCamera piazzata vicino al giocatore fotografa la scena reale
-// (pallini accesi compresi) in una cubemap a bassa risoluzione, che viene
-// data in pasto a envMap di pavimento/muri: cosi' cio' che si vede
-// riflesso e' davvero cio' che c'e' intorno (specchio), non un bagliore
-// finto disegnato sopra la superficie. Aggiornata poche volte al secondo
-// (non ad ogni frame) per restare leggera.
-let envProbeRenderTarget = null;
-let envProbeCamera = null;
-let envProbeFrameCounter = 0;
-const ENV_PROBE_UPDATE_EVERY = 2; // aggiorna 1 frame ogni 2 (prima 3): i giocatori si muovono
-                                   // e hanno forme piu' dettagliate dei pallini, servono
-                                   // riflessi piu' "freschi" per restare leggibili
-let pelletMeshes = {};   // "x,y" -> THREE.Group (sfera + bagliori)
+let pelletMeshes = {};   // "x,y" -> THREE.Group (sfera + bagliori + riflesso a specchio)
 let powerPelletCells = new Set();
 let remotePlayers = {};  // id -> {group, targetX, targetZ, colorHex}
-// Mesh del giocatore locale: non esisteva prima (in prima persona non serve
-// vedersi direttamente), ma senza di esso non c'e' nulla da riflettere negli
-// specchi/pavimento quando la sonda (envProbeCamera) fotografa la scena.
-// Resta invisibile per la camera principale (niente corpo che ostruisce la
-// vista in prima persona) e viene reso visibile SOLO per l'istante in cui la
-// sonda cattura la cubemap, cosi' appare unicamente nei riflessi.
-let myPlayerMesh = null;
 let laserMeshes = {};    // id -> {mesh, x, z, targetX, targetZ} bonus 150 punti: proiettili laser in volo
 let missileMeshes = {};  // id -> {mesh, x, z, targetX, targetZ} bonus 400 punti: missile guidato in volo
 let mineMeshes = {};     // id -> mesh bonus 200 punti: mine posate, statiche (nessuna interpolazione)
@@ -2903,15 +2883,15 @@ function makeGlowTexture(){
   return new THREE.CanvasTexture(cnv);
 }
 
-/* ---- costruisce il pallino: solo la sfera emissiva, niente decal finti.
-   Il riflesso su pavimento e muri NON e' piu' disegnato qui: e' un vero
-   riflesso a specchio prodotto dalla sonda di riflessione dinamica
-   (envProbeCamera, vedi initThree/animate), che fotografa la scena reale
-   -pallino compreso- e la usa come envMap dei materiali di pavimento e
-   muri. Il pallino quindi non "emette" piu' nulla verso le superfici: si
-   limita a esistere, ed e' lo specchio (il materiale lucido) a mostrarne
-   l'immagine riflessa, cambiando con l'angolo di vista come uno specchio
-   vero. ---- */
+/* ---- costruisce il pallino: la sfera emissiva + un riflesso a specchio
+   FINTO ma sempre presente. Niente piu' sonda di riflessione dinamica
+   (CubeCamera/envMap su muri e pavimento, rimossa su richiesta): al suo
+   posto, per ogni pallino, una seconda sfera identica ma ribaltata sotto
+   il livello del pavimento (position.y negativa, stessa distanza dal
+   pavimento del pallino vero) e resa semitrasparente, cosi' sembra il
+   riflesso sul pavimento esattamente sotto ad ogni pallino - un trucco
+   classico (specchio finto), non un vero raytracing, ma sempre visibile
+   e a costo zero (nessun render aggiuntivo della scena). ---- */
 function makePelletGroup(cellX, cellY, isPower, colorHex){
   const group = new THREE.Group();
 
@@ -2925,6 +2905,17 @@ function makePelletGroup(cellX, cellY, isPower, colorHex){
   const pelletY = isPower ? 0.5 : 0.35;
   sphere.position.y = pelletY;
   group.add(sphere);
+
+  // riflesso finto: stessa sfera ribaltata sotto il pavimento (y negativa,
+  // specchiata rispetto al piano y=0), semitrasparente e leggermente
+  // sfumata verso il basso per sembrare un riflesso e non un doppione.
+  const reflMat = new THREE.MeshBasicMaterial({
+    color: colorHex, transparent: true, opacity: isPower ? 0.35 : 0.28, depthWrite: false,
+  });
+  const reflSphere = new THREE.Mesh(sphereGeo, reflMat);
+  reflSphere.scale.y = -1;           // ribaltata verticalmente: vero specchio rispetto al pavimento
+  reflSphere.position.y = -pelletY;  // stessa distanza dal pavimento, ma sotto
+  group.add(reflSphere);
 
   group.position.set(cellX*CELL+CELL/2, 0, cellY*CELL+CELL/2);
   return group;
@@ -3062,43 +3053,6 @@ function initThree(){
   scene.environment = envRenderTarget.texture;
   pmremGenerator.dispose();
 
-  // ---- sonda di riflessione dinamica (vero specchio) ----
-  // Cubemap a 512px/faccia (prima 128 - bastava per i pallini, semplici
-  // sfere, ma con forme piu' dettagliate come i personaggi diventava una
-  // macchia informe) rigenerata periodicamente da un punto vicino al
-  // giocatore: e' questa (non piu' scene.environment sopra, che resta
-  // solo l'ambientazione statica di base) l'envMap che verra' assegnata
-  // a pavimento e muri, cosi' quello che ci si specchia dentro e'
-  // davvero la scena - pallini accesi, altri giocatori, ecc. - e non un
-  // disegno finto.
-  envProbeRenderTarget = new THREE.WebGLCubeRenderTarget(512, {
-    format: THREE.RGBAFormat,
-    generateMipmaps: true,
-    minFilter: THREE.LinearMipmapLinearFilter,
-  });
-  envProbeCamera = new THREE.CubeCamera(0.1, 60, envProbeRenderTarget);
-  scene.add(envProbeCamera);
-
-  // ---- sfera diagnostica temporanea (angolo basso a destra dello schermo) ----
-  // Sfera specchiata al 100% (metalness 1, roughness 0) agganciata alla
-  // camera stessa (si muove col punto di vista, resta sempre nello stesso
-  // angolo): mostra SOLO il contenuto grezzo della cubemap, senza texture/
-  // normalMap/colore base a "sporcare" il giudizio visivo. Se qui non si
-  // vede nulla di riconoscibile (pallini/altri giocatori che si muovono),
-  // la cattura della cubemap e' rotta a monte; se invece qui si vede
-  // qualcosa ma sui muri no, il problema e' nei materiali di muri/pavimento.
-  // Toglila (cerca "sfera diagnostica") una volta verificato.
-  const debugMirrorBall = new THREE.Mesh(
-    new THREE.SphereGeometry(0.045, 24, 16),
-    new THREE.MeshStandardMaterial({
-      color: 0xffffff, roughness: 0, metalness: 1,
-      envMap: envProbeRenderTarget.texture, envMapIntensity: 1.5,
-    })
-  );
-  debugMirrorBall.position.set(0.34, -0.24, -0.6);
-  camera.add(debugMirrorBall);
-  scene.add(camera); // la camera deve stare nella scene graph perche' il figlio venga renderizzato
-
   // ---- Cupola del cielo con le STESSE luci dei riflessi ----
   // Prima la texture "rawEnvTex" (le strisce al neon) veniva usata SOLO
   // come environment map per i riflessi lucidi di pavimento/muri, e mai
@@ -3196,11 +3150,12 @@ function applyMapData(msg){
   // cosi' il colore si legge chiaramente ovunque; roughness resta 0.05 e
   // envMapIntensity viene alzato leggermente per compensare, cosi' i
   // riflessi lucidi restano identici a prima.
-  // envMap: la sonda dinamica (envProbeRenderTarget), non piu' solo la
-  // texture statica dell'ambiente - cosi' il pavimento riflette davvero
-  // cio' che c'e' sopra di lui (pallini, giocatori) come uno specchio.
-  const floorMatA = new THREE.MeshStandardMaterial({ map:floorTexA.map, normalMap:floorTexA.normalMap, normalScale:new THREE.Vector2(0.15,0.15), roughness:0.05, metalness:0.55, envMap: envProbeRenderTarget ? envProbeRenderTarget.texture : null, envMapIntensity:2.2 });
-  const floorMatB = new THREE.MeshStandardMaterial({ map:floorTexB.map, normalMap:floorTexB.normalMap, normalScale:new THREE.Vector2(0.15,0.15), roughness:0.05, metalness:0.55, envMap: envProbeRenderTarget ? envProbeRenderTarget.texture : null, envMapIntensity:2.2 });
+  // Il pavimento resta lucido (roughness bassa) ma NON riflette piu' la
+  // scena dinamicamente: niente sonda/envMap. Il "riflesso" dei pallini
+  // sul pavimento e' ora un trucco fisso in makePelletGroup (sfera
+  // ribaltata sotto il livello y=0), non un vero specchio.
+  const floorMatA = new THREE.MeshStandardMaterial({ map:floorTexA.map, normalMap:floorTexA.normalMap, normalScale:new THREE.Vector2(0.15,0.15), roughness:0.05, metalness:0.55 });
+  const floorMatB = new THREE.MeshStandardMaterial({ map:floorTexB.map, normalMap:floorTexB.normalMap, normalScale:new THREE.Vector2(0.15,0.15), roughness:0.05, metalness:0.55 });
   let countA = 0, countB = 0;
   for (let y=0;y<mazeH;y++){
     for (let x=0;x<mazeW;x++){
@@ -3231,7 +3186,7 @@ function applyMapData(msg){
   const floorBaseTex = makeMetalFloorTexture(floorColorA, (mazeTheme.__mapName||"default")+":floorBase");
   const floorBase = new THREE.Mesh(
     new THREE.PlaneGeometry(mazeW*CELL, mazeH*CELL),
-    new THREE.MeshStandardMaterial({ map:floorBaseTex.map, normalMap:floorBaseTex.normalMap, normalScale:new THREE.Vector2(0.15,0.15), roughness:0.05, metalness:0.55, envMap: envProbeRenderTarget ? envProbeRenderTarget.texture : null, envMapIntensity:2.2 })
+    new THREE.MeshStandardMaterial({ map:floorBaseTex.map, normalMap:floorBaseTex.normalMap, normalScale:new THREE.Vector2(0.15,0.15), roughness:0.05, metalness:0.55 })
   );
   floorBase.material.map.wrapS = floorBase.material.map.wrapT = THREE.RepeatWrapping;
   floorBase.material.normalMap.wrapS = floorBase.material.normalMap.wrapT = THREE.RepeatWrapping;
@@ -3283,34 +3238,11 @@ function applyMapData(msg){
       map: metalTex.map,
       normalMap: metalTex.normalMap,
       normalScale: new THREE.Vector2(0.15, 0.15),
-      // Materiale allineato esattamente a quello del pavimento (stessa
-      // roughness, stesso envMapIntensity, NESSUN emissive): l'emissive
-      // aggiungeva una tinta piatta costante che appiattiva il riflesso,
-      // dando quell'aria di "ferro opaco" invece del "vetro lucido" del
-      // pavimento. Tolto, i muri si comportano otticamente come il
-      // pavimento e mostrano lo stesso identico grado di lucentezza.
-      // roughness alzata (0.05 -> 0.5) SOLO per i muri: sfoca il riflesso
-      // a specchio (le strisce di luce non si vedono piu' come immagini
-      // nitide riflesse, solo come un bagliore morbido diffuso), ma la
-      // LUCE diffusa che arriva dall'ambiente (ambient/hemisphere/env
-      // irradiance) non dipende dalla roughness, quindi la luminosita'
-      // generale resta la stessa del pavimento - cambia solo quanto
-      // "leggibile a specchio" e' il riflesso, non quanta luce c'e'.
-      // envMap ora e' la sonda DINAMICA (envProbeRenderTarget), non piu'
-      // la texture statica delle strisce di luce: prima veniva azzerata
-      // apposta perche' quella texture finta, riflessa nitida su un muro
-      // verticale, sembrava una "forma di luce" incollata sopra invece
-      // di un vero specchio. Riflettendo la scena reale (pallini, altri
-      // giocatori) invece di un disegno statico, il problema non c'e'
-      // piu' e i muri possono tornare a comportarsi come uno specchio
-      // vero, proprio come il pavimento.
-      // Valori IDENTICI al pavimento (roughness 0.05, metalness 0.55,
-      // envMapIntensity 2.2): prima erano piu' opachi (0.15 / 1.6), su
-      // richiesta esplicita ora sono allineati 1:1.
-      roughness: 0.05,
-      metalness: 0.55,
-      envMap: envProbeRenderTarget ? envProbeRenderTarget.texture : null,
-      envMapIntensity: 2.2,
+      // Niente piu' riflesso a specchio sui muri (envMap rimosso su
+      // richiesta): pannello metallico normale, illuminato dalle luci
+      // della scena (ambient/hemisphere/sun/PointLight dei corridoi).
+      roughness: 0.45,
+      metalness: 0.4,
     });
     const inst = countPerVariant[v] > 0
       ? new THREE.InstancedMesh(cubeGeo, mat, countPerVariant[v])
@@ -5311,23 +5243,6 @@ function onState(msg){
       myTargetX = wx; myTargetZ = wz;
       if (!myInited){ myRenderX = wx; myRenderZ = wz; myInited = true; } // solo al primo stato: niente scivolata dall'origine
       myState = p; // usato dal tasto "1" per decidere quale messaggio inviare (vedi mineChainNextMsg)
-
-      // Corpo del giocatore locale: creato una sola volta (stesso modello
-      // usato per i giocatori remoti), tenuto invisibile per la camera
-      // principale - viene mostrato solo per l'istante della cattura della
-      // sonda di riflessione (vedi animate()), cosi' ci si vede negli
-      // specchi senza intralciare la visuale in prima persona.
-      if (!myPlayerMesh){
-        const hex = playerColorHex[p.id];
-        myPlayerMesh = makeCharacterMesh(hex);
-        myPlayerMesh.visible = false;
-        scene.add(myPlayerMesh);
-      }
-      myPlayerMesh.visible = false; // resta nascosto finche' non e' il turno della sonda
-      if (p.facing){
-        const ang = { right:Math.PI/2, left:-Math.PI/2, down:Math.PI, up:0 }[p.facing];
-        if (ang !== undefined) myPlayerMesh.rotation.y = ang;
-      }
       document.getElementById("hudScore").textContent = "punti: " + (p.points||0);
       document.getElementById("hudLives").textContent = "vite: " + (p.lives||0);
       document.getElementById("deadBanner").classList.toggle("hidden", p.alive !== false);
@@ -7743,33 +7658,10 @@ function animate(){
   if (starsGroup) starsGroup.position.set(myRenderX, 0, myRenderZ);
   if (skyLightsDome) skyLightsDome.position.set(myRenderX, 0, myRenderZ);
 
-  // il corpo del giocatore locale segue la stessa posizione interpolata
-  // della camera (myRenderX/Z), cosi' la sonda lo fotografa esattamente
-  // dove ci si trova davvero, non dov'era all'ultimo pacchetto di rete.
-  if (myPlayerMesh) myPlayerMesh.position.set(myRenderX, 0, myRenderZ);
-
   // minimappa: ridisegnata anche qui (non solo ad ogni "state" di rete)
   // cosi' la freccia del giocatore ruota morbidamente insieme allo sguardo
   // invece di scattare solo quando arriva un nuovo pacchetto dal server.
   drawMinimap(lastPlayersForMinimap);
-
-  // sonda di riflessione dinamica: rigenerata ogni pochi frame (non ogni
-  // frame, e' un render 6x della scena quindi costa) da una posizione
-  // vicina al giocatore, cosi' i riflessi a specchio su pavimento/muri
-  // restano aggiornati mentre ci si muove senza pesare troppo sul frame
-  // rate.
-  if (envProbeCamera){
-    envProbeFrameCounter++;
-    if (envProbeFrameCounter % ENV_PROBE_UPDATE_EVERY === 0){
-      envProbeCamera.position.set(myRenderX, EYE_HEIGHT * 0.6, myRenderZ);
-      // il corpo locale compare SOLO durante questo scatto (mai nel render
-      // principale in prima persona): cosi' si vede riflesso negli specchi
-      // senza mai apparire davanti alla camera del giocatore.
-      if (myPlayerMesh) myPlayerMesh.visible = (myState.alive !== false);
-      envProbeCamera.update(renderer, scene);
-      if (myPlayerMesh) myPlayerMesh.visible = false;
-    }
-  }
 
   renderer.render(scene, camera);
 }
