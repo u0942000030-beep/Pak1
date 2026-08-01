@@ -1083,12 +1083,8 @@ function hexToInt(h){ return parseInt((h||"#333333").replace("#",""), 16); }
 
 let scene, camera, renderer;
 let wallMeshGroup = null;
-// PointLight laterali piazzate lungo i corridoi (vedi applyMapData): fisse
-// rispetto alla mappa, non alla camera, danno rilievo reale alle facce
-// verticali dei muri man mano che ci si passa vicino.
-let corridorLightsGroup = null;
 let floorMeshGroup = null;
-let pelletMeshes = {};   // "x,y" -> THREE.Group (sfera + bagliori + riflesso a specchio)
+let pelletMeshes = {};   // "x,y" -> THREE.Group (sfera + bagliori)
 let powerPelletCells = new Set();
 let remotePlayers = {};  // id -> {group, targetX, targetZ, colorHex}
 let laserMeshes = {};    // id -> {mesh, x, z, targetX, targetZ} bonus 150 punti: proiettili laser in volo
@@ -2883,15 +2879,10 @@ function makeGlowTexture(){
   return new THREE.CanvasTexture(cnv);
 }
 
-/* ---- costruisce il pallino: la sfera emissiva + un riflesso a specchio
-   FINTO ma sempre presente. Niente piu' sonda di riflessione dinamica
-   (CubeCamera/envMap su muri e pavimento, rimossa su richiesta): al suo
-   posto, per ogni pallino, una seconda sfera identica ma ribaltata sotto
-   il livello del pavimento (position.y negativa, stessa distanza dal
-   pavimento del pallino vero) e resa semitrasparente, cosi' sembra il
-   riflesso sul pavimento esattamente sotto ad ogni pallino - un trucco
-   classico (specchio finto), non un vero raytracing, ma sempre visibile
-   e a costo zero (nessun render aggiuntivo della scena). ---- */
+/* ---- costruisce il pallino: solo la sfera emissiva. Il riflesso finto
+   (seconda sfera ribaltata sotto il pavimento per ogni pallino) e' stato
+   rimosso su richiesta: raddoppiava mesh/draw-call su mappe con molti
+   pallini ed era una delle cause del lag. ---- */
 function makePelletGroup(cellX, cellY, isPower, colorHex){
   const group = new THREE.Group();
 
@@ -2905,17 +2896,6 @@ function makePelletGroup(cellX, cellY, isPower, colorHex){
   const pelletY = isPower ? 0.5 : 0.35;
   sphere.position.y = pelletY;
   group.add(sphere);
-
-  // riflesso finto: stessa sfera ribaltata sotto il pavimento (y negativa,
-  // specchiata rispetto al piano y=0), semitrasparente e leggermente
-  // sfumata verso il basso per sembrare un riflesso e non un doppione.
-  const reflMat = new THREE.MeshBasicMaterial({
-    color: colorHex, transparent: true, opacity: isPower ? 0.35 : 0.28, depthWrite: false,
-  });
-  const reflSphere = new THREE.Mesh(sphereGeo, reflMat);
-  reflSphere.scale.y = -1;           // ribaltata verticalmente: vero specchio rispetto al pavimento
-  reflSphere.position.y = -pelletY;  // stessa distanza dal pavimento, ma sotto
-  group.add(reflSphere);
 
   group.position.set(cellX*CELL+CELL/2, 0, cellY*CELL+CELL/2);
   return group;
@@ -2936,12 +2916,13 @@ function initThree(){
   renderer.toneMapping = THREE.ReinhardToneMapping;
   renderer.toneMappingExposure = 1.25;
   document.body.appendChild(renderer.domElement);
-  // Illuminazione: Ambient + Hemisphere per il riempimento omnidirezionale,
-  // piu' un fascio dall'alto (sun). Le luci laterali vere e proprie sono
-  // PointLight piazzate lungo i corridoi (vedi dopo la costruzione dei
-  // muri in applyMapData): sono fisse rispetto alla mappa, non alla camera,
-  // quindi illuminano localmente man mano che ci si passa vicino senza
-  // "inseguire" il giocatore.
+  // Illuminazione diffusa (mappa "a giorno", nessuna zona buia): SOLO
+  // luci omnidirezionali (Ambient + Hemisphere) piu' una direzionale
+  // debole giusto per un minimo di rilievo sulle forme. Niente piu'
+  // PointLight nei corridoi: erano l'unica fonte di luce localizzata e
+  // rendevano la mappa disomogenea (zone illuminate a scacchiera e zone
+  // piu' buie tra una luce e l'altra); tolte, l'illuminazione risulta
+  // uniforme ovunque.
   scene.add(new THREE.AmbientLight(0xffffff, 1.3));
   scene.add(new THREE.HemisphereLight(0xffffff, 0xe8e8e8, 0.6));
   const sun = new THREE.DirectionalLight(0xffffff, 0.35);
@@ -3039,21 +3020,15 @@ function initThree(){
     tex.needsUpdate = true;
     return tex;
   }
-  // IMPORTANTE: una texture equirettangolare "grezza" assegnata
-  // direttamente a scene.environment NON viene filtrata per i vari
-  // livelli di roughness (serve il formato CubeUV pre-filtrato che usa
-  // il calcolo IBL speculare di MeshStandardMaterial). Senza questo
-  // passaggio il riflesso risultava di fatto assente: si vedeva solo il
-  // contributo diffuso piatto delle luci ambient/hemisphere. Il
-  // PMREMGenerator converte la texture nel formato corretto.
-  const pmremGenerator = new THREE.PMREMGenerator(renderer);
-  pmremGenerator.compileEquirectangularShader();
+  // Niente piu' environment map / PMREM per riflessi speculari su
+  // muri/pavimento (rimossa su richiesta: il calcolo IBL su ogni
+  // materiale metallico della scena, ricalcolato ad ogni frame/angolo,
+  // era una delle cause principali del lag). Teniamo pero' la stessa
+  // texture "a strisce di neon" solo per disegnare la cupola del cielo
+  // qui sotto: e' un singolo mesh statico, costo trascurabile.
   const rawEnvTex = makeEnvReflectionTexture();
-  const envRenderTarget = pmremGenerator.fromEquirectangular(rawEnvTex);
-  scene.environment = envRenderTarget.texture;
-  pmremGenerator.dispose();
 
-  // ---- Cupola del cielo con le STESSE luci dei riflessi ----
+  // ---- Cupola del cielo con le STESSE luci di prima ----
   // Prima la texture "rawEnvTex" (le strisce al neon) veniva usata SOLO
   // come environment map per i riflessi lucidi di pavimento/muri, e mai
   // disegnata davvero: guardando in alto si vedeva solo il colore di
@@ -3091,7 +3066,6 @@ function applyMapData(msg){
 
   // ripulisce la scena (muri/pallini della mappa precedente, se ce n'era una)
   if (wallMeshGroup) scene.remove(wallMeshGroup);
-  if (corridorLightsGroup) scene.remove(corridorLightsGroup);
   Object.values(pelletMeshes).forEach(m => scene.remove(m));
   pelletMeshes = {};
 
@@ -3240,7 +3214,7 @@ function applyMapData(msg){
       normalScale: new THREE.Vector2(0.15, 0.15),
       // Niente piu' riflesso a specchio sui muri (envMap rimosso su
       // richiesta): pannello metallico normale, illuminato dalle luci
-      // della scena (ambient/hemisphere/sun/PointLight dei corridoi).
+      // diffuse della scena (ambient/hemisphere/sun).
       roughness: 0.45,
       metalness: 0.4,
     });
@@ -3271,24 +3245,6 @@ function applyMapData(msg){
   wallMeshGroup = new THREE.Group();
   wallMeshesPerVariant.forEach(inst => { if (inst) wallMeshGroup.add(inst); });
   scene.add(wallMeshGroup);
-
-  // ---- PointLight lungo i corridoi (vedi corridorLightsGroup) ----
-  // Sottocampionate su una griglia (1 ogni 4 celle circa) per restare
-  // leggere: bastano per dare rilievo laterale ai muri vicini senza
-  // sommare troppe luci attive in una volta sola (costoso per il fragment
-  // shader). Colore preso dall'accento del tema (mazeTheme.glow).
-  const corridorLightColor = hexToInt(mazeTheme.glow || "#9df6ff");
-  corridorLightsGroup = new THREE.Group();
-  for (let y=0;y<mazeH;y++){
-    for (let x=0;x<mazeW;x++){
-      if (isWall(x,y)) continue;
-      if ((x % 4 !== 0) || (y % 4 !== 0)) continue;
-      const light = new THREE.PointLight(corridorLightColor, 0.6, CELL * 3.2, 2);
-      light.position.set(x*CELL + CELL/2, WALL_TOTAL_H * 0.55, y*CELL + CELL/2);
-      corridorLightsGroup.add(light);
-    }
-  }
-  scene.add(corridorLightsGroup);
 
   // pallini: quelli "ancora presenti" secondo il server (msg.pellets)
   const remaining = new Set((msg.pellets||[]).map(c => c[0]+","+c[1]));
