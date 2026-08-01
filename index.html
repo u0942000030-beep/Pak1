@@ -3152,9 +3152,18 @@ function applyMapData(msg){
       // qui invece torna a esserci anche una componente diffusa colorata,
       // cosi' i muri mostrano il colore del tema con la stessa evidenza
       // del pavimento. roughness resta bassa: la lucentezza non cambia.
+      // envMapIntensity piu' alto di quello del pavimento (3.6 contro 2.2):
+      // la texture usata per i riflessi (vedi makeEnvReflectionTexture) e'
+      // disegnata piu' chiara verso lo zenit e piu' scura verso l'orizzonte
+      // (imita un soffitto illuminato). Il pavimento, con la normale
+      // rivolta in su, pesca luce dalla zona chiara; le facce VERTICALI dei
+      // muri invece pescano soprattutto dalla fascia d'orizzonte, la piu'
+      // scura - a parita' di metalness/roughness risultavano quindi sempre
+      // piu' opache. Alzando l'intensita' solo qui si compensa la
+      // differenza senza toccare l'aspetto del pavimento o del cielo.
       roughness: 0.06,
       metalness: 0.55,
-      envMapIntensity: 2.2,
+      envMapIntensity: 3.6,
     });
     const inst = countPerVariant[v] > 0
       ? new THREE.InstancedMesh(cubeGeo, mat, countPerVariant[v])
