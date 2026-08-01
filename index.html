@@ -2857,46 +2857,28 @@ function initThree(){
   // debole per dare un minimo di rilievo alle forme senza alterare i
   // colori: cosi' ogni oggetto mantiene il suo colore reale ovunque ci
   // si trovi sulla mappa.
-  // NB: l'intensita' dell'ambientale era 2.4, ben oltre il range tipico
-  // (~0.1-1.0): sommata alla direzionale, su superfici curve (mine, blob,
-  // mortai, funghi...) viste da un'angolazione quasi frontale la luce
-  // totale superava 1.0 per canale, "clippando" il colore verso il
-  // bianco. L'effetto passava quasi inosservato sui muri (piatti/cubici,
-  // guardati sempre di scorcio) ma diventava vistoso avvicinandosi ai
-  // gadget piccoli e arrotondati, dove ci si ritrova spesso a guardarli
-  // da un'angolazione quasi frontale/dall'alto: da qui il "colore che
-  // sbianca avvicinandosi" ai bonus piazzati.
-  scene.add(new THREE.AmbientLight(0xffffff, 1.0));
-  const sun = new THREE.DirectionalLight(0xffffff, 0.6);
-  sun.position.set(0.3, 1, 0.2);
+  // Riempimento generale (mappa "a giorno", nessuna zona buia): SOLO luci
+  // omnidirezionali (Ambient + Hemisphere). A differenza di una
+  // direzionale, queste non hanno una direzione da riflettere sulle
+  // superfici lucide: alzarle rende la mappa piu' luminosa ovunque SENZA
+  // creare highlight/riflessi puntiformi che si spostano quando ci si
+  // muove (il problema delle 4 direzionali usate prima, che producevano
+  // 4 riflessi mobili diversi sparsi per la mappa).
+  scene.add(new THREE.AmbientLight(0xffffff, 1.3));
+  // Hemisphere quasi neutra (sky/ground molto vicini, solo un accenno di
+  // rilievo dall'alto verso il basso) invece di un'altra Ambient pura:
+  // aggiunge luminosita' extra restando comunque omnidirezionale, senza
+  // sommarsi punto per punto come farebbe un'altra direzionale.
+  scene.add(new THREE.HemisphereLight(0xffffff, 0xe8e8e8, 0.6));
+  // UNA sola direzionale: da' l'unico highlight speculare coerente su
+  // ogni superficie lucida (muri e pavimento riflettono cosi' ALLO STESSO
+  // MODO, con lo stesso riflesso nella stessa direzione), invece dei 4
+  // riflessi diversi e scoordinati delle direzionali precedenti. Quasi
+  // verticale dall'alto, stessa angolazione che gia' faceva funzionare
+  // bene il pavimento.
+  const sun = new THREE.DirectionalLight(0xffffff, 0.5);
+  sun.position.set(0.2, 1, 0.15);
   scene.add(sun);
-  // Seconda direzionale, piu' orizzontale: la sun principale arriva quasi
-  // verticale dall'alto (y=1 dominante), quindi il suo riflesso speculare
-  // sul pavimento (orizzontale) e' ben visibile, ma su una superficie
-  // VERTICALE come i muri finisce quasi sempre fuori dal campo visivo di
-  // chi cammina in prima persona guardando dritto avanti - il materiale
-  // lucido dei muri risultava quindi invisibile pur essendo impostato
-  // correttamente. Questa luce, quasi radente e proveniente di lato,
-  // produce highlight speculari anche sulle facce verticali dei muri.
-  const fill = new THREE.DirectionalLight(0xffffff, 0.35);
-  fill.position.set(1, 0.25, 0.6);
-  scene.add(fill);
-  // Mappa "a giorno": invece di alzare l'intensita' di UNA sola luce
-  // (che e' esattamente cio' che causava lo sbiancamento visto prima,
-  // vedi nota sull'ambientale a 2.4 sopra), si aggiungono altre due
-  // direzionali DEBOLI da direzioni diverse (i due lati non ancora
-  // coperti da sun/fill). Ogni faccia della mappa e' cosi' raggiunta da
-  // almeno una luce anche quando e' "in ombra" rispetto alle prime due,
-  // alzando la luminosita' percepita ovunque - ma nessuna singola
-  // direzione e' abbastanza forte da sommarsi oltre la soglia di
-  // clipping (1.0 per canale) su una faccia esposta, quindi i colori dei
-  // gadget restano fedeli anche da vicino.
-  const fill2 = new THREE.DirectionalLight(0xffffff, 0.3);
-  fill2.position.set(-1, 0.4, -0.5);
-  scene.add(fill2);
-  const fill3 = new THREE.DirectionalLight(0xffffff, 0.25);
-  fill3.position.set(-0.4, 0.6, 1);
-  scene.add(fill3);
   window.addEventListener("resize", () => {
     camera.aspect = window.innerWidth/window.innerHeight;
     camera.updateProjectionMatrix();
