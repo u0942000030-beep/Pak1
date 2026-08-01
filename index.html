@@ -1084,6 +1084,19 @@ function hexToInt(h){ return parseInt((h||"#333333").replace("#",""), 16); }
 let scene, camera, renderer;
 let wallMeshGroup = null;
 let floorMeshGroup = null;
+// ---- sonda di riflessione dinamica (vero specchio) ----
+// Una CubeCamera piazzata vicino al giocatore fotografa la scena reale
+// (pallini accesi compresi) in una cubemap a bassa risoluzione, che viene
+// data in pasto a envMap di pavimento/muri: cosi' cio' che si vede
+// riflesso e' davvero cio' che c'e' intorno (specchio), non un bagliore
+// finto disegnato sopra la superficie. Aggiornata poche volte al secondo
+// (non ad ogni frame) per restare leggera.
+let envProbeRenderTarget = null;
+let envProbeCamera = null;
+let envProbeFrameCounter = 0;
+const ENV_PROBE_UPDATE_EVERY = 2; // aggiorna 1 frame ogni 2 (prima 3): i giocatori si muovono
+                                   // e hanno forme piu' dettagliate dei pallini, servono
+                                   // riflessi piu' "freschi" per restare leggibili
 let pelletMeshes = {};   // "x,y" -> THREE.Group (sfera + bagliori)
 let powerPelletCells = new Set();
 let remotePlayers = {};  // id -> {group, targetX, targetZ, colorHex}
@@ -2678,6 +2691,25 @@ function makeMetalFloorTexture(baseColorHex, seedStr){
   return { map: colorTex, normalMap: normalTex };
 }
 
+/* ---- texture "metallo lavorato" riusata per i GADGET (missile, mina,
+   torretta e sue evoluzioni, mortaio, bombolone): stesso generatore del
+   pavimento/muri (spazzolatura + ruggine + normal map), ma con una
+   cache per colore+parte cosi' non viene ridisegnata da zero ogni volta
+   che un giocatore piazza/spara un gadget (sarebbe troppo costoso farlo
+   a runtime, specialmente per i missili che si sparano di continuo). ---- */
+const gadgetTexCache = new Map();
+function getGadgetTexture(colorHex, seedStr){
+  const key = colorHex + ":" + seedStr;
+  if (!gadgetTexCache.has(key)) gadgetTexCache.set(key, makeMetalFloorTexture(colorHex, seedStr));
+  return gadgetTexCache.get(key);
+}
+function gadgetSurfaceMaterial(colorHex, seedStr, extra){
+  const tex = getGadgetTexture(colorHex, seedStr);
+  return new THREE.MeshStandardMaterial(Object.assign({
+    map: tex.map, normalMap: tex.normalMap, normalScale: new THREE.Vector2(0.5, 0.5),
+  }, extra || {}));
+}
+
 /* ---- cielo stellato: campo di puntini bianchi disposti casualmente su
    una grande sfera che avvolge la scena, usando THREE.Points (un'unica
    draw call, economico) invece di tante piccole mesh separate. La sfera
@@ -2860,23 +2892,16 @@ function makeGlowTexture(){
   return new THREE.CanvasTexture(cnv);
 }
 
-/* ---- costruisce il pallino completo: sfera ad alta risoluzione +
-   bagliore "riflesso" su pavimento e sui muri adiacenti.
-   IMPORTANTE: il pallino NON aggiunge una vera THREE.Light alla scena (e
-   quindi non "irraggia"/illumina davvero pavimento e muri, ne' costa
-   in performance come una luce dinamica) - il bagliore e' solo una
-   decalcomania piatta e semitrasparente (blending additivo, stesso
-   colore del pallino) appoggiata sulle superfici vicine, che dal punto
-   di vista visivo legge come un riflesso di luce ma e' in realta' una
-   texture finta, economicissima da disegnare.
-   Sul pavimento c'e' sempre (un disco sotto al pallino); sui muri solo
-   nelle direzioni dove la cella adiacente e' davvero un muro (controllo
-   con isWall, la stessa funzione usata per il resto della mappa). ---- */
-const PELLET_WALL_DIRS = [
-  { dx: 0, dz: -1 }, { dx: 0, dz: 1 }, { dx: -1, dz: 0 }, { dx: 1, dz: 0 },
-];
+/* ---- costruisce il pallino: solo la sfera emissiva, niente decal finti.
+   Il riflesso su pavimento e muri NON e' piu' disegnato qui: e' un vero
+   riflesso a specchio prodotto dalla sonda di riflessione dinamica
+   (envProbeCamera, vedi initThree/animate), che fotografa la scena reale
+   -pallino compreso- e la usa come envMap dei materiali di pavimento e
+   muri. Il pallino quindi non "emette" piu' nulla verso le superfici: si
+   limita a esistere, ed e' lo specchio (il materiale lucido) a mostrarne
+   l'immagine riflessa, cambiando con l'angolo di vista come uno specchio
+   vero. ---- */
 function makePelletGroup(cellX, cellY, isPower, colorHex){
-  if (!pelletGlowTex) pelletGlowTex = makeGlowTexture();
   const group = new THREE.Group();
 
   const sphereGeo = isPower
@@ -2889,35 +2914,6 @@ function makePelletGroup(cellX, cellY, isPower, colorHex){
   const pelletY = isPower ? 0.5 : 0.35;
   sphere.position.y = pelletY;
   group.add(sphere);
-
-  const glowSize = isPower ? 1.0 : 0.6;
-  const glowOpacity = isPower ? 0.55 : 0.35;
-  function makeGlowPlane(){
-    return new THREE.Mesh(
-      new THREE.PlaneGeometry(glowSize, glowSize),
-      new THREE.MeshBasicMaterial({
-        map: pelletGlowTex, color: colorHex, transparent: true, opacity: glowOpacity,
-        blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide, fog: false,
-      })
-    );
-  }
-
-  // riflesso sul pavimento: disco piatto appena sopra il pavimento,
-  // esattamente sotto al pallino.
-  const floorGlow = makeGlowPlane();
-  floorGlow.rotation.x = -Math.PI/2;
-  floorGlow.position.y = 0.02; // appena sopra il pavimento, evita z-fighting
-  group.add(floorGlow);
-
-  // riflesso sui muri: un disco per ogni lato adiacente che e' davvero
-  // un muro (isWall), appoggiato contro la sua faccia.
-  PELLET_WALL_DIRS.forEach(({dx, dz}) => {
-    if (!isWall(cellX + dx, cellY + dz)) return;
-    const wallGlow = makeGlowPlane();
-    if (dx !== 0) wallGlow.rotation.y = Math.PI/2; // muro a est/ovest -> piano ruotato sull'asse Y
-    wallGlow.position.set(dx * (CELL/2 - 0.02), pelletY, dz * (CELL/2 - 0.02));
-    group.add(wallGlow);
-  });
 
   group.position.set(cellX*CELL+CELL/2, 0, cellY*CELL+CELL/2);
   return group;
@@ -3055,6 +3051,23 @@ function initThree(){
   scene.environment = envRenderTarget.texture;
   pmremGenerator.dispose();
 
+  // ---- sonda di riflessione dinamica (vero specchio) ----
+  // Cubemap a 512px/faccia (prima 128 - bastava per i pallini, semplici
+  // sfere, ma con forme piu' dettagliate come i personaggi diventava una
+  // macchia informe) rigenerata periodicamente da un punto vicino al
+  // giocatore: e' questa (non piu' scene.environment sopra, che resta
+  // solo l'ambientazione statica di base) l'envMap che verra' assegnata
+  // a pavimento e muri, cosi' quello che ci si specchia dentro e'
+  // davvero la scena - pallini accesi, altri giocatori, ecc. - e non un
+  // disegno finto.
+  envProbeRenderTarget = new THREE.WebGLCubeRenderTarget(512, {
+    format: THREE.RGBFormat,
+    generateMipmaps: true,
+    minFilter: THREE.LinearMipmapLinearFilter,
+  });
+  envProbeCamera = new THREE.CubeCamera(0.1, 60, envProbeRenderTarget);
+  scene.add(envProbeCamera);
+
   // ---- Cupola del cielo con le STESSE luci dei riflessi ----
   // Prima la texture "rawEnvTex" (le strisce al neon) veniva usata SOLO
   // come environment map per i riflessi lucidi di pavimento/muri, e mai
@@ -3151,8 +3164,11 @@ function applyMapData(msg){
   // cosi' il colore si legge chiaramente ovunque; roughness resta 0.05 e
   // envMapIntensity viene alzato leggermente per compensare, cosi' i
   // riflessi lucidi restano identici a prima.
-  const floorMatA = new THREE.MeshStandardMaterial({ map:floorTexA.map, normalMap:floorTexA.normalMap, normalScale:new THREE.Vector2(0.15,0.15), roughness:0.05, metalness:0.55, envMapIntensity:2.2 });
-  const floorMatB = new THREE.MeshStandardMaterial({ map:floorTexB.map, normalMap:floorTexB.normalMap, normalScale:new THREE.Vector2(0.15,0.15), roughness:0.05, metalness:0.55, envMapIntensity:2.2 });
+  // envMap: la sonda dinamica (envProbeRenderTarget), non piu' solo la
+  // texture statica dell'ambiente - cosi' il pavimento riflette davvero
+  // cio' che c'e' sopra di lui (pallini, giocatori) come uno specchio.
+  const floorMatA = new THREE.MeshStandardMaterial({ map:floorTexA.map, normalMap:floorTexA.normalMap, normalScale:new THREE.Vector2(0.15,0.15), roughness:0.05, metalness:0.55, envMap: envProbeRenderTarget ? envProbeRenderTarget.texture : null, envMapIntensity:2.2 });
+  const floorMatB = new THREE.MeshStandardMaterial({ map:floorTexB.map, normalMap:floorTexB.normalMap, normalScale:new THREE.Vector2(0.15,0.15), roughness:0.05, metalness:0.55, envMap: envProbeRenderTarget ? envProbeRenderTarget.texture : null, envMapIntensity:2.2 });
   let countA = 0, countB = 0;
   for (let y=0;y<mazeH;y++){
     for (let x=0;x<mazeW;x++){
@@ -3183,7 +3199,7 @@ function applyMapData(msg){
   const floorBaseTex = makeMetalFloorTexture(floorColorA, (mazeTheme.__mapName||"default")+":floorBase");
   const floorBase = new THREE.Mesh(
     new THREE.PlaneGeometry(mazeW*CELL, mazeH*CELL),
-    new THREE.MeshStandardMaterial({ map:floorBaseTex.map, normalMap:floorBaseTex.normalMap, normalScale:new THREE.Vector2(0.15,0.15), roughness:0.05, metalness:0.55, envMapIntensity:2.2 })
+    new THREE.MeshStandardMaterial({ map:floorBaseTex.map, normalMap:floorBaseTex.normalMap, normalScale:new THREE.Vector2(0.15,0.15), roughness:0.05, metalness:0.55, envMap: envProbeRenderTarget ? envProbeRenderTarget.texture : null, envMapIntensity:2.2 })
   );
   floorBase.material.map.wrapS = floorBase.material.map.wrapT = THREE.RepeatWrapping;
   floorBase.material.normalMap.wrapS = floorBase.material.normalMap.wrapT = THREE.RepeatWrapping;
@@ -3248,18 +3264,18 @@ function applyMapData(msg){
       // irradiance) non dipende dalla roughness, quindi la luminosita'
       // generale resta la stessa del pavimento - cambia solo quanto
       // "leggibile a specchio" e' il riflesso, non quanta luce c'e'.
-      // envMapIntensity azzerato SOLO sui muri: prima riflettevano la
-      // texture delle strisce di luce come un'immagine speculare nitida
-      // (visibile a occhio come "forme di luce" sul muro) - qui la
-      // togliamo del tutto. La roughness resta bassa (0.15): il muro
-      // continua a dare un guizzo lucido dalle luci dirette in scena
-      // (ambient/hemisphere/sole), ma senza mostrare l'immagine riflessa
-      // dell'ambiente. La luminosita' generale non cambia: ambient e
-      // hemisphere non dipendono da envMapIntensity, illuminano i muri
-      // esattamente come prima.
+      // envMap ora e' la sonda DINAMICA (envProbeRenderTarget), non piu'
+      // la texture statica delle strisce di luce: prima veniva azzerata
+      // apposta perche' quella texture finta, riflessa nitida su un muro
+      // verticale, sembrava una "forma di luce" incollata sopra invece
+      // di un vero specchio. Riflettendo la scena reale (pallini, altri
+      // giocatori) invece di un disegno statico, il problema non c'e'
+      // piu' e i muri possono tornare a comportarsi come uno specchio
+      // vero, proprio come il pavimento.
       roughness: 0.15,
       metalness: 0.55,
-      envMapIntensity: 0,
+      envMap: envProbeRenderTarget ? envProbeRenderTarget.texture : null,
+      envMapIntensity: 1.6,
     });
     const inst = countPerVariant[v] > 0
       ? new THREE.InstancedMesh(cubeGeo, mat, countPerVariant[v])
@@ -3438,12 +3454,12 @@ function orientLaserBolt(mesh, dx, dy, dz){
 function makeMissileMesh(colorHex){
   const g = new THREE.Group();
   const halo = new THREE.Mesh(
-    new THREE.SphereGeometry(0.22, 10, 8),
+    new THREE.SphereGeometry(0.22, 20, 16),
     new THREE.MeshBasicMaterial({ color: colorHex, transparent:true, opacity:0.35 })
   );
   g.add(halo);
   const core = new THREE.Mesh(
-    new THREE.SphereGeometry(0.08, 8, 6),
+    new THREE.SphereGeometry(0.08, 14, 10),
     new THREE.MeshStandardMaterial({ color:0xe8f7ff, emissive:0xe8f7ff, emissiveIntensity:1.3 })
   );
   g.add(core);
@@ -3459,13 +3475,13 @@ function makeMissileMesh(colorHex){
 function makeMineMesh(colorHex){
   const g = new THREE.Group();
   const base = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.18, 0.2, 0.12, 10),
-    new THREE.MeshStandardMaterial({ color: colorHex })
+    new THREE.CylinderGeometry(0.18, 0.2, 0.12, 20),
+    gadgetSurfaceMaterial(colorHex, "mine", { roughness:0.45, metalness:0.35 })
   );
   base.position.y = 0.06;
   g.add(base);
   const core = new THREE.Mesh(
-    new THREE.SphereGeometry(0.06, 8, 6),
+    new THREE.SphereGeometry(0.06, 14, 10),
     new THREE.MeshStandardMaterial({ color:0xffffff, emissive:0xffffff, emissiveIntensity:1.1 })
   );
   core.position.y = 0.16;
@@ -3600,13 +3616,13 @@ function makeTurretMesh(colorHex){
   // idea del bombolone/mongolfiera: un anello esterno piu' ampio e uno
   // interno piu' intenso), invece del singolo alone di prima.
   const halo = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.36, 0.36, 0.02, 16),
+    new THREE.CylinderGeometry(0.36, 0.36, 0.02, 28),
     new THREE.MeshBasicMaterial({ color: colorHex, transparent:true, opacity:0.16 })
   );
   halo.position.y = 0.01;
   g.add(halo);
   const haloInner = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.27, 0.27, 0.02, 16),
+    new THREE.CylinderGeometry(0.27, 0.27, 0.02, 28),
     new THREE.MeshBasicMaterial({ color: colorHex, transparent:true, opacity:0.24 })
   );
   haloInner.position.y = 0.012;
@@ -3616,8 +3632,8 @@ function makeTurretMesh(colorHex){
   // trattamento superficiale della mongolfiera/bombolone/muro di
   // spunzoni, invece della vecchia piastra piatta monocolore.
   const plate = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.24, 0.27, 0.14 * H, 8),
-    new THREE.MeshStandardMaterial({ color: 0x2a2a2e, flatShading:true, roughness:0.5, metalness:0.3 })
+    new THREE.CylinderGeometry(0.24, 0.27, 0.14 * H, 20),
+    gadgetSurfaceMaterial(0x2a2a2e, "turret-plate", { flatShading:false, roughness:0.5, metalness:0.3 })
   );
   plate.position.y = 0.09 * H;
   g.add(plate);
@@ -3627,7 +3643,7 @@ function makeTurretMesh(colorHex){
   // bombolone/muro di spunzoni/mongolfiera - qui coesiste col vecchio
   // nucleo esterno bianco (il "mirino" quando aggancia un bersaglio).
   const innerCore = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.13, 0.13, 0.08 * H, 8),
+    new THREE.CylinderGeometry(0.13, 0.13, 0.08 * H, 20),
     new THREE.MeshBasicMaterial({ color: colorHex, transparent:true, opacity:0.4 })
   );
   innerCore.position.y = 0.09 * H;
@@ -3638,7 +3654,7 @@ function makeTurretMesh(colorHex){
   // proprietario) invece delle vecchie strisce assenti.
   const bandMat = new THREE.MeshStandardMaterial({ color: 0x141416, roughness:0.4, metalness:0.6 });
   const rivetMat = new THREE.MeshStandardMaterial({ color: colorHex, roughness:0.3, metalness:0.5, emissive: colorHex, emissiveIntensity:0.25 });
-  const band = new THREE.Mesh(new THREE.TorusGeometry(0.255, 0.018, 6, 16), bandMat);
+  const band = new THREE.Mesh(new THREE.TorusGeometry(0.255, 0.018, 8, 28), bandMat);
   band.rotation.x = Math.PI / 2;
   band.position.y = 0.15 * H;
   g.add(band);
@@ -3657,8 +3673,8 @@ function makeTurretMesh(colorHex){
   barrelPivot.position.y = 0.16 * H;
   g.add(barrelPivot);
   const drum = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.14, 0.15, 0.11 * H, 10),
-    new THREE.MeshStandardMaterial({ color: colorHex, roughness:0.4, metalness:0.3 })
+    new THREE.CylinderGeometry(0.14, 0.15, 0.11 * H, 20),
+    gadgetSurfaceMaterial(colorHex, "turret-drum", { roughness:0.4, metalness:0.3 })
   );
   drum.rotation.x = Math.PI / 2;
   barrelPivot.add(drum);
@@ -3670,14 +3686,14 @@ function makeTurretMesh(colorHex){
   // rinforzata con un anello a meta' lunghezza rispetto alla vecchia
   // canna sottile e liscia.
   const barrel = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.042, 0.052, 0.36, 8),
-    new THREE.MeshStandardMaterial({ color: 0x3a3a3e, roughness:0.4, metalness:0.4 })
+    new THREE.CylinderGeometry(0.042, 0.052, 0.36, 16),
+    gadgetSurfaceMaterial(0x3a3a3e, "turret-barrel", { roughness:0.4, metalness:0.4 })
   );
   barrel.rotation.z = Math.PI / 2;
   barrel.position.set(0.18, 0, 0);
   barrelPivot.add(barrel);
   const barrelRing = new THREE.Mesh(
-    new THREE.TorusGeometry(0.05, 0.012, 6, 10),
+    new THREE.TorusGeometry(0.05, 0.012, 8, 18),
     new THREE.MeshStandardMaterial({ color: colorHex, roughness:0.3, metalness:0.5 })
   );
   barrelRing.rotation.y = Math.PI / 2;
@@ -3687,14 +3703,14 @@ function makeTurretMesh(colorHex){
   // Nucleo esterno bianco: resta il "mirino" acceso quando ha agganciato
   // un bersaglio, invariato rispetto a prima.
   const core = new THREE.Mesh(
-    new THREE.SphereGeometry(0.065, 8, 6),
+    new THREE.SphereGeometry(0.065, 14, 10),
     new THREE.MeshStandardMaterial({ color:0xffffff, emissive:0xffffff, emissiveIntensity:1.2 })
   );
   core.position.y = 0.16 * H;
   g.add(core);
 
   const ring = new THREE.Mesh(
-    new THREE.TorusGeometry(0.3, 0.02, 6, 16),
+    new THREE.TorusGeometry(0.3, 0.02, 8, 28),
     new THREE.MeshBasicMaterial({ color: colorHex, transparent:true, opacity:0.7 })
   );
   ring.rotation.x = Math.PI / 2;
@@ -3734,7 +3750,7 @@ function makePetMesh(colorHex){
   // Alone morbido nel colore del proprietario, per riconoscere di chi e'
   // il pet anche a distanza (stessa idea dell'alone 2D).
   const halo = new THREE.Mesh(
-    new THREE.SphereGeometry(0.24, 12, 8),
+    new THREE.SphereGeometry(0.24, 22, 16),
     new THREE.MeshBasicMaterial({ color: colorHex, transparent:true, opacity:0.22 })
   );
   halo.position.y = 0.31;
@@ -3779,7 +3795,7 @@ function makeMortarMesh(colorHex){
 
   // Alone morbido a terra: resta a terra, nessun allungamento.
   const halo = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.4, 0.4, 0.02, 16),
+    new THREE.CylinderGeometry(0.4, 0.4, 0.02, 28),
     new THREE.MeshBasicMaterial({ color: colorHex, transparent:true, opacity:0.18 })
   );
   halo.position.y = 0.01;
@@ -3789,8 +3805,8 @@ function makeMortarMesh(colorHex){
   // il treppiede con un blocco unico e stabile, come nel mortaio di
   // Clash Royale, che poggia direttamente sul terreno senza gambe.
   const base = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.30, 0.34, 0.20 * H, 14),
-    new THREE.MeshStandardMaterial({ color: WOOD_DARK })
+    new THREE.CylinderGeometry(0.30, 0.34, 0.20 * H, 22),
+    gadgetSurfaceMaterial(WOOD_DARK, "mortar-base", { roughness:0.85, metalness:0.05 })
   );
   base.position.y = 0.10 * H;
   g.add(base);
@@ -3808,8 +3824,8 @@ function makeMortarMesh(colorHex){
 
   // Cerchio metallico inferiore a rivetti, attorno alla base a botte.
   const ringLow = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.315, 0.315, 0.035 * H, 14),
-    new THREE.MeshStandardMaterial({ color: METAL_DARK })
+    new THREE.CylinderGeometry(0.315, 0.315, 0.035 * H, 22),
+    gadgetSurfaceMaterial(METAL_DARK, "mortar-ring", { roughness:0.4, metalness:0.6 })
   );
   ringLow.position.y = 0.14 * H;
   g.add(ringLow);
@@ -3817,8 +3833,8 @@ function makeMortarMesh(colorHex){
   // Spalla/cerniera nel colore del proprietario: il punto dove la canna
   // si "aggancia" alla base, ben visibile per riconoscere il giocatore.
   const shoulder = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.24, 0.28, 0.10 * H, 14),
-    new THREE.MeshStandardMaterial({ color: colorHex })
+    new THREE.CylinderGeometry(0.24, 0.28, 0.10 * H, 22),
+    gadgetSurfaceMaterial(colorHex, "mortar-shoulder", { roughness:0.4, metalness:0.35 })
   );
   shoulder.position.y = 0.23 * H;
   g.add(shoulder);
@@ -3834,8 +3850,8 @@ function makeMortarMesh(colorHex){
 
   // Corpo della canna: tronco largo e corto di legno rinforzato.
   const barrelBody = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.20, 0.23, 0.34 * H, 14),
-    new THREE.MeshStandardMaterial({ color: WOOD })
+    new THREE.CylinderGeometry(0.20, 0.23, 0.34 * H, 22),
+    gadgetSurfaceMaterial(WOOD, "mortar-barrel", { roughness:0.85, metalness:0.05 })
   );
   barrelBody.position.y = 0.14 * H;
   barrel.add(barrelBody);
@@ -3844,8 +3860,8 @@ function makeMortarMesh(colorHex){
   // rinforzo del mortaio originale.
   [0.06, 0.24].forEach(yy => {
     const band = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.225, 0.225, 0.04 * H, 14),
-      new THREE.MeshStandardMaterial({ color: METAL })
+      new THREE.CylinderGeometry(0.225, 0.225, 0.04 * H, 22),
+      gadgetSurfaceMaterial(METAL, "mortar-band", { roughness:0.4, metalness:0.6 })
     );
     band.position.y = yy * H;
     barrel.add(band);
@@ -3862,15 +3878,15 @@ function makeMortarMesh(colorHex){
   // l'esterno, nel colore del proprietario per riconoscere subito chi
   // l'ha piazzato.
   const muzzle = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.26, 0.20, 0.06 * H, 14),
-    new THREE.MeshStandardMaterial({ color: colorHex })
+    new THREE.CylinderGeometry(0.26, 0.20, 0.06 * H, 22),
+    gadgetSurfaceMaterial(colorHex, "mortar-muzzle", { roughness:0.4, metalness:0.35 })
   );
   muzzle.position.y = 0.335 * H;
   barrel.add(muzzle);
 
   // Bocca scura vista dall'alto (il "respiro" e' animato scalando questo mesh).
   const mouth = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.15, 0.15, 0.04 * H, 14),
+    new THREE.CylinderGeometry(0.15, 0.15, 0.04 * H, 22),
     new THREE.MeshStandardMaterial({ color: WOOD_DARK })
   );
   mouth.position.y = 0.365 * H;
@@ -3878,7 +3894,7 @@ function makeMortarMesh(colorHex){
 
   // Nucleo: scuro a riposo, rosso pulsante quando ha agganciato un bersaglio.
   const core = new THREE.Mesh(
-    new THREE.SphereGeometry(0.055, 8, 6),
+    new THREE.SphereGeometry(0.055, 14, 10),
     new THREE.MeshStandardMaterial({ color:0x3a2213, emissive:0x3a2213, emissiveIntensity:0.4 })
   );
   core.position.y = 0.39 * H;
@@ -3909,13 +3925,13 @@ function makeSuperbombMesh(colorHex){
   // Alone morbido a terra nel colore del proprietario, ora con un secondo
   // anello piu' stretto e piu' intenso appena sopra per dare profondita'.
   const halo = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.4, 0.4, 0.02, 20),
+    new THREE.CylinderGeometry(0.4, 0.4, 0.02, 28),
     new THREE.MeshBasicMaterial({ color: colorHex, transparent:true, opacity:0.20 })
   );
   halo.position.y = 0.01;
   g.add(halo);
   const haloInner = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.24, 0.24, 0.02, 20),
+    new THREE.CylinderGeometry(0.24, 0.24, 0.02, 28),
     new THREE.MeshBasicMaterial({ color: colorHex, transparent:true, opacity:0.32 })
   );
   haloInner.position.y = 0.015;
@@ -3925,8 +3941,8 @@ function makeSuperbombMesh(colorHex){
   // superficie sfaccettata "corazzata" molto piu' leggibile a distanza
   // di una sfera piatta.
   const body = new THREE.Mesh(
-    new THREE.IcosahedronGeometry(R, 1),
-    new THREE.MeshStandardMaterial({ color: 0x232326, flatShading:true, roughness:0.55, metalness:0.35 })
+    new THREE.IcosahedronGeometry(R, 2),
+    gadgetSurfaceMaterial(0x232326, "superbomb-body", { flatShading:true, roughness:0.55, metalness:0.35 })
   );
   body.position.y = R + 0.02;
   g.add(body);
@@ -3935,7 +3951,7 @@ function makeSuperbombMesh(colorHex){
   // solo attraverso le fessure delle fasce: e' quello che nel render loop
   // pulsa e vira dal giallo/arancio tenue al rosso acceso.
   const core = new THREE.Mesh(
-    new THREE.SphereGeometry(R * 0.7, 12, 10),
+    new THREE.SphereGeometry(R * 0.7, 20, 16),
     new THREE.MeshBasicMaterial({ color: 0xffaa33, transparent:true, opacity:0.55 })
   );
   core.position.y = R + 0.02;
@@ -3951,7 +3967,7 @@ function makeSuperbombMesh(colorHex){
     const bandY = R + 0.02 + yFrac * R;
     const bandRadius = Math.sqrt(Math.max(0.0001, R*R - (yFrac*R)*(yFrac*R))) * 1.04;
     const band = new THREE.Mesh(
-      new THREE.TorusGeometry(bandRadius, 0.028, 6, 20),
+      new THREE.TorusGeometry(bandRadius, 0.028, 8, 28),
       bandMat
     );
     band.rotation.x = Math.PI / 2;
@@ -4064,7 +4080,7 @@ function makeBalloonMesh(colorHex){
   // Cesto di vimini appeso sotto il pallone, con le corde di collegamento.
   const basket = new THREE.Mesh(
     new THREE.BoxGeometry(0.22, 0.16, 0.22),
-    new THREE.MeshStandardMaterial({ color: 0x8a5a34, roughness:0.8 })
+    gadgetSurfaceMaterial(0x8a5a34, "balloon-basket", { roughness:0.8 })
   );
   basket.position.y = -0.42;
   body.add(basket);
@@ -4079,12 +4095,12 @@ function makeBalloonMesh(colorHex){
   // bombolone: un anello esterno piu' ampio e uno interno piu' intenso),
   // ora sferico invece che a disco perche' il pallone e' in aria.
   const halo = new THREE.Mesh(
-    new THREE.SphereGeometry(0.42, 12, 8),
+    new THREE.SphereGeometry(0.42, 22, 16),
     new THREE.MeshBasicMaterial({ color: colorHex, transparent:true, opacity:0.14 })
   );
   body.add(halo);
   const haloInner = new THREE.Mesh(
-    new THREE.SphereGeometry(0.32, 12, 8),
+    new THREE.SphereGeometry(0.32, 22, 16),
     new THREE.MeshBasicMaterial({ color: colorHex, transparent:true, opacity:0.22 })
   );
   body.add(haloInner);
@@ -4093,8 +4109,8 @@ function makeBalloonMesh(colorHex){
   // invece di una sfera liscia, stesso effetto "corazzato" del bombolone.
   const R = 0.3;
   const envelope = new THREE.Mesh(
-    new THREE.IcosahedronGeometry(R, 1),
-    new THREE.MeshStandardMaterial({ color: 0x2a2a2e, flatShading:true, roughness:0.5, metalness:0.25 })
+    new THREE.IcosahedronGeometry(R, 2),
+    gadgetSurfaceMaterial(0x2a2a2e, "balloon-envelope", { flatShading:true, roughness:0.5, metalness:0.25 })
   );
   envelope.scale.set(1, 1.25, 1);
   body.add(envelope);
@@ -4103,7 +4119,7 @@ function makeBalloonMesh(colorHex){
   // pulsa lentamente e di continuo nel render loop (vedi animate()),
   // stessa idea del bombolone/muro di spunzoni.
   const core = new THREE.Mesh(
-    new THREE.SphereGeometry(R * 0.6, 10, 8),
+    new THREE.SphereGeometry(R * 0.6, 18, 14),
     new THREE.MeshBasicMaterial({ color: colorHex, transparent:true, opacity:0.4 })
   );
   core.scale.set(1, 1.25, 1);
@@ -4118,7 +4134,7 @@ function makeBalloonMesh(colorHex){
   [-0.65, 0, 0.65].forEach(yFrac => {
     const bandY = yFrac * R * 1.25;
     const bandRadius = Math.sqrt(Math.max(0.0001, R*R - (yFrac*R)*(yFrac*R))) * 1.04;
-    const band = new THREE.Mesh(new THREE.TorusGeometry(bandRadius, 0.022, 6, 18), bandMat);
+    const band = new THREE.Mesh(new THREE.TorusGeometry(bandRadius, 0.022, 8, 26), bandMat);
     band.rotation.x = Math.PI / 2;
     band.position.y = bandY;
     body.add(band);
@@ -4185,7 +4201,7 @@ function makeBlobMesh(colorHex){
 
   // Alone morbido nel colore del proprietario.
   const halo = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.4, 0.4, 0.02, 16),
+    new THREE.CylinderGeometry(0.4, 0.4, 0.02, 28),
     new THREE.MeshBasicMaterial({ color: colorHex, transparent:true, opacity:0.16 })
   );
   halo.position.y = 0.01;
@@ -4194,7 +4210,7 @@ function makeBlobMesh(colorHex){
 
   // Pozza d'ombra/melma a terra, piu' larga del corpo.
   const puddle = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.36, 0.36, 0.02, 16),
+    new THREE.CylinderGeometry(0.36, 0.36, 0.02, 28),
     new THREE.MeshBasicMaterial({ color:0x241030, transparent:true, opacity:0.5 })
   );
   puddle.position.y = 0.015;
@@ -4214,7 +4230,7 @@ function makeBlobMesh(colorHex){
   // (colorHex) cosi' il blob si riconosce a colpo d'occhio come quello
   // della torretta/mongolfiera, con un contorno leggermente piu' scuro
   // dello stesso colore per dare volume senza perdere l'identita' cromatica.
-  const bodyMat = new THREE.MeshStandardMaterial({ color: colorHex });
+  const bodyMat = gadgetSurfaceMaterial(colorHex, "blob-body", { roughness:0.6, metalness:0.05 });
   const lumps = [
     { dx: 0,     dy: 0.10, dz: 0,     r: 0.30 }, // base larga
     { dx: -0.17, dy: 0.16, dz: -0.05, r: 0.19 },
@@ -4224,7 +4240,7 @@ function makeBlobMesh(colorHex){
     { dx: 0,     dy: 0.20, dz: 0.08,  r: 0.20 },
   ];
   lumps.forEach(l => {
-    const mesh = new THREE.Mesh(new THREE.SphereGeometry(l.r, 10, 8), bodyMat);
+    const mesh = new THREE.Mesh(new THREE.SphereGeometry(l.r, 18, 14), bodyMat);
     mesh.position.set(l.dx, l.dy, l.dz);
     body.add(mesh);
   });
@@ -4235,7 +4251,7 @@ function makeBlobMesh(colorHex){
   // ora che il corpo e' dello stesso colore del proprietario.
   const rimColor = new THREE.Color(colorHex).offsetHSL(0, 0, -0.22);
   const rim = new THREE.Mesh(
-    new THREE.SphereGeometry(0.31, 10, 8),
+    new THREE.SphereGeometry(0.31, 20, 16),
     new THREE.MeshBasicMaterial({ color: rimColor, wireframe:true, transparent:true, opacity:0.6 })
   );
   rim.position.set(0, 0.20, 0);
@@ -4307,13 +4323,13 @@ function makeSpikeWallMesh(colorHex){
   // idea del bombolone (anello esterno piu' ampio + uno interno piu'
   // intenso).
   const halo = new THREE.Mesh(
-    new THREE.CylinderGeometry(HALF * 1.35, HALF * 1.35, 0.02, 16),
+    new THREE.CylinderGeometry(HALF * 1.35, HALF * 1.35, 0.02, 26),
     new THREE.MeshBasicMaterial({ color: colorHex, transparent:true, opacity:0.14 })
   );
   halo.position.y = 0.01;
   g.add(halo);
   const haloInner = new THREE.Mesh(
-    new THREE.CylinderGeometry(HALF * 1.05, HALF * 1.05, 0.02, 16),
+    new THREE.CylinderGeometry(HALF * 1.05, HALF * 1.05, 0.02, 26),
     new THREE.MeshBasicMaterial({ color: colorHex, transparent:true, opacity:0.2 })
   );
   haloInner.position.y = 0.012;
@@ -4324,7 +4340,7 @@ function makeSpikeWallMesh(colorHex){
   // "corazzata"), allungato in verticale per riempire l'altezza del
   // muro invece di restare una sfera tonda come il bombolone.
   const body = new THREE.Mesh(
-    new THREE.IcosahedronGeometry(1, 1),
+    new THREE.IcosahedronGeometry(1, 2),
     new THREE.MeshStandardMaterial({ color: colorHex, transparent:true, opacity:0.88, flatShading:true, roughness:0.55, metalness:0.3 })
   );
   body.scale.set(Rx, Ry, Rz);
@@ -4335,7 +4351,7 @@ function makeSpikeWallMesh(colorHex){
   // attraverso le fasce: pulsa lentamente e di continuo nel render loop
   // (vedi animate()), stessa idea del bombolone ma senza virare colore.
   const core = new THREE.Mesh(
-    new THREE.SphereGeometry(0.7, 12, 10),
+    new THREE.SphereGeometry(0.7, 22, 18),
     new THREE.MeshBasicMaterial({ color: colorHex, transparent:true, opacity:0.5 })
   );
   core.scale.set(Rx, Ry, Rz);
@@ -4352,7 +4368,7 @@ function makeSpikeWallMesh(colorHex){
     const bandY = H/2 + yFrac * Ry;
     const bandRadiusFactor = Math.sqrt(Math.max(0.0001, 1 - yFrac*yFrac)) * 1.04;
     const band = new THREE.Mesh(
-      new THREE.TorusGeometry(1, 0.028, 6, 24),
+      new THREE.TorusGeometry(1, 0.028, 8, 32),
       bandMat
     );
     band.rotation.x = Math.PI / 2;
@@ -4386,8 +4402,8 @@ function makeSpikeWallMesh(colorHex){
   // essere allineati perpendicolari ai 4 lati di un box. Distribuiti su
   // 3 fasce d'altezza x 6 angoli attorno al corpo, con una piccola base
   // conica rovesciata alla radice per un aggancio visivo solido.
-  const spikeMat = new THREE.MeshStandardMaterial({ color: 0xcfcfd4, roughness:0.4, metalness:0.2 });
-  const spikeBaseMat = new THREE.MeshStandardMaterial({ color: 0x8a8a90, roughness:0.5 });
+  const spikeMat = gadgetSurfaceMaterial(0xcfcfd4, "spikewall-spike", { roughness:0.4, metalness:0.2 });
+  const spikeBaseMat = gadgetSurfaceMaterial(0x8a8a90, "spikewall-spikebase", { roughness:0.5 });
   const spikeLen = CELL * 0.20, spikeR = CELL * 0.065;
   function addRadialSpike(yFrac, angFrac){
     const ang = angFrac * Math.PI * 2;
@@ -4507,11 +4523,11 @@ function makeTeslaMesh(colorHex){
   // come indizio permanente se la Tesla e' occulta), mostrata DA SOLA
   // quando t.hidden e' vero. Invariata rispetto a prima.
   const trapdoor = new THREE.Group();
-  const doorMat = new THREE.MeshStandardMaterial({ color: 0x5c4326, roughness:0.9 });
+  const doorMat = gadgetSurfaceMaterial(0x5c4326, "tesla-door", { roughness:0.9 });
   const doorBase = new THREE.Mesh(new THREE.CylinderGeometry(HALF * 0.9, HALF * 0.9, 0.05, 8), doorMat);
   doorBase.position.y = 0.025;
   trapdoor.add(doorBase);
-  const plankMat = new THREE.MeshStandardMaterial({ color: 0x3a2a15, roughness:0.9 });
+  const plankMat = gadgetSurfaceMaterial(0x3a2a15, "tesla-plank", { roughness:0.9 });
   for (let i = -2; i <= 2; i++){
     const plank = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.052, HALF * 1.7), plankMat);
     plank.position.set(i * (HALF * 0.32), 0.03, 0);
@@ -4544,7 +4560,7 @@ function makeTeslaMesh(colorHex){
   baseShape.closePath();
   const base = new THREE.Mesh(
     new THREE.ExtrudeGeometry(baseShape, { depth:0.24, bevelEnabled:true, bevelThickness:0.03, bevelSize:0.03, bevelSegments:1 }),
-    new THREE.MeshStandardMaterial({ color: METAL_DARK, roughness:0.55, metalness:0.4, flatShading:true })
+    gadgetSurfaceMaterial(METAL_DARK, "tesla-base", { roughness:0.55, metalness:0.4, flatShading:true })
   );
   base.rotation.x = -Math.PI / 2;
   base.position.y = 0.24;
@@ -4572,15 +4588,15 @@ function makeTeslaMesh(colorHex){
   const shaftBottomR = HALF * 0.72, shaftTopR = HALF * 0.42;
   const shaftH = (TESLA_TOP_Y - 0.55) ;
   const shaft = new THREE.Mesh(
-    new THREE.CylinderGeometry(shaftTopR, shaftBottomR, shaftH, 10),
-    new THREE.MeshStandardMaterial({ color: METAL, roughness:0.5, metalness:0.45, flatShading:true })
+    new THREE.CylinderGeometry(shaftTopR, shaftBottomR, shaftH, 20),
+    gadgetSurfaceMaterial(METAL, "tesla-shaft", { roughness:0.5, metalness:0.45, flatShading:true })
   );
   shaft.position.y = 0.28 + shaftH / 2;
   tower.add(shaft);
   // Pannelli verticali leggermente sporgenti, per rompere la superficie
   // liscia del cilindro con placche corazzate distinte (stesso effetto
   // "a lamiere imbullonate" della torre del gioco).
-  const panelMat = new THREE.MeshStandardMaterial({ color: METAL_LIGHT, roughness:0.5, metalness:0.4 });
+  const panelMat = gadgetSurfaceMaterial(METAL_LIGHT, "tesla-panel", { roughness:0.5, metalness:0.4 });
   for (let i = 0; i < 6; i++){
     const a = (i / 6) * Math.PI * 2;
     const panel = new THREE.Mesh(new THREE.BoxGeometry(0.05, shaftH * 0.92, 0.02), panelMat);
@@ -4617,13 +4633,13 @@ function makeTeslaMesh(colorHex){
   coilGroup.position.y = TESLA_TOP_Y;
   tower.add(coilGroup);
   const halo = new THREE.Mesh(
-    new THREE.SphereGeometry(0.36, 12, 8),
+    new THREE.SphereGeometry(0.36, 22, 16),
     new THREE.MeshBasicMaterial({ color: colorHex, transparent:true, opacity:0.14 })
   );
   coilGroup.add(halo);
   // Cupola: calotta sferica appiattita in cima al fusto.
   const dome = new THREE.Mesh(
-    new THREE.SphereGeometry(shaftTopR + 0.03, 12, 8, 0, Math.PI*2, 0, Math.PI/1.7),
+    new THREE.SphereGeometry(shaftTopR + 0.03, 20, 14, 0, Math.PI*2, 0, Math.PI/1.7),
     new THREE.MeshStandardMaterial({ color: METAL_DARK, roughness:0.45, metalness:0.5, flatShading:true })
   );
   dome.position.y = -0.02;
@@ -6205,14 +6221,41 @@ function onGameEvent(msg){
           // La posizione del server (msg.x,msg.y) e' il punto del
           // proiettile all'ultimo micro-passo PRIMA di fermarsi: puo'
           // cadere dentro o appena prima del cubo muro, non esattamente
-          // sulla sua faccia. Si proietta quindi il colpo sulla vera
-          // faccia del muro (bordo della cella colpita, a CELL/2 dal
-          // centro cella) lungo la direzione di volo, cosi' il segno
-          // risulta davvero incassato sulla superficie e non "sospeso"
-          // in rilievo davanti o dentro al cubo.
-          const cellCx = (Math.floor(msg.x)+0.5)*CELL, cellCz = (Math.floor(msg.y)+0.5)*CELL;
-          const wx = cellCx + ndx*(CELL/2);
-          const wz = cellCz + ndz*(CELL/2);
+          // sulla sua faccia. PRIMA si proiettava dal centro cella lungo
+          // ENTRAMBI gli assi in proporzione a ndx/ndz - corretto solo per
+          // colpi perfettamente assiali (dritti su un lato): per un tiro
+          // in diagonale (frequente qui, la mira e' libera in prima
+          // persona, non solo su 4 direzioni) quello spostamento
+          // proporzionale non arriva mai esattamente sulla faccia vera
+          // del cubo (che sta a CELL/2 lungo UN SOLO asse, quello
+          // dell'impatto), risultando incassato dentro il muro o sospeso
+          // prima della sua superficie - il segno "sfalsato" segnalato.
+          // Fix: si individua l'asse REALE dell'impatto controllando quale
+          // cella adiacente (nella direzione di volo) e' davvero un muro
+          // (isWall, la stessa funzione usata per la mappa/i pallini), e
+          // si aggancia SOLO quella coordinata al bordo esatto della
+          // cella; l'altra coordinata resta quella vera riportata dal
+          // server (non il centro cella), cosi' il segno cade nel punto
+          // preciso lungo il muro, non sempre al centro della piastrella.
+          const freeCx = Math.floor(msg.x), freeCy = Math.floor(msg.y);
+          const stepX = ndx > 1e-4 ? 1 : (ndx < -1e-4 ? -1 : 0);
+          const stepZ = ndz > 1e-4 ? 1 : (ndz < -1e-4 ? -1 : 0);
+          const hitOnX = stepX !== 0 && isWall(freeCx + stepX, freeCy);
+          const hitOnZ = stepZ !== 0 && isWall(freeCx, freeCy + stepZ);
+          let wx, wz;
+          if (hitOnX && !hitOnZ){
+            wx = (freeCx + (stepX > 0 ? 1 : 0)) * CELL;
+            wz = msg.y * CELL;
+          } else if (hitOnZ && !hitOnX){
+            wz = (freeCy + (stepZ > 0 ? 1 : 0)) * CELL;
+            wx = msg.x * CELL;
+          } else {
+            // angolo (entrambe le facce adiacenti sono muro) o caso limite:
+            // resta il vecchio comportamento come fallback ragionevole.
+            const cellCx = (freeCx+0.5)*CELL, cellCz = (freeCy+0.5)*CELL;
+            wx = cellCx + ndx*(CELL/2);
+            wz = cellCz + ndz*(CELL/2);
+          }
           const wy = (typeof msg.z === "number" ? msg.z*CELL + (lz.yOffset||0) : lz.y);
           spawnLaserWallImpact(wx, wy, wz, -ndx, 0, -ndz);
         }
@@ -7634,6 +7677,19 @@ function animate(){
   // cosi' la freccia del giocatore ruota morbidamente insieme allo sguardo
   // invece di scattare solo quando arriva un nuovo pacchetto dal server.
   drawMinimap(lastPlayersForMinimap);
+
+  // sonda di riflessione dinamica: rigenerata ogni pochi frame (non ogni
+  // frame, e' un render 6x della scena quindi costa) da una posizione
+  // vicina al giocatore, cosi' i riflessi a specchio su pavimento/muri
+  // restano aggiornati mentre ci si muove senza pesare troppo sul frame
+  // rate.
+  if (envProbeCamera){
+    envProbeFrameCounter++;
+    if (envProbeFrameCounter % ENV_PROBE_UPDATE_EVERY === 0){
+      envProbeCamera.position.set(myRenderX, EYE_HEIGHT * 0.6, myRenderZ);
+      envProbeCamera.update(renderer, scene);
+    }
+  }
 
   renderer.render(scene, camera);
 }
