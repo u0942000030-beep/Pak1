@@ -2894,6 +2894,25 @@ function initThree(){
   window.__envRefreshCounter = 0;
   window.__currentEnvRT = null;
 
+  // Genera SUBITO una prima env map (anche se ancora vuota/quasi vuota,
+  // es. cielo notturno) invece di aspettare il primo refresh nel loop
+  // animate() (ogni 6 frame): senza questo, muri e pavimento - che hanno
+  // metalness:1.0 e dipendono quasi solo dall'env map per essere visibili
+  // (vedi commenti sopra) - restano completamente neri nei primissimi
+  // frame, e su schede grafiche/CPU piu' lente il "buio" puo' durare
+  // percettibilmente piu' a lungo o non risolversi mai se initThree()
+  // viene chiamata prima che il resto della scena (muri) sia pronto.
+  {
+    const prevBg = scene.background, prevFog = scene.fog;
+    scene.background = null; scene.fog = null;
+    reflectionCubeCam.position.set(0, EYE_HEIGHT, 0);
+    reflectionCubeCam.update(renderer, scene);
+    scene.background = prevBg; scene.fog = prevFog;
+    const initialEnvRT = pmremGenerator.fromCubemap(reflectionCubeRT.texture);
+    window.__currentEnvRT = initialEnvRT;
+    scene.environment = initialEnvRT.texture;
+  }
+
   window.addEventListener("resize", () => {
     camera.aspect = window.innerWidth/window.innerHeight;
     camera.updateProjectionMatrix();
