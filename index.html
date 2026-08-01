@@ -2883,28 +2883,43 @@ function initThree(){
     const grad = ctx.createLinearGradient(0, 0, 0, h);
     grad.addColorStop(0.00, "#f0f4fb"); // zenit: quasi bianco
     grad.addColorStop(0.30, "#d3dbe8"); // cielo alto
-    grad.addColorStop(0.50, "#b7c1d2"); // orizzonte: ancora chiaro, MAI nero
+    grad.addColorStop(0.50, "#c4cddc"); // orizzonte: schiarito ulteriormente (e' la fascia che i muri riflettono guardandoli di fronte)
     grad.addColorStop(0.68, "#7a8494"); // appena sotto l'orizzonte
     grad.addColorStop(1.00, "#23272e"); // nadir: scuro ma non nero puro
     ctx.fillStyle = grad;
     ctx.fillRect(0, 0, w, h);
-    // guizzo speculare netto ("sole"), per dare quel punto di luce vivo
-    // tipico di una superficie a specchio invece di un grigio uniforme
-    const sunX = w*0.30, sunY = h*0.20, sunR = 70;
-    const sunGrad = ctx.createRadialGradient(sunX, sunY, 0, sunX, sunY, sunR);
-    sunGrad.addColorStop(0, "#ffffff");
-    sunGrad.addColorStop(0.35, "rgba(255,255,255,0.65)");
-    sunGrad.addColorStop(1, "rgba(255,255,255,0)");
-    ctx.fillStyle = sunGrad;
-    ctx.beginPath(); ctx.arc(sunX, sunY, sunR, 0, Math.PI*2); ctx.fill();
-    // secondo guizzo piu' debole dal lato opposto, per riflessi credibili
-    // guardando in qualsiasi direzione, non solo verso il primo
-    const sun2X = w*0.78, sun2Y = h*0.35, sun2R = 55;
-    const sun2Grad = ctx.createRadialGradient(sun2X, sun2Y, 0, sun2X, sun2Y, sun2R);
-    sun2Grad.addColorStop(0, "rgba(255,255,255,0.85)");
-    sun2Grad.addColorStop(1, "rgba(255,255,255,0)");
-    ctx.fillStyle = sun2Grad;
-    ctx.beginPath(); ctx.arc(sun2X, sun2Y, sun2R, 0, Math.PI*2); ctx.fill();
+    // "luci a soffitto" sparse su TUTTO il giro d'orizzonte (non solo 2
+    // vicino allo zenit): un muro verticale visto di fronte riflette quasi
+    // sempre la stessa fascia orizzontale del cielo finto, quindi se li'
+    // ci sono solo 1-2 guizzi concentrati altrove il muro resta piatto e
+    // smorto. Con tanti guizzi distribuiti lungo l'intero anello a quota
+    // "orizzonte/soffitto", qualunque sia l'orientamento del muro o della
+    // camera si intercetta sempre qualche riflesso vivo, proprio come le
+    // luci al neon di un corridoio industriale che scorrono sulle pareti
+    // lucide mentre ci si cammina in mezzo.
+    const glints = [
+      {x:0.06, y:0.42, r:40, a:0.9}, {x:0.16, y:0.55, r:26, a:0.7},
+      {x:0.28, y:0.20, r:70, a:1.0}, {x:0.34, y:0.48, r:34, a:0.85},
+      {x:0.44, y:0.58, r:22, a:0.6}, {x:0.52, y:0.40, r:48, a:0.9},
+      {x:0.60, y:0.60, r:26, a:0.65}, {x:0.68, y:0.46, r:36, a:0.8},
+      {x:0.78, y:0.35, r:55, a:0.9}, {x:0.86, y:0.58, r:24, a:0.6},
+      {x:0.94, y:0.44, r:38, a:0.8}, {x:1.00, y:0.52, r:30, a:0.7},
+    ];
+    glints.forEach(g => {
+      const gx = w*g.x, gy = h*g.y;
+      const gg = ctx.createRadialGradient(gx, gy, 0, gx, gy, g.r);
+      gg.addColorStop(0, `rgba(255,255,255,${g.a})`);
+      gg.addColorStop(0.4, `rgba(255,255,255,${g.a*0.4})`);
+      gg.addColorStop(1, "rgba(255,255,255,0)");
+      ctx.fillStyle = gg;
+      ctx.beginPath(); ctx.arc(gx, gy, g.r, 0, Math.PI*2); ctx.fill();
+      // replica vicino al bordo opposto per continuita' nel wrap orizzontale
+      if (g.x < 0.15){
+        ctx.beginPath(); ctx.arc(gx + w, gy, g.r, 0, Math.PI*2); ctx.fill();
+      } else if (g.x > 0.85){
+        ctx.beginPath(); ctx.arc(gx - w, gy, g.r, 0, Math.PI*2); ctx.fill();
+      }
+    });
 
     const tex = new THREE.CanvasTexture(cnv);
     tex.mapping = THREE.EquirectangularReflectionMapping;
@@ -3085,7 +3100,7 @@ function applyMapData(msg){
       // una direzionale si rifletterebbe verso la camera.
       roughness: 0.02,
       metalness: 1.0,
-      envMapIntensity: 1.5,
+      envMapIntensity: 2.2,
     });
     const inst = countPerVariant[v] > 0
       ? new THREE.InstancedMesh(cubeGeo, mat, countPerVariant[v])
