@@ -2911,7 +2911,20 @@ function initThree(){
     tex.needsUpdate = true;
     return tex;
   }
-  scene.environment = makeEnvReflectionTexture();
+  // IMPORTANTE: una texture equirettangolare "grezza" assegnata
+  // direttamente a scene.environment NON viene filtrata per i vari
+  // livelli di roughness (serve il formato CubeUV pre-filtrato che usa
+  // il calcolo IBL speculare di MeshStandardMaterial). Senza questo
+  // passaggio il riflesso risultava di fatto assente: si vedeva solo il
+  // contributo diffuso piatto delle luci ambient/hemisphere. Il
+  // PMREMGenerator converte la texture nel formato corretto.
+  const pmremGenerator = new THREE.PMREMGenerator(renderer);
+  pmremGenerator.compileEquirectangularShader();
+  const rawEnvTex = makeEnvReflectionTexture();
+  const envRenderTarget = pmremGenerator.fromEquirectangular(rawEnvTex);
+  scene.environment = envRenderTarget.texture;
+  rawEnvTex.dispose();
+  pmremGenerator.dispose();
 
   window.addEventListener("resize", () => {
     camera.aspect = window.innerWidth/window.innerHeight;
