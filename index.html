@@ -1411,10 +1411,12 @@ function makeMushroomMesh(hex, mega, seedVal, twin){
   // trasformato raggiunge la stessa altezza della cima della Tesla
   // (TESLA_TOP_Y = WALL_TOTAL_H + 1.1 = 3.1).
   const s = mega ? 4.0 : 0.5;
-  // Rapporto di "tozzezza" del gambo del fungo atomico normale: valore
-  // alzato ulteriormente (da 1.6 a 2.35) per un gambo VERAMENTE corto e
-  // panciuto, non piu' una versione rimpicciolita del gambo del mega.
-  const stemStubby = mega ? 1.0 : 2.35;
+  // Rapporto di "tozzezza" del gambo del fungo atomico normale: gambo
+  // corto e panciuto ma ancora chiaramente visibile sotto la cappella
+  // (con 2.35 il gambo si riduceva a un moncherino quasi invisibile,
+  // sproporzionato rispetto alla cappella - parte della sagoma "senza
+  // senso" segnalata).
+  const stemStubby = mega ? 1.0 : 1.5;
   seedVal = seedVal || 0;
   // PRNG deterministico piccolo (mulberry32-style) per variare ogni fungo
   // in modo stabile senza dipendere da Math.random().
@@ -1466,23 +1468,29 @@ function makeMushroomMesh(hex, mega, seedVal, twin){
 
     const stemH = 0.34*s*scale / stemStubby;
     let rBase, rMid, rTop, lowerFrac;
+    // NB: stemStubby NON moltiplica piu' i raggi (solo l'altezza sopra):
+    // prima lo faceva anche qui, e con stemStubby=2.35 + stemBulge alto
+    // il gambo poteva risultare piu' LARGO della cappella stessa (un
+    // fungo con la cappella piu' stretta del tronco, sagoma senza senso).
+    // Ora il gambo resta sempre piu' stretto della cappella, che e' il
+    // punto piu' largo della sagoma come in un fungo vero.
     if (arch === "botte"){
       // Quasi tondo: base e cima simili, pancia centrale molto marcata.
-      rBase = 0.155*s*scale*stemBulge*stemStubby;
-      rMid  = 0.135*s*scale*stemBulge*stemStubby;
-      rTop  = 0.105*s*scale*stemStubby;
+      rBase = 0.155*s*scale*stemBulge;
+      rMid  = 0.135*s*scale*stemBulge;
+      rTop  = 0.105*s*scale;
       lowerFrac = 0.5;
     } else if (arch === "clava"){
       // Stretto alla radice, si apre di colpo verso la cappella.
-      rBase = 0.09*s*scale*stemStubby;
-      rMid  = 0.10*s*scale*stemBulge*stemStubby;
-      rTop  = 0.135*s*scale*stemBulge*stemStubby;
+      rBase = 0.09*s*scale;
+      rMid  = 0.10*s*scale*stemBulge;
+      rTop  = 0.135*s*scale*stemBulge;
       lowerFrac = 0.42;
     } else {
       // "tronco": fiaschetto classico, usato anche dal mega.
-      rBase = 0.15*s*scale*stemBulge*stemStubby;
-      rMid  = 0.105*s*scale*stemStubby;
-      rTop  = 0.085*s*scale*stemStubby;
+      rBase = 0.15*s*scale*stemBulge;
+      rMid  = 0.105*s*scale;
+      rTop  = 0.085*s*scale;
       lowerFrac = 0.55;
     }
     const lower = new THREE.Mesh(
@@ -1576,13 +1584,18 @@ function makeMushroomMesh(hex, mega, seedVal, twin){
   }
 
   // Variazione per esemplare: dimensione, inclinazione e "pancia" del
-  // gambo diverse ogni volta, guidate dal seed cosi' restano stabili.
-  const mainScale = 0.82 + rnd()*0.42;           // dimensione: range piu' ampio
-  const mainTiltX = (rnd()-0.5) * 0.36;          // inclinazione avanti/indietro
-  const mainTiltZ = (rnd()-0.5) * 0.36;          // inclinazione laterale
-  const mainRotY  = rnd() * Math.PI*2;           // orientamento casuale
-  const mainFlatten = 0.58 + rnd()*0.26;         // cappella piu' o meno schiacciata
-  const mainBulge = 1.1 + rnd()*0.6;             // quanto e' panciuto il gambo alla base
+  // gambo diverse ogni volta, guidate dal seed cosi' restano stabili -
+  // MA SOLO per il fungo normale. Il gigafungo (mega) usa invece valori
+  // FISSI (nessuna chiamata a rnd() qui): stessa forma e stessa
+  // dimensione ad ogni trasformazione, cosi' la corazza (placche,
+  // calotta, artigli) - tarata su questi valori - ci si adatta sempre
+  // alla perfezione, senza margini di sicurezza per sagome diverse.
+  const mainScale = mega ? 1.0 : (0.82 + rnd()*0.42);
+  const mainTiltX = mega ? 0 : (rnd()-0.5) * 0.36;
+  const mainTiltZ = mega ? 0 : (rnd()-0.5) * 0.36;
+  const mainRotY  = mega ? 0 : rnd() * Math.PI*2;
+  const mainFlatten = mega ? 0.7 : (0.58 + rnd()*0.26);
+  const mainBulge = mega ? 1.3 : (1.1 + rnd()*0.6);
 
   const main = buildMushroomBody(mainScale, mainTiltX, mainTiltZ, mainRotY, mainFlatten, mainBulge, archetype);
   g.add(main.body);
@@ -1615,8 +1628,8 @@ function makeMushroomMesh(hex, mega, seedVal, twin){
   // pulsanti e un nucleo pulsante centrale — stesso linguaggio visivo del
   // golem/veicoli (rockMat scuro + emissivi nel colore del proprietario).
   if (mega){
-    const armorDark = new THREE.MeshStandardMaterial({ color: 0x3a3f47, roughness:0.7, metalness:0.55, flatShading:true });
-    const armorMid   = new THREE.MeshStandardMaterial({ color: 0x555b66, roughness:0.6, metalness:0.5, flatShading:true });
+    const armorDark = new THREE.MeshStandardMaterial({ color: 0x3a3f47, roughness:0.05, metalness:0.55, flatShading:true });
+    const armorMid   = new THREE.MeshStandardMaterial({ color: 0x555b66, roughness:0.05, metalness:0.55, flatShading:true });
     const veinMat = new THREE.MeshStandardMaterial({ color: hex, emissive: hex, emissiveIntensity: 0.9, roughness:0.4 });
     const stemHFull = main.stemH;
     // capR/rBase/rTop REALI del corpo organico sottostante (gia' calcolati
@@ -1673,8 +1686,8 @@ function makeMushroomMesh(hex, mega, seedVal, twin){
     // spunzoni del muro di spunzoni (makeSpikeWallMesh/addRadialSpike):
     // base conica tozza + punta affusolata, innestate radialmente sulla
     // superficie della calotta invece delle vecchie creste singole.
-    const wallSpikeMat = new THREE.MeshStandardMaterial({ color: 0xcfcfd4, roughness:0.4, metalness:0.2 });
-    const wallSpikeBaseMat = new THREE.MeshStandardMaterial({ color: 0x8a8a90, roughness:0.5 });
+    const wallSpikeMat = new THREE.MeshStandardMaterial({ color: 0xcfcfd4, roughness:0.05, metalness:0.55 });
+    const wallSpikeBaseMat = new THREE.MeshStandardMaterial({ color: 0x8a8a90, roughness:0.05, metalness:0.55 });
     const spikeCount = 8;
     const helmSpikeLen = capRFull*0.5, helmSpikeR = capRFull*0.16;
     for (let sp = 0; sp < spikeCount; sp++){
@@ -2545,11 +2558,10 @@ function makeStoneTextures(baseColorHex, seedStr){
    "arena industriale" invece della tinta piatta di prima. Stessa
    tecnica di makeStoneTextures (color map + height map -> normal map
    via canvas), ma con un linguaggio visivo diverso: piastra rettangolare
-   con bordo a rivetti, spazzolatura direzionale (righe sottili tutte
-   nello stesso verso, tipico dell'acciaio spazzolato) e chiazze di
-   ruggine/usura sparse invece di muschio. Seminata su x,y,variante cosi'
-   ogni cella del pavimento ha la sua piastra unica ma deterministica
-   (stessa mappa => stesso pavimento ad ogni partita). ---- */
+   con bordo a rivetti e spazzolatura direzionale (righe sottili tutte
+   nello stesso verso, tipico dell'acciaio spazzolato). Seminata su
+   x,y,variante cosi' ogni cella del pavimento ha la sua piastra unica ma
+   deterministica (stessa mappa => stesso pavimento ad ogni partita). ---- */
 function makeMetalFloorTexture(baseColorHex, seedStr){
   const rng = mulberry32(hashSeed(seedStr));
   const SIZE = 512;
@@ -2584,28 +2596,6 @@ function makeMetalFloorTexture(baseColorHex, seedStr){
     cctx.moveTo(0, y);
     cctx.lineTo(SIZE, y + (rng()-0.5)*3);
     cctx.stroke();
-  }
-  cctx.globalAlpha = 1;
-
-  // 2) chiazze di ruggine/usura: macchie morbide arancio-brune, piu'
-  // concentrate ai bordi della piastra (dove il metallo si consuma di
-  // piu'), analoghe alle chiazze di muschio dei muri ma con tinta calda.
-  const rustCount = 2 + Math.floor(rng()*4);
-  for (let i = 0; i < rustCount; i++){
-    const x = rng()*SIZE, y = rng()*SIZE;
-    const rad = SIZE*(0.05 + rng()*0.10);
-    const grad = cctx.createRadialGradient(x, y, 0, x, y, rad);
-    const rust = new THREE.Color(0x8a4a20).offsetHSL((rng()-0.5)*0.04, 0, (rng()-0.5)*0.1);
-    grad.addColorStop(0, toCss(rust));
-    grad.addColorStop(1, "rgba(0,0,0,0)");
-    cctx.fillStyle = grad;
-    cctx.globalAlpha = 0.18 + rng()*0.14;
-    cctx.beginPath(); cctx.arc(x, y, rad, 0, Math.PI*2); cctx.fill();
-    const hgrad = hctx.createRadialGradient(x, y, 0, x, y, rad);
-    hgrad.addColorStop(0, "rgba(90,90,90,0.5)");
-    hgrad.addColorStop(1, "rgba(128,128,128,0)");
-    hctx.fillStyle = hgrad;
-    hctx.beginPath(); hctx.arc(x, y, rad, 0, Math.PI*2); hctx.fill();
   }
   cctx.globalAlpha = 1;
 
@@ -2681,7 +2671,7 @@ function makeMetalFloorTexture(baseColorHex, seedStr){
 
 /* ---- texture "metallo lavorato" riusata per i GADGET (missile, mina,
    torretta e sue evoluzioni, mortaio, bombolone): stesso generatore del
-   pavimento/muri (spazzolatura + ruggine + normal map), ma con una
+   pavimento/muri (spazzolatura + normal map), ma con una
    cache per colore+parte cosi' non viene ridisegnata da zero ogni volta
    che un giocatore piazza/spara un gadget (sarebbe troppo costoso farlo
    a runtime, specialmente per i missili che si sparano di continuo). ---- */
@@ -3047,6 +3037,19 @@ function applyMapData(msg){
   powerPelletCells = new Set((msg.power_pellets||[]).map(c => c[0]+","+c[1]));
   document.getElementById("hudMapName").textContent = msg.maze_name || "";
 
+  // La minimappa prendeva prima un canvas quadrato fisso (320x320): se il
+  // labirinto non era quadrato restavano bande nere ai lati/sopra-sotto
+  // (offX/offY in drawMinimap). Qui il canvas viene invece dimensionato
+  // sulle proporzioni reali del labirinto (stesso "cell" su entrambi gli
+  // assi), cosi' il disegno riempie sempre tutto lo spazio e le bande
+  // nere spariscono del tutto.
+  if (minimapCanvas && mazeW && mazeH){
+    const MINIMAP_MAX = 320;
+    const cell = MINIMAP_MAX / Math.max(mazeW, mazeH);
+    minimapCanvas.width = Math.round(cell * mazeW);
+    minimapCanvas.height = Math.round(cell * mazeH);
+  }
+
   if (!scene) initThree();
 
   // ripulisce la scena (muri/pallini della mappa precedente, se ce n'era una)
@@ -3096,7 +3099,7 @@ function applyMapData(msg){
   const floorTexA = makeMetalFloorTexture(floorColorA, (mazeTheme.__mapName||"default")+":floorA");
   const floorTexB = makeMetalFloorTexture(floorColorB, (mazeTheme.__mapName||"default")+":floorB");
   // NB: niente "color" qui insieme a "map" - il colore del tema e' gia'
-  // dentro la texture generata (fondo + spazzolatura + ruggine), quindi
+  // dentro la texture generata (fondo + spazzolatura), quindi
   // un "color" scuro sopra la moltiplicherebbe rendendo il pavimento
   // quasi nero/invisibile (bug: il pavimento spariva contro lo sfondo,
   // entrambi vicini a floorColorA che di default e' molto scuro).
@@ -3404,7 +3407,7 @@ function makeMineMesh(colorHex){
   const g = new THREE.Group();
   const base = new THREE.Mesh(
     new THREE.CylinderGeometry(0.18, 0.2, 0.12, 20),
-    gadgetSurfaceMaterial(colorHex, "mine", { roughness:0.45, metalness:0.35 })
+    gadgetSurfaceMaterial(colorHex, "mine", { roughness:0.05, metalness:0.55 })
   );
   base.position.y = 0.06;
   g.add(base);
@@ -3561,7 +3564,7 @@ function makeTurretMesh(colorHex){
   // spunzoni, invece della vecchia piastra piatta monocolore.
   const plate = new THREE.Mesh(
     new THREE.CylinderGeometry(0.24, 0.27, 0.14 * H, 20),
-    gadgetSurfaceMaterial(0x2a2a2e, "turret-plate", { flatShading:false, roughness:0.5, metalness:0.3 })
+    gadgetSurfaceMaterial(0x2a2a2e, "turret-plate", { flatShading:false, roughness:0.05, metalness:0.55 })
   );
   plate.position.y = 0.09 * H;
   g.add(plate);
@@ -3602,7 +3605,7 @@ function makeTurretMesh(colorHex){
   g.add(barrelPivot);
   const drum = new THREE.Mesh(
     new THREE.CylinderGeometry(0.14, 0.15, 0.11 * H, 20),
-    gadgetSurfaceMaterial(colorHex, "turret-drum", { roughness:0.4, metalness:0.3 })
+    gadgetSurfaceMaterial(colorHex, "turret-drum", { roughness:0.05, metalness:0.55 })
   );
   drum.rotation.x = Math.PI / 2;
   barrelPivot.add(drum);
@@ -3615,7 +3618,7 @@ function makeTurretMesh(colorHex){
   // canna sottile e liscia.
   const barrel = new THREE.Mesh(
     new THREE.CylinderGeometry(0.042, 0.052, 0.36, 16),
-    gadgetSurfaceMaterial(0x3a3a3e, "turret-barrel", { roughness:0.4, metalness:0.4 })
+    gadgetSurfaceMaterial(0x3a3a3e, "turret-barrel", { roughness:0.05, metalness:0.55 })
   );
   barrel.rotation.z = Math.PI / 2;
   barrel.position.set(0.18, 0, 0);
@@ -3702,7 +3705,7 @@ function makePetMesh(colorHex){
 
 /* ---- bonus 1200 punti: mortaio permanente — ridisegnato prendendo
    ispirazione dal mortaio di Clash Royale: niente piu' treppiede a
-   gambe sottili, ma una base tozza e larga in legno rinforzato con
+   gambe sottili, ma una base tozza e larga in acciaio rinforzato con
    cerchi metallici a rivetti (come una botte/tino), sormontata da una
    canna larga e corta, chiaramente INCLINATA verso l'alto (non dritta
    in verticale come prima) - la stessa sagoma "tarchiata" e riconoscibile
@@ -3711,7 +3714,7 @@ function makePetMesh(colorHex){
    quando ha agganciato un bersaglio, esattamente come prima. ---- */
 function makeMortarMesh(colorHex){
   const g = new THREE.Group();
-  const WOOD = 0x8a5a34, WOOD_DARK = 0x5e3b21, METAL = 0x8a8a8a, METAL_DARK = 0x5c5c5c, RIVET = 0xd8c48a;
+  const METAL = 0x8a8a8a, METAL_DARK = 0x5c5c5c, RIVET = 0xd8c48a;
 
   // Fattore di allungamento verticale: porta il mortaio dall'altezza
   // originale (~0.37, un tronco da tavolo) fino all'altezza del
@@ -3729,19 +3732,20 @@ function makeMortarMesh(colorHex){
   halo.position.y = 0.01;
   g.add(halo);
 
-  // Base a botte: larga, tozza, di legno scuro rinforzato - sostituisce
-  // il treppiede con un blocco unico e stabile, come nel mortaio di
-  // Clash Royale, che poggia direttamente sul terreno senza gambe.
+  // Base a botte: larga, tozza, in acciaio scuro rinforzato (prima era di
+  // legno) - sostituisce il treppiede con un blocco unico e stabile, come
+  // nel mortaio di Clash Royale, che poggia direttamente sul terreno senza
+  // gambe.
   const base = new THREE.Mesh(
     new THREE.CylinderGeometry(0.30, 0.34, 0.20 * H, 22),
-    gadgetSurfaceMaterial(WOOD_DARK, "mortar-base", { roughness:0.85, metalness:0.05 })
+    gadgetSurfaceMaterial(METAL_DARK, "mortar-base", { roughness:0.05, metalness:0.55 })
   );
   base.position.y = 0.10 * H;
   g.add(base);
 
-  // Doghe verticali leggere sulla base, per dare la sensazione di botte
-  // di legno rinforzata invece di un cilindro liscio.
-  const stavesMat = new THREE.MeshStandardMaterial({ color: WOOD });
+  // Doghe verticali leggere sulla base, ora in acciaio anziche' legno, per
+  // dare rilievo alla botte senza un cilindro completamente liscio.
+  const stavesMat = new THREE.MeshStandardMaterial({ color: METAL, roughness:0.4, metalness:0.6 });
   for (let i = 0; i < 10; i++){
     const a = (i / 10) * Math.PI * 2;
     const stave = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.18 * H, 0.02), stavesMat);
@@ -3753,7 +3757,7 @@ function makeMortarMesh(colorHex){
   // Cerchio metallico inferiore a rivetti, attorno alla base a botte.
   const ringLow = new THREE.Mesh(
     new THREE.CylinderGeometry(0.315, 0.315, 0.035 * H, 22),
-    gadgetSurfaceMaterial(METAL_DARK, "mortar-ring", { roughness:0.4, metalness:0.6 })
+    gadgetSurfaceMaterial(METAL_DARK, "mortar-ring", { roughness:0.05, metalness:0.55 })
   );
   ringLow.position.y = 0.14 * H;
   g.add(ringLow);
@@ -3762,7 +3766,7 @@ function makeMortarMesh(colorHex){
   // si "aggancia" alla base, ben visibile per riconoscere il giocatore.
   const shoulder = new THREE.Mesh(
     new THREE.CylinderGeometry(0.24, 0.28, 0.10 * H, 22),
-    gadgetSurfaceMaterial(colorHex, "mortar-shoulder", { roughness:0.4, metalness:0.35 })
+    gadgetSurfaceMaterial(colorHex, "mortar-shoulder", { roughness:0.05, metalness:0.55 })
   );
   shoulder.position.y = 0.23 * H;
   g.add(shoulder);
@@ -3776,10 +3780,11 @@ function makeMortarMesh(colorHex){
   barrel.rotation.x = -0.22; // leggera inclinazione, non punta mai dritta verso l'alto
   g.add(barrel);
 
-  // Corpo della canna: tronco largo e corto di legno rinforzato.
+  // Corpo della canna: tronco largo e corto, ora in acciaio rinforzato
+  // (prima era di legno).
   const barrelBody = new THREE.Mesh(
     new THREE.CylinderGeometry(0.20, 0.23, 0.34 * H, 22),
-    gadgetSurfaceMaterial(WOOD, "mortar-barrel", { roughness:0.85, metalness:0.05 })
+    gadgetSurfaceMaterial(METAL, "mortar-barrel", { roughness:0.05, metalness:0.55 })
   );
   barrelBody.position.y = 0.14 * H;
   barrel.add(barrelBody);
@@ -3789,7 +3794,7 @@ function makeMortarMesh(colorHex){
   [0.06, 0.24].forEach(yy => {
     const band = new THREE.Mesh(
       new THREE.CylinderGeometry(0.225, 0.225, 0.04 * H, 22),
-      gadgetSurfaceMaterial(METAL, "mortar-band", { roughness:0.4, metalness:0.6 })
+      gadgetSurfaceMaterial(METAL, "mortar-band", { roughness:0.05, metalness:0.55 })
     );
     band.position.y = yy * H;
     barrel.add(band);
@@ -3807,7 +3812,7 @@ function makeMortarMesh(colorHex){
   // l'ha piazzato.
   const muzzle = new THREE.Mesh(
     new THREE.CylinderGeometry(0.26, 0.20, 0.06 * H, 22),
-    gadgetSurfaceMaterial(colorHex, "mortar-muzzle", { roughness:0.4, metalness:0.35 })
+    gadgetSurfaceMaterial(colorHex, "mortar-muzzle", { roughness:0.05, metalness:0.55 })
   );
   muzzle.position.y = 0.335 * H;
   barrel.add(muzzle);
@@ -3815,7 +3820,7 @@ function makeMortarMesh(colorHex){
   // Bocca scura vista dall'alto (il "respiro" e' animato scalando questo mesh).
   const mouth = new THREE.Mesh(
     new THREE.CylinderGeometry(0.15, 0.15, 0.04 * H, 22),
-    new THREE.MeshStandardMaterial({ color: WOOD_DARK })
+    new THREE.MeshStandardMaterial({ color: METAL_DARK, roughness:0.4, metalness:0.6 })
   );
   mouth.position.y = 0.365 * H;
   barrel.add(mouth);
@@ -3870,7 +3875,7 @@ function makeSuperbombMesh(colorHex){
   // di una sfera piatta.
   const body = new THREE.Mesh(
     new THREE.IcosahedronGeometry(R, 2),
-    gadgetSurfaceMaterial(0x232326, "superbomb-body", { flatShading:true, roughness:0.55, metalness:0.35 })
+    gadgetSurfaceMaterial(0x232326, "superbomb-body", { flatShading:true, roughness:0.05, metalness:0.55 })
   );
   body.position.y = R + 0.02;
   g.add(body);
@@ -4038,7 +4043,7 @@ function makeBalloonMesh(colorHex){
   const R = 0.3;
   const envelope = new THREE.Mesh(
     new THREE.IcosahedronGeometry(R, 2),
-    gadgetSurfaceMaterial(0x2a2a2e, "balloon-envelope", { flatShading:true, roughness:0.5, metalness:0.25 })
+    gadgetSurfaceMaterial(0x2a2a2e, "balloon-envelope", { flatShading:true, roughness:0.05, metalness:0.55 })
   );
   envelope.scale.set(1, 1.25, 1);
   body.add(envelope);
@@ -4330,8 +4335,8 @@ function makeSpikeWallMesh(colorHex){
   // essere allineati perpendicolari ai 4 lati di un box. Distribuiti su
   // 3 fasce d'altezza x 6 angoli attorno al corpo, con una piccola base
   // conica rovesciata alla radice per un aggancio visivo solido.
-  const spikeMat = gadgetSurfaceMaterial(0xcfcfd4, "spikewall-spike", { roughness:0.4, metalness:0.2 });
-  const spikeBaseMat = gadgetSurfaceMaterial(0x8a8a90, "spikewall-spikebase", { roughness:0.5 });
+  const spikeMat = gadgetSurfaceMaterial(0xcfcfd4, "spikewall-spike", { roughness:0.05, metalness:0.55 });
+  const spikeBaseMat = gadgetSurfaceMaterial(0x8a8a90, "spikewall-spikebase", { roughness:0.05, metalness:0.55 });
   const spikeLen = CELL * 0.20, spikeR = CELL * 0.065;
   function addRadialSpike(yFrac, angFrac){
     const ang = angFrac * Math.PI * 2;
@@ -4488,7 +4493,7 @@ function makeTeslaMesh(colorHex){
   baseShape.closePath();
   const base = new THREE.Mesh(
     new THREE.ExtrudeGeometry(baseShape, { depth:0.24, bevelEnabled:true, bevelThickness:0.03, bevelSize:0.03, bevelSegments:1 }),
-    gadgetSurfaceMaterial(METAL_DARK, "tesla-base", { roughness:0.55, metalness:0.4, flatShading:true })
+    gadgetSurfaceMaterial(METAL_DARK, "tesla-base", { roughness:0.05, metalness:0.55, flatShading:true })
   );
   base.rotation.x = -Math.PI / 2;
   base.position.y = 0.24;
@@ -4517,14 +4522,14 @@ function makeTeslaMesh(colorHex){
   const shaftH = (TESLA_TOP_Y - 0.55) ;
   const shaft = new THREE.Mesh(
     new THREE.CylinderGeometry(shaftTopR, shaftBottomR, shaftH, 20),
-    gadgetSurfaceMaterial(METAL, "tesla-shaft", { roughness:0.5, metalness:0.45, flatShading:true })
+    gadgetSurfaceMaterial(METAL, "tesla-shaft", { roughness:0.05, metalness:0.55, flatShading:true })
   );
   shaft.position.y = 0.28 + shaftH / 2;
   tower.add(shaft);
   // Pannelli verticali leggermente sporgenti, per rompere la superficie
   // liscia del cilindro con placche corazzate distinte (stesso effetto
   // "a lamiere imbullonate" della torre del gioco).
-  const panelMat = gadgetSurfaceMaterial(METAL_LIGHT, "tesla-panel", { roughness:0.5, metalness:0.4 });
+  const panelMat = gadgetSurfaceMaterial(METAL_LIGHT, "tesla-panel", { roughness:0.05, metalness:0.55 });
   for (let i = 0; i < 6; i++){
     const a = (i / 6) * Math.PI * 2;
     const panel = new THREE.Mesh(new THREE.BoxGeometry(0.05, shaftH * 0.92, 0.02), panelMat);
