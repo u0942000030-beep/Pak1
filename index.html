@@ -2397,7 +2397,7 @@ function spawnTerritoryBurst(tiles, colorHex){
    ============================================================ */
 function makeStoneTextures(baseColorHex, seedStr){
   const rng = mulberry32(hashSeed(seedStr));
-  const SIZE = 256;
+  const SIZE = 512;
 
   const colorCanvas = document.createElement("canvas");
   colorCanvas.width = colorCanvas.height = SIZE;
@@ -2551,7 +2551,7 @@ function makeStoneTextures(baseColorHex, seedStr){
    (stessa mappa => stesso pavimento ad ogni partita). ---- */
 function makeMetalFloorTexture(baseColorHex, seedStr){
   const rng = mulberry32(hashSeed(seedStr));
-  const SIZE = 256;
+  const SIZE = 512;
 
   const colorCanvas = document.createElement("canvas");
   colorCanvas.width = colorCanvas.height = SIZE;
@@ -2843,9 +2843,12 @@ function triggerMegaPelletSpawnBeam(x, z){
 function initThree(){
   scene = new THREE.Scene();
   camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.05, 100);
-  renderer = new THREE.WebGLRenderer({ antialias:true });
+  renderer = new THREE.WebGLRenderer({ antialias:true, powerPreference:"high-performance" });
   renderer.setSize(window.innerWidth, window.innerHeight);
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 3));
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.15;
   document.body.appendChild(renderer.domElement);
   // Illuminazione diffusa (mappa "a giorno", nessuna zona buia): SOLO
   // luci omnidirezionali (Ambient + Hemisphere) piu' una direzionale
@@ -2876,8 +2879,8 @@ function initThree(){
   // l'effetto lucido voluto senza il costo di un CubeCamera dinamico
   // ricalcolato ad ogni frame.
   const envScene = new THREE.Scene();
-  const envSky = new THREE.Color(0x9fb2c8);
-  const envGround = new THREE.Color(0x14161a);
+  const envSky = new THREE.Color(0xd8e4f2);
+  const envGround = new THREE.Color(0x0a0b0d);
   const envGeo = new THREE.SphereGeometry(50, 16, 16);
   const envGradColors = [];
   const envPos = envGeo.attributes.position;
@@ -2891,7 +2894,7 @@ function initThree(){
   const envMat = new THREE.MeshBasicMaterial({ vertexColors:true, side:THREE.BackSide, fog:false });
   envScene.add(new THREE.Mesh(envGeo, envMat));
 
-  const envCubeTarget = new THREE.WebGLCubeRenderTarget(128, {
+  const envCubeTarget = new THREE.WebGLCubeRenderTarget(512, {
     generateMipmaps: true, minFilter: THREE.LinearMipmapLinearFilter,
   });
   const envCubeCamera = new THREE.CubeCamera(0.1, 100, envCubeTarget);
@@ -2964,8 +2967,8 @@ function applyMapData(msg){
   // un "color" scuro sopra la moltiplicherebbe rendendo il pavimento
   // quasi nero/invisibile (bug: il pavimento spariva contro lo sfondo,
   // entrambi vicini a floorColorA che di default e' molto scuro).
-  const floorMatA = new THREE.MeshStandardMaterial({ map:floorTexA.map, normalMap:floorTexA.normalMap, normalScale:new THREE.Vector2(0.8,0.8), roughness:0.15, metalness:0.85, envMapIntensity:1.1 });
-  const floorMatB = new THREE.MeshStandardMaterial({ map:floorTexB.map, normalMap:floorTexB.normalMap, normalScale:new THREE.Vector2(0.8,0.8), roughness:0.15, metalness:0.85, envMapIntensity:1.1 });
+  const floorMatA = new THREE.MeshStandardMaterial({ map:floorTexA.map, normalMap:floorTexA.normalMap, normalScale:new THREE.Vector2(0.5,0.5), roughness:0.04, metalness:1.0, envMapIntensity:2.4 });
+  const floorMatB = new THREE.MeshStandardMaterial({ map:floorTexB.map, normalMap:floorTexB.normalMap, normalScale:new THREE.Vector2(0.5,0.5), roughness:0.04, metalness:1.0, envMapIntensity:2.4 });
   let countA = 0, countB = 0;
   for (let y=0;y<mazeH;y++){
     for (let x=0;x<mazeW;x++){
@@ -2996,7 +2999,7 @@ function applyMapData(msg){
   const floorBaseTex = makeMetalFloorTexture(floorColorA, (mazeTheme.__mapName||"default")+":floorBase");
   const floorBase = new THREE.Mesh(
     new THREE.PlaneGeometry(mazeW*CELL, mazeH*CELL),
-    new THREE.MeshStandardMaterial({ map:floorBaseTex.map, normalMap:floorBaseTex.normalMap, normalScale:new THREE.Vector2(0.8,0.8), roughness:0.15, metalness:0.85, envMapIntensity:1.1 })
+    new THREE.MeshStandardMaterial({ map:floorBaseTex.map, normalMap:floorBaseTex.normalMap, normalScale:new THREE.Vector2(0.5,0.5), roughness:0.04, metalness:1.0, envMapIntensity:2.4 })
   );
   floorBase.material.map.wrapS = floorBase.material.map.wrapT = THREE.RepeatWrapping;
   floorBase.material.normalMap.wrapS = floorBase.material.normalMap.wrapT = THREE.RepeatWrapping;
@@ -3055,9 +3058,9 @@ function applyMapData(msg){
       // diretta - per questo si vede anche sulle facce VERTICALI dei
       // muri guardandole di fronte, non solo dall'angolo esatto in cui
       // una direzionale si rifletterebbe verso la camera.
-      roughness: 0.15,
-      metalness: 0.85,
-      envMapIntensity: 1.1,
+      roughness: 0.04,
+      metalness: 1.0,
+      envMapIntensity: 2.4,
     });
     const inst = countPerVariant[v] > 0
       ? new THREE.InstancedMesh(cubeGeo, mat, countPerVariant[v])
@@ -4642,6 +4645,15 @@ window.addEventListener("keyup", e => {
 });
 
 let yaw = 0, pitch = 0, locked = false;
+// yaw/pitch "smussati" SOLO per la rotazione visiva della camera: yaw/pitch
+// restano i valori grezzi/istantanei (usati per mira, direzione di sparo,
+// movimento WASD ecc. - devono rimanere precisi al pixel), mentre camYaw/
+// camPitch inseguono yaw/pitch con un'interpolazione morbida ad ogni frame,
+// cosi' la rotazione della visuale non "scatta" ad ogni singolo evento
+// mousemove (che arriva a intervalli irregolari legati al polling del
+// mouse/OS) ma appare fluida come un moto continuo indipendente dal
+// framerate degli eventi di input.
+let camYaw = 0, camPitch = 0;
 document.addEventListener("pointerlockchange", () => {
   locked = document.pointerLockElement && document.pointerLockElement.tagName === "CANVAS";
 });
@@ -5951,7 +5963,7 @@ function onGameEvent(msg){
         orientLaserBolt(mesh, msg.dx, (typeof msg.vz === "number" ? msg.vz : 0), msg.dy);
       }
       scene.add(mesh);
-      laserMeshes[msg.id] = { mesh, x:wx, z:wz, y:wy, targetX:wx, targetZ:wz, targetY:wy, dir: msg.dir, yOffset };
+      laserMeshes[msg.id] = { mesh, x:wx, z:wz, y:wy, targetX:wx, targetZ:wz, targetY:wy, dir: msg.dir, yOffset, prevWpX:wx, prevWpZ:wz };
       playLaser();
       break;
     }
@@ -5964,6 +5976,13 @@ function onGameEvent(msg){
       // comunque leggibile come lampo luminoso.
       const lz = laserMeshes[msg.id];
       if (lz){
+        // Waypoint di partenza per il PROSSIMO tratto di volo: il target
+        // che stava per essere raggiunto ora diventa il punto di
+        // riferimento per calcolare la direzione dell'eventuale impatto
+        // successivo (vedi laser_end) - usa SEMPRE coordinate confermate
+        // dal server, mai la posizione animata (che puo' essere in
+        // ritardo rispetto al vero punto di rimbalzo).
+        lz.prevWpX = lz.targetX; lz.prevWpZ = lz.targetZ;
         const wx = msg.x*CELL, wz = msg.y*CELL;
         lz.targetX = wx; lz.targetZ = wz;
         if (typeof msg.z === "number") lz.targetY = msg.z*CELL + (lz.yOffset || 0);
@@ -5975,10 +5994,18 @@ function onGameEvent(msg){
       if (lz){
         if (msg.reason === "wall"){
           // Normale dell'impatto = verso opposto alla direzione di volo
-          // reale corrente (target - posizione attuale, sempre aggiornata
-          // dal lerp): affidabile anche dopo un rimbalzo/riflessione,
-          // a differenza di lz.dir che resta quello di spawn.
-          const dx = lz.targetX - lz.x, dz = lz.targetZ - lz.z;
+          // reale dell'ULTIMO tratto (dal precedente waypoint confermato
+          // dal server fino al punto di impatto, anch'esso dal server).
+          // NB: prima si usava "targetX - x", cioe' target meno posizione
+          // ANIMATA (interpolata frame per frame): quella posizione e'
+          // spesso in ritardo rispetto al vero punto raggiunto (lerp non
+          // ancora arrivato a destinazione quando scatta l'impatto), il
+          // che produceva una direzione/normale sbagliata e quindi il
+          // segno appariva sulla faccia sbagliata o spostato rispetto al
+          // vero punto colpito. Usando due coordinate SEMPRE confermate
+          // dal server (waypoint precedente -> punto di impatto) il
+          // calcolo non dipende piu' dallo stato di avanzamento del lerp.
+          const dx = msg.x*CELL - lz.prevWpX, dz = msg.y*CELL - lz.prevWpZ;
           const dlen = Math.hypot(dx, dz);
           let ndx = 0, ndz = 1;
           if (dlen > 1e-4){ ndx = dx/dlen; ndz = dz/dlen; }
@@ -7388,9 +7415,21 @@ function animate(){
   myRenderX += (myTargetX - myRenderX) * MY_LERP;
   myRenderZ += (myTargetZ - myRenderZ) * MY_LERP;
 
+  // Interpolazione morbida yaw/pitch -> camYaw/camPitch: fattore alto
+  // (dt*28) cosi' resta praticamente impercettibile in termini di ritardo
+  // percepito (converge in un paio di frame) ma smussa il "jitter" tra un
+  // evento mousemove e l'altro. Gestisce anche il wrap-around dello yaw
+  // (differenza portata sempre nell'intervallo -PI..PI) per evitare che la
+  // camera giri dal verso lungo quando yaw passa da +PI a -PI o viceversa.
+  const CAM_LERP = Math.min(1, dt*28);
+  let dyaw = yaw - camYaw;
+  dyaw = ((dyaw + Math.PI) % (Math.PI*2) + Math.PI*2) % (Math.PI*2) - Math.PI;
+  camYaw += dyaw * CAM_LERP;
+  camPitch += (pitch - camPitch) * CAM_LERP;
+
   camera.rotation.order = "YXZ";
-  camera.rotation.y = yaw;
-  camera.rotation.x = pitch;
+  camera.rotation.y = camYaw;
+  camera.rotation.x = camPitch;
   camera.position.set(myRenderX, EYE_HEIGHT, myRenderZ);
   // il cielo stellato segue la camera (mai il resto della scena): cosi'
   // le stelle restano sempre alla stessa "distanza infinita" qualunque
