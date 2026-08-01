@@ -2882,19 +2882,23 @@ function initThree(){
   const envSky = new THREE.Color(0xaebdd0);
   const envGround = new THREE.Color(0x06070a);
   const envGeo = new THREE.SphereGeometry(50, 32, 32);
+  const envHorizon = new THREE.Color(0xd8e0ee); // fascia chiara all'altezza dell'orizzonte
   const envGradColors = [];
   const envPos = envGeo.attributes.position;
   for (let i = 0; i < envPos.count; i++){
     const y = envPos.getY(i);
-    const t = Math.max(0, Math.min(1, (y / 50) * 0.5 + 0.5));
-    // curva (invece di lerp lineare) cosi' la banda chiara resta piu'
-    // stretta vicino all'orizzonte/zenit e il resto scende verso lo scuro:
-    // un riflesso di metallo lucido legge come "specchio" solo se nell'
-    // ambiente ci sono zone chiare E scure ben distinte, non un unico
-    // grigio uniforme (che e' esattamente cio' che dava l'effetto
-    // "bianco slavato" lamentato).
-    const tc = Math.pow(t, 2.2);
-    const c = envGround.clone().lerp(envSky, tc);
+    const t = Math.max(0, Math.min(1, (y / 50) * 0.5 + 0.5)); // 0=sotto, 0.5=orizzonte, 1=sopra
+    const tc = Math.pow(t, 1.5);
+    let c = envGround.clone().lerp(envSky, tc);
+    // Senza questa fascia, un muro VERTICALE (normale orizzontale) riflette
+    // quasi sempre il colore all'altezza dell'orizzonte (t~0.5), che con la
+    // curva sopra risulta quasi nero: ecco perche' il pavimento (che
+    // riflette piu' spesso verso l'alto, zone chiare) risultava lucido
+    // mentre i muri restavano piatti/opachi. Una fascia chiara concentrata
+    // proprio a t=0.5 da' ai muri qualcosa di luminoso da riflettere da
+    // qualsiasi angolo di vista, non solo guardando in basso/in alto.
+    const horizonBand = Math.exp(-Math.pow((t-0.5)/0.22, 2));
+    c = c.lerp(envHorizon, horizonBand*0.7);
     envGradColors.push(c.r, c.g, c.b);
   }
   envGeo.setAttribute("color", new THREE.Float32BufferAttribute(envGradColors, 3));
