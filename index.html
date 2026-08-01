@@ -2847,38 +2847,57 @@ function initThree(){
   renderer.setSize(window.innerWidth, window.innerHeight);
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   document.body.appendChild(renderer.domElement);
-  // Illuminazione neutra e uniforme su tutta la mappa: niente torcia
-  // attaccata al giocatore (era un PointLight colorato e troppo intenso,
-  // che schiacciava di luce/tinta forte solo cio' che aveva vicino e
-  // lasciava il resto quasi al buio, distorcendo i colori reali di muri
-  // e personaggi) e niente HemisphereLight con toni cielo/terra (anche
-  // quella tingeva leggermente tutto di blu dall'alto e marrone dal
-  // basso). Solo luce bianca pura, ambientale + una direzionale bianca
-  // debole per dare un minimo di rilievo alle forme senza alterare i
-  // colori: cosi' ogni oggetto mantiene il suo colore reale ovunque ci
-  // si trovi sulla mappa.
-  // Riempimento generale (mappa "a giorno", nessuna zona buia): SOLO luci
-  // omnidirezionali (Ambient + Hemisphere). A differenza di una
-  // direzionale, queste non hanno una direzione da riflettere sulle
-  // superfici lucide: alzarle rende la mappa piu' luminosa ovunque SENZA
-  // creare highlight/riflessi puntiformi che si spostano quando ci si
-  // muove (il problema delle 4 direzionali usate prima, che producevano
-  // 4 riflessi mobili diversi sparsi per la mappa).
+  // Illuminazione diffusa (mappa "a giorno", nessuna zona buia): SOLO
+  // luci omnidirezionali (Ambient + Hemisphere) piu' una direzionale
+  // debole giusto per un minimo di rilievo sulle forme. Il "lucido" dei
+  // muri/pavimento NON dipende piu' da queste (vedi env map sotto): senza
+  // quella dipendenza si evitano sia gli highlight puntiformi mobili che
+  // si vedevano "in giro" con piu' direzionali forti, sia zone scure.
   scene.add(new THREE.AmbientLight(0xffffff, 1.3));
-  // Hemisphere quasi neutra (sky/ground molto vicini, solo un accenno di
-  // rilievo dall'alto verso il basso) invece di un'altra Ambient pura:
-  // aggiunge luminosita' extra restando comunque omnidirezionale, senza
-  // sommarsi punto per punto come farebbe un'altra direzionale.
   scene.add(new THREE.HemisphereLight(0xffffff, 0xe8e8e8, 0.6));
-  // UNA sola direzionale: da' l'unico highlight speculare coerente su
-  // ogni superficie lucida (muri e pavimento riflettono cosi' ALLO STESSO
-  // MODO, con lo stesso riflesso nella stessa direzione), invece dei 4
-  // riflessi diversi e scoordinati delle direzionali precedenti. Quasi
-  // verticale dall'alto, stessa angolazione che gia' faceva funzionare
-  // bene il pavimento.
-  const sun = new THREE.DirectionalLight(0xffffff, 0.5);
+  const sun = new THREE.DirectionalLight(0xffffff, 0.35);
   sun.position.set(0.2, 1, 0.15);
   scene.add(sun);
+
+  // ---- Environment map per i riflessi lucidi di muri/pavimento ----
+  // Un riflesso "agganciato" a una luce diretta e' visibile SOLO
+  // nell'esatto angolo in cui quella luce si riflette verso la camera:
+  // per il pavimento (orizzontale) quell'angolo capita spesso guardando
+  // in basso, ma per i muri (verticali) quasi mai guardando avanti -
+  // risultato: pavimento lucido, muri "opachi" (o viceversa a seconda
+  // di dove si guarda). Una env map risolve alla radice: il riflesso
+  // viene dall'AMBIENTE circostante (sempre presente in ogni direzione),
+  // non da una sorgente puntuale, quindi resta visibile su qualsiasi
+  // superficie da qualsiasi angolo di vista. Generata UNA SOLA VOLTA con
+  // una piccola scena procedurale (cielo chiaro sopra, pavimento scuro
+  // sotto: coerente col tema industriale/notturno del gioco) e mai piu'
+  // aggiornata: costo trascurabile, i riflessi restano "ambiente
+  // generico" invece di rispecchiare la mappa reale, sufficiente per
+  // l'effetto lucido voluto senza il costo di un CubeCamera dinamico
+  // ricalcolato ad ogni frame.
+  const envScene = new THREE.Scene();
+  const envSky = new THREE.Color(0x9fb2c8);
+  const envGround = new THREE.Color(0x14161a);
+  const envGeo = new THREE.SphereGeometry(50, 16, 16);
+  const envGradColors = [];
+  const envPos = envGeo.attributes.position;
+  for (let i = 0; i < envPos.count; i++){
+    const y = envPos.getY(i);
+    const t = Math.max(0, Math.min(1, (y / 50) * 0.5 + 0.5));
+    const c = envGround.clone().lerp(envSky, t);
+    envGradColors.push(c.r, c.g, c.b);
+  }
+  envGeo.setAttribute("color", new THREE.Float32BufferAttribute(envGradColors, 3));
+  const envMat = new THREE.MeshBasicMaterial({ vertexColors:true, side:THREE.BackSide, fog:false });
+  envScene.add(new THREE.Mesh(envGeo, envMat));
+
+  const envCubeTarget = new THREE.WebGLCubeRenderTarget(128, {
+    generateMipmaps: true, minFilter: THREE.LinearMipmapLinearFilter,
+  });
+  const envCubeCamera = new THREE.CubeCamera(0.1, 100, envCubeTarget);
+  envCubeCamera.update(renderer, envScene);
+  scene.environment = envCubeTarget.texture;
+
   window.addEventListener("resize", () => {
     camera.aspect = window.innerWidth/window.innerHeight;
     camera.updateProjectionMatrix();
@@ -2945,8 +2964,8 @@ function applyMapData(msg){
   // un "color" scuro sopra la moltiplicherebbe rendendo il pavimento
   // quasi nero/invisibile (bug: il pavimento spariva contro lo sfondo,
   // entrambi vicini a floorColorA che di default e' molto scuro).
-  const floorMatA = new THREE.MeshStandardMaterial({ map:floorTexA.map, normalMap:floorTexA.normalMap, normalScale:new THREE.Vector2(0.8,0.8), roughness:0.15, metalness:0.85 });
-  const floorMatB = new THREE.MeshStandardMaterial({ map:floorTexB.map, normalMap:floorTexB.normalMap, normalScale:new THREE.Vector2(0.8,0.8), roughness:0.15, metalness:0.85 });
+  const floorMatA = new THREE.MeshStandardMaterial({ map:floorTexA.map, normalMap:floorTexA.normalMap, normalScale:new THREE.Vector2(0.8,0.8), roughness:0.15, metalness:0.85, envMapIntensity:1.1 });
+  const floorMatB = new THREE.MeshStandardMaterial({ map:floorTexB.map, normalMap:floorTexB.normalMap, normalScale:new THREE.Vector2(0.8,0.8), roughness:0.15, metalness:0.85, envMapIntensity:1.1 });
   let countA = 0, countB = 0;
   for (let y=0;y<mazeH;y++){
     for (let x=0;x<mazeW;x++){
@@ -2977,7 +2996,7 @@ function applyMapData(msg){
   const floorBaseTex = makeMetalFloorTexture(floorColorA, (mazeTheme.__mapName||"default")+":floorBase");
   const floorBase = new THREE.Mesh(
     new THREE.PlaneGeometry(mazeW*CELL, mazeH*CELL),
-    new THREE.MeshStandardMaterial({ map:floorBaseTex.map, normalMap:floorBaseTex.normalMap, normalScale:new THREE.Vector2(0.8,0.8), roughness:0.15, metalness:0.85 })
+    new THREE.MeshStandardMaterial({ map:floorBaseTex.map, normalMap:floorBaseTex.normalMap, normalScale:new THREE.Vector2(0.8,0.8), roughness:0.15, metalness:0.85, envMapIntensity:1.1 })
   );
   floorBase.material.map.wrapS = floorBase.material.map.wrapT = THREE.RepeatWrapping;
   floorBase.material.normalMap.wrapS = floorBase.material.normalMap.wrapT = THREE.RepeatWrapping;
@@ -3031,13 +3050,14 @@ function applyMapData(msg){
       normalScale: new THREE.Vector2(0.9, 0.9),
       emissive: hexToInt(variant.edge),
       emissiveIntensity: 0.08,
-      // Lucido invece di opaco: roughness bassa concentra il riflesso
-      // della direzionale (sun) in un highlight netto e mobile invece di
-      // spalmarlo diffuso su tutta la superficie; metalness alta rende
-      // quel riflesso tinto del colore del muro (comportamento metallico)
-      // invece che bianco puro (comportamento dielettrico/plastico).
+      // Lucido percepibile da qualsiasi angolo: il riflesso viene dalla
+      // env map (scene.environment, vedi initThree), non da una luce
+      // diretta - per questo si vede anche sulle facce VERTICALI dei
+      // muri guardandole di fronte, non solo dall'angolo esatto in cui
+      // una direzionale si rifletterebbe verso la camera.
       roughness: 0.15,
       metalness: 0.85,
+      envMapIntensity: 1.1,
     });
     const inst = countPerVariant[v] > 0
       ? new THREE.InstancedMesh(cubeGeo, mat, countPerVariant[v])
