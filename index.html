@@ -181,6 +181,7 @@ const COLOR_NAMES = Object.keys(COLOR_HEX);
 const CELL = 2;       // dimensione di una cella nel mondo 3D
 const WALL_H = 1.6;
 const EYE_HEIGHT = 1.15;
+const REFLECTION_LAYER = 1; // layer dedicato: solo i personaggi (giocatori/pet) ci sono, per riflessi leggeri via CubeCamera
 // Solo estetica: quanto velocemente il proiettile laser sale/scende in
 // base al pitch di mira (vedi case "laser_fire"). Non tocca in alcun modo
 // la collisione, che resta sul piano orizzontale come sempre.
@@ -2868,97 +2869,30 @@ function initThree(){
   scene.add(sun);
 
   // ---- Environment map per i riflessi lucidi di muri/pavimento ----
-  // Approccio precedente (scena 3D + CubeCamera) abbandonato: troppo
-  // indiretto, con un gradiente verticale che rendeva scuro esattamente
-  // cio' che i MURI riflettono di solito (l'altezza dell'orizzonte),
-  // risultando "opachi" nonostante roughness/metalness corretti. Qui
-  // invece disegniamo DIRETTAMENTE una texture equirettangolare su
-  // canvas 2D: nessuna scena da renderizzare, nessun CubeCamera, nessun
-  // rischio di doppia compressione col tone mapping - quello che vedi nel
-  // canvas e' esattamente quello che verra' riflesso. Chiara quasi
-  // ovunque (sopra E all'altezza dell'orizzonte, dove cadono la maggior
-  // parte dei riflessi su pavimento E muri) con un punto luce netto per
-  // il guizzo speculare tipico dell'acciaio lucidato, scura solo in un
-  // piccolo cono verso il basso (raramente riflesso da superfici di gioco).
-  function makeEnvReflectionTexture(){
-    const w = 512, h = 256;
-    const cnv = document.createElement("canvas");
-    cnv.width = w; cnv.height = h;
-    const ctx = cnv.getContext("2d");
-    // riga 0 = zenit (sopra), riga h = nadir (sotto), riga h/2 = orizzonte.
-    // Invece di un gradiente chiaro (che sul metallo lucido, per effetto
-    // Fresnel, "sbianca" tutto guardando radente/in lontananza), qui si
-    // simula un vero SOFFITTO SCURO con strisce al neon nette: l'ambiente
-    // riflesso resta scuro quasi ovunque, e il lucido si vede SOLO dove
-    // il riflesso incrocia una striscia di luce - esattamente come un
-    // pavimento/muro lucido sotto le plafoniere di un corridoio, non come
-    // uno specchio che restituisce un cielo uniforme.
-    ctx.fillStyle = "#06070a";
-    ctx.fillRect(0, 0, w, h);
-    // leggero rialzo di tono verso lo zenit (soffitto vero e proprio,
-    // appena percepibile) e verso il nadir un filo piu' scuro
-    const grad = ctx.createLinearGradient(0, 0, 0, h);
-    grad.addColorStop(0.00, "#1c2130");
-    grad.addColorStop(0.45, "#0d0f16");
-    grad.addColorStop(0.55, "#0a0b10");
-    grad.addColorStop(1.00, "#020203");
-    ctx.fillStyle = grad;
-    ctx.fillRect(0, 0, w, h);
-
-    // Strisce al neon: rettangoli netti (non blob sfumati) su piu' righe
-    // nella meta' superiore (il soffitto), ripetute tutto intorno ai 360°
-    // cosi' qualunque sia l'orientamento di camera/muro/pavimento si
-    // incrocia sempre qualche striscia viva.
-    function drawStrip(cx, cy, sw, sh, color, glowR){
-      ctx.save();
-      ctx.shadowColor = color;
-      ctx.shadowBlur = glowR;
-      ctx.fillStyle = color;
-      ctx.fillRect(cx - sw/2, cy - sh/2, sw, sh);
-      ctx.restore();
-    }
-    const rows = [
-      { y: 0.06, n: 8,  sw: 34, sh: 6,  color: "#f4f8ff", glow: 14 },
-      { y: 0.16, n: 10, sw: 26, sh: 5,  color: "#eef3ff", glow: 12 },
-      { y: 0.27, n: 12, sw: 20, sh: 4,  color: "#e6ecff", glow: 10 },
-      { y: 0.38, n: 14, sw: 15, sh: 3,  color: "#dbe4ff", glow: 8  },
-    ];
-    rows.forEach(row => {
-      for (let i = 0; i < row.n; i++){
-        const x = w * ((i + 0.5) / row.n);
-        const y = h * row.y;
-        drawStrip(x, y, row.sw, row.sh, row.color, row.glow);
-      }
-    });
-    // qualche accento colorato piu' debole, per non far sembrare tutte
-    // le luci identiche e dare un minimo di varieta' cromatica ai riflessi
-    const accents = [
-      {x:0.10, y:0.20, sw:18, sh:4, color:"#ffd9b0", glow:10},
-      {x:0.42, y:0.10, sw:16, sh:4, color:"#c9e0ff", glow:10},
-      {x:0.66, y:0.30, sw:14, sh:3, color:"#ffe6c9", glow:8},
-      {x:0.88, y:0.15, sw:18, sh:4, color:"#d0e8ff", glow:10},
-    ];
-    accents.forEach(a => drawStrip(w*a.x, h*a.y, a.sw, a.sh, a.color, a.glow));
-
-    const tex = new THREE.CanvasTexture(cnv);
-    tex.mapping = THREE.EquirectangularReflectionMapping;
-    tex.needsUpdate = true;
-    return tex;
-  }
-  // IMPORTANTE: una texture equirettangolare "grezza" assegnata
-  // direttamente a scene.environment NON viene filtrata per i vari
-  // livelli di roughness (serve il formato CubeUV pre-filtrato che usa
-  // il calcolo IBL speculare di MeshStandardMaterial). Senza questo
-  // passaggio il riflesso risultava di fatto assente: si vedeva solo il
-  // contributo diffuso piatto delle luci ambient/hemisphere. Il
-  // PMREMGenerator converte la texture nel formato corretto.
+  // Non piu' un "cielo finto" dipinto su canvas: ora i riflessi mostrano
+  // DAVVERO i giocatori (che gia' brillano di luce propria via materiale
+  // emissive, senza pero' illuminare l'ambiente intorno a loro - in three.js
+  // l'emissive di un materiale e' un effetto solo visivo su se stesso, non
+  // una vera sorgente di luce che irraggia i vicini, quindi questo requisito
+  // e' gia' soddisfatto per costruzione, nessuna PointLight da aggiungere).
+  //
+  // Per farli comparire nel riflesso serve una vera CubeCamera che
+  // fotografi la scena in tempo reale - ma fotografare TUTTA la scena
+  // (muri, pavimento, texture) ad ogni frame sarebbe troppo pesante per un
+  // gioco multiplayer. Soluzione: un LAYER dedicato (REFLECTION_LAYER) che
+  // contiene SOLO i personaggi (giocatori + pet, vedi makeCharacterMesh) -
+  // la CubeCamera guarda solo quel layer, quindi cattura pochissima
+  // geometria (poche sfere/mascelle), a bassa risoluzione, aggiornata
+  // solo qualche volta al secondo invece che ogni frame.
   const pmremGenerator = new THREE.PMREMGenerator(renderer);
-  pmremGenerator.compileEquirectangularShader();
-  const rawEnvTex = makeEnvReflectionTexture();
-  const envRenderTarget = pmremGenerator.fromEquirectangular(rawEnvTex);
-  scene.environment = envRenderTarget.texture;
-  rawEnvTex.dispose();
-  pmremGenerator.dispose();
+  pmremGenerator.compileCubemapShader();
+  const reflectionCubeRT = new THREE.WebGLCubeRenderTarget(128);
+  const reflectionCubeCam = new THREE.CubeCamera(0.1, 30, reflectionCubeRT);
+  reflectionCubeCam.layers.set(REFLECTION_LAYER);
+  window.__reflectionCubeCam = reflectionCubeCam;
+  window.__pmremGenerator = pmremGenerator;
+  window.__envRefreshCounter = 0;
+  window.__currentEnvRT = null;
 
   window.addEventListener("resize", () => {
     camera.aspect = window.innerWidth/window.innerHeight;
@@ -3179,7 +3113,13 @@ const PACMAN_MOUTH_MAX = 0.62; // apertura massima della bocca, in radianti per 
 
 function makeCharacterMesh(colorHex){
   const g = new THREE.Group();
-  const mat = new THREE.MeshStandardMaterial({ color:colorHex, emissive:colorHex, emissiveIntensity:0.18 });
+  // emissiveIntensity alzata (0.18 -> 0.9): il personaggio "brilla" di
+  // luce propria, MA l'emissive di three.js resta un effetto solo
+  // visivo sulla superficie stessa - non e' una vera sorgente di luce,
+  // quindi non illumina affatto l'ambiente/i muri intorno a lui (nessuna
+  // PointLight aggiunta, di proposito). Per farlo comunque comparire nel
+  // riflesso di muri/pavimento, vedi REFLECTION_LAYER piu' sotto.
+  const mat = new THREE.MeshStandardMaterial({ color:colorHex, emissive:colorHex, emissiveIntensity:0.9 });
 
   // testa: sfera piena come base, sopra si incollano le due mascelle che
   // "mangiano" lo spazio della bocca aperta, cosi' non si vede mai un
@@ -3220,6 +3160,11 @@ function makeCharacterMesh(colorHex){
   g.userData.jawBot = jawBot;
   g.userData.mouthPhase = Math.random() * Math.PI * 2; // sfasa i personaggi tra loro
   g.userData.isPacman = true;
+  // marca tutte le mesh (testa + mascelle) sul layer dedicato ai riflessi:
+  // restano visibili normalmente (layer 0, sempre attivo di default) E
+  // IN PIU' vengono "fotografate" dalla CubeCamera dei riflessi, che
+  // guarda solo questo layer (vedi initThree).
+  g.traverse(o => { if (o.isMesh) o.layers.enable(REFLECTION_LAYER); });
   return g;
 }
 
@@ -7497,8 +7442,36 @@ function animate(){
 
   // minimappa: ridisegnata anche qui (non solo ad ogni "state" di rete)
   // cosi' la freccia del giocatore ruota morbidamente insieme allo sguardo
-  // invece di scattare solo quando arriva un nuovo pacchetto dal server.
+  // invece di scattare solo quando arriva un nuovo pacchetto dal network.
   drawMinimap(lastPlayersForMinimap);
+
+  // Riflesso dei personaggi su muri/pavimento: aggiorna la CubeCamera
+  // dedicata (vedi REFLECTION_LAYER in initThree) solo 1 frame ogni 6
+  // (~10 volte al secondo a 60fps, non ogni frame) per restare leggera -
+  // i personaggi si muovono comunque a velocita' moderata, non serve un
+  // aggiornamento istantaneo per un riflesso credibile.
+  if (window.__reflectionCubeCam){
+    window.__envRefreshCounter = (window.__envRefreshCounter||0) + 1;
+    if (window.__envRefreshCounter % 6 === 0){
+      const cc = window.__reflectionCubeCam;
+      cc.position.set(myRenderX, EYE_HEIGHT, myRenderZ);
+      // background/fog nascosti solo durante lo scatto: la CubeCamera
+      // renderizzerebbe altrimenti lo sfondo pieno su ogni faccia,
+      // finendo dentro al riflesso anche se il layer esclude muri/pavimento
+      const prevBg = scene.background, prevFog = scene.fog;
+      scene.background = null; scene.fog = null;
+      cc.update(renderer, scene);
+      scene.background = prevBg; scene.fog = prevFog;
+      // il render target grezzo della CubeCamera non basta per l'IBL
+      // speculare di MeshStandardMaterial (serve il formato prefiltrato,
+      // vedi spiegazione in initThree): lo si ripassa dal PMREMGenerator,
+      // smaltendo il render target precedente per non accumulare memoria GPU.
+      const newEnvRT = window.__pmremGenerator.fromCubemap(cc.renderTarget.texture);
+      if (window.__currentEnvRT) window.__currentEnvRT.dispose();
+      window.__currentEnvRT = newEnvRT;
+      scene.environment = newEnvRT.texture;
+    }
+  }
 
   renderer.render(scene, camera);
 }
