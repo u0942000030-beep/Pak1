@@ -1244,7 +1244,7 @@ function spawnLaserWallImpact(wx, wy, wz, nx, ny, nz){
     color: 0x120a06, transparent:true, opacity:0.85,
     depthWrite:false, side: THREE.DoubleSide,
   });
-  const scorch = new THREE.Mesh(new THREE.CircleGeometry(0.16, 14), scorchMat);
+  const scorch = new THREE.Mesh(new THREE.CircleGeometry(0.07, 14), scorchMat);
   const normal = new THREE.Vector3(nx, ny, nz).normalize();
   scorch.position.set(
     wx + normal.x*0.011,
@@ -2922,8 +2922,13 @@ function applyMapData(msg){
   const floorGeo = new THREE.PlaneGeometry(CELL, CELL);
   const floorTexA = makeMetalFloorTexture(floorColorA, (mazeTheme.__mapName||"default")+":floorA");
   const floorTexB = makeMetalFloorTexture(floorColorB, (mazeTheme.__mapName||"default")+":floorB");
-  const floorMatA = new THREE.MeshStandardMaterial({ map:floorTexA.map, normalMap:floorTexA.normalMap, normalScale:new THREE.Vector2(0.8,0.8), color:floorColorA, roughness:0.55, metalness:0.75 });
-  const floorMatB = new THREE.MeshStandardMaterial({ map:floorTexB.map, normalMap:floorTexB.normalMap, normalScale:new THREE.Vector2(0.8,0.8), color:floorColorB, roughness:0.55, metalness:0.75 });
+  // NB: niente "color" qui insieme a "map" - il colore del tema e' gia'
+  // dentro la texture generata (fondo + spazzolatura + ruggine), quindi
+  // un "color" scuro sopra la moltiplicherebbe rendendo il pavimento
+  // quasi nero/invisibile (bug: il pavimento spariva contro lo sfondo,
+  // entrambi vicini a floorColorA che di default e' molto scuro).
+  const floorMatA = new THREE.MeshStandardMaterial({ map:floorTexA.map, normalMap:floorTexA.normalMap, normalScale:new THREE.Vector2(0.8,0.8), roughness:0.55, metalness:0.75 });
+  const floorMatB = new THREE.MeshStandardMaterial({ map:floorTexB.map, normalMap:floorTexB.normalMap, normalScale:new THREE.Vector2(0.8,0.8), roughness:0.55, metalness:0.75 });
   let countA = 0, countB = 0;
   for (let y=0;y<mazeH;y++){
     for (let x=0;x<mazeW;x++){
@@ -2954,7 +2959,7 @@ function applyMapData(msg){
   const floorBaseTex = makeMetalFloorTexture(floorColorA, (mazeTheme.__mapName||"default")+":floorBase");
   const floorBase = new THREE.Mesh(
     new THREE.PlaneGeometry(mazeW*CELL, mazeH*CELL),
-    new THREE.MeshStandardMaterial({ map:floorBaseTex.map, normalMap:floorBaseTex.normalMap, normalScale:new THREE.Vector2(0.8,0.8), color:floorColorA, roughness:0.55, metalness:0.75 })
+    new THREE.MeshStandardMaterial({ map:floorBaseTex.map, normalMap:floorBaseTex.normalMap, normalScale:new THREE.Vector2(0.8,0.8), roughness:0.55, metalness:0.75 })
   );
   floorBase.material.map.wrapS = floorBase.material.map.wrapT = THREE.RepeatWrapping;
   floorBase.material.normalMap.wrapS = floorBase.material.normalMap.wrapT = THREE.RepeatWrapping;
@@ -4562,14 +4567,16 @@ const DIR_TO_YAW = { up: 0, right: -Math.PI/2, down: Math.PI, left: Math.PI/2 };
 
 const heldMoveKeys = new Set(); // "forward"/"backward"/"left"/"right" attualmente premuti
 let heldBase = null;            // ultimo tasto premuto, ha la priorita'
-let steerTargetYaw = null;      // direzione di griglia agganciata all'ultima pressione: verso cui sterzare
-
 function updateMovementDirection(){
   if (!heldBase) return;
   const dir = baseToGridDir(heldBase);
   if (!dir) return;
   requestDir(dir);
-  steerTargetYaw = DIR_TO_YAW[dir]; // la visuale insegue questa direzione, non piu' quella premuta a ripetizione
+  // NB: la visuale NON insegue piu' automaticamente la direzione premuta
+  // (steerTargetYaw rimosso su richiesta): WASD muove il personaggio nel
+  // labirinto, il mouse resta l'UNICO controllo della direzione in cui si
+  // guarda. Prima ogni pressione ruotava anche la camera, "girando" il
+  // personaggio da solo anche se non lo si voleva.
 }
 
 window.addEventListener("keydown", e => {
@@ -4588,7 +4595,6 @@ window.addEventListener("keyup", e => {
     // se restano altri tasti di movimento premuti, passa a uno di quelli
     heldBase = heldMoveKeys.size ? heldMoveKeys.values().next().value : null;
     if (heldBase) updateMovementDirection();
-    else steerTargetYaw = null; // nessun tasto premuto: la visuale resta libera, niente sterzata
   }
 });
 
@@ -4607,21 +4613,9 @@ document.addEventListener("mousemove", e => {
   updateMovementDirection();
 });
 
-// Sterza dolcemente lo yaw verso la direzione di griglia agganciata
-// all'ultimo tasto premuto (steerTargetYaw), chiamata ogni frame dal
-// render loop. Se non c'e' nessun tasto di movimento premuto non tocca
-// lo yaw: lo sguardo resta libero.
-function steerCameraTowardsMovement(dt){
-  if (steerTargetYaw === null) return;
-  // porta la differenza nell'intervallo (-PI, PI] cosi' la sterzata
-  // prende sempre la via piu' corta (mai un giro largo inutile).
-  let diff = steerTargetYaw - yaw;
-  diff = Math.atan2(Math.sin(diff), Math.cos(diff));
-  const STEER_SPEED = 12; // rad/sec: sterzata rapida ma non istantanea
-  const maxStep = STEER_SPEED * dt;
-  if (Math.abs(diff) <= maxStep) yaw = steerTargetYaw;
-  else yaw += Math.sign(diff) * maxStep;
-}
+/* NB: la sterzata automatica della camera verso la direzione WASD e'
+   stata rimossa su richiesta - la visuale e' controllata SOLO dal mouse.
+   Vedi updateMovementDirection() sopra. */
 
 /* ============================================================
    ATTACCO AEREO (bonus 4000 punti), fase di mira: la riga da
@@ -7328,9 +7322,8 @@ function animate(){
     t.mesh.userData.shadow.material.opacity = 0.25 * (1 - lift/(POTION_ARC_HEIGHT*1.4));
   }
 
-  // sterza automaticamente la visuale verso la direzione in cui mi sto
-  // muovendo (WASD), a meno che il mouse non l'abbia appena presa in mano.
-  steerCameraTowardsMovement(dt);
+  // La visuale e' controllata SOLO dal mouse (nessuna sterzata automatica
+  // legata a WASD, rimossa su richiesta): niente da fare qui per lo yaw.
 
   // stessa interpolazione morbida gia' usata per remotePlayers (vedi sopra
   // LERP = Math.min(1, dt*10)): prima la camera scattava di colpo sull'ultima
