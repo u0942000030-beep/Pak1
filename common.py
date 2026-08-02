@@ -647,6 +647,41 @@ MEGA_MUSHROOM_GOLEM_TICK_SECONDS = 1.0  # danno ai golem nel raggio: una vita al
 #      2v2 anche quelle dei compagni (niente fuoco amico).
 AIRSTRIKE_THRESHOLD = 4000
 AIRSTRIKE_SPEED = 10.0   # celle al secondo percorse dall'aereo lungo la fila
+
+# ---- bonus 4200 punti: torre dello stregone (TASTO DESTRO del mouse) ----
+# A differenza di TUTTI gli altri bonus (che si accumulano sulla catena del
+# tasto "1"), questo usa un binding DEDICATO: il tasto destro del mouse.
+# Ispirata alla "Torre dello Stregone" di livello 16 di Clash of Clans:
+# alla pressione, UNA SOLA VOLTA per round, il giocatore evoca nella
+# casella in cui si trova in quel momento un'enorme torre, alta
+# WIZARD_TOWER_HEIGHT_CELLS volte un muro normale e larga esattamente
+# quanto una casella (vedi try_place_wizard_tower in main.py). Il
+# giocatore viene teletrasportato ISTANTANEAMENTE in cima alla torre:
+# da quel momento la sua altezza (player.z, in caselle) resta
+# WIZARD_TOWER_HEIGHT_CELLS finche' non ridiscende (vedi
+# try_descend_wizard_tower), e puo' guardarsi liberamente intorno dall'alto
+# muovendo il mouse (la telecamera in prima persona del client segue gia'
+# yaw/pitch, basta sollevarne la quota). La torre e' PERMANENTE: resta
+# sulla mappa, al suolo, per tutto il resto del round, anche se il
+# proprietario muore o si disconnette (come mortaio/torretta/Tesla). Per
+# ora e' solo struttura + piattaforma: nessun attacco (verra' aggiunto in
+# un secondo momento).
+WIZARD_TOWER_THRESHOLD = 4200
+WIZARD_TOWER_HEIGHT_CELLS = 3.0     # altezza della torre, in multipli dell'altezza di un muro normale
+
+# Palle di fuoco (arma della torre dello stregone, bonus 4200 punti): una
+# volta in cima alla propria torre (player.on_wizard_tower), il tasto
+# sinistro del mouse NON spara piu' il laser normale ma una palla di fuoco.
+# Sono in numero limitato per round (si ricaricano risalendo di nuovo sulla
+# torre, vedi try_place_wizard_tower/Player.fireballs_left in main.py) e, a
+# differenza del laser, infliggono danno ad AREA: chiunque si trovi entro
+# WIZARD_TOWER_FIREBALL_RADIUS_CELLS caselle (distanza Manhattan, stesso
+# criterio usato dal bombolone/SUPERBOMB_RADIUS_CELLS) dal punto di impatto
+# perde una vita, non solo chi viene colpito in pieno. Riusano lo stesso
+# motore di volo/collisione del laser (vedi spawn_fireball/move_fireballs).
+WIZARD_TOWER_FIREBALLS_COUNT = 50
+WIZARD_TOWER_FIREBALL_RADIUS_CELLS = 1   # raggio del danno ad area, in caselle (distanza Manhattan)
+WIZARD_TOWER_FIREBALL_SPEED = 16.0       # celle al secondo percorse dalla palla di fuoco
 BLOB_POISON_DURATION_SECONDS = 4.0                # quanto resta a terra ciascuna nuvola della scia del blob vivo
 BLOB_EAT_RANGE_CELLS = 1                          # distanza (caselle, stile scacchi/Chebyshev): il blob mangia anche chi non e' esattamente sopra di lui, ma solo adiacente
 

@@ -91,6 +91,8 @@ from common import (
     MEGA_MUSHROOM_THRESHOLD, MEGA_MUSHROOM_RANGE_CELLS,
     MEGA_MUSHROOM_KILL_RANGE, MEGA_MUSHROOM_GOLEM_TICK_SECONDS,
     AIRSTRIKE_THRESHOLD, AIRSTRIKE_SPEED,
+    WIZARD_TOWER_THRESHOLD, WIZARD_TOWER_HEIGHT_CELLS,
+    WIZARD_TOWER_FIREBALLS_COUNT, WIZARD_TOWER_FIREBALL_RADIUS_CELLS, WIZARD_TOWER_FIREBALL_SPEED,
     RTT_PING_INTERVAL_SECONDS, RTT_DEFAULT_SECONDS,
     REWIND_MAX_SECONDS, REWIND_HISTORY_SECONDS,
     RECONNECT_GRACE_SECONDS,
@@ -138,6 +140,13 @@ class Player:
         self.host = False
         self.x = 0
         self.y = 0
+        # Altezza corrente (in caselle) del giocatore rispetto al suolo:
+        # 0 finche' resta a terra. Sale a WIZARD_TOWER_HEIGHT_CELLS quando
+        # e' in cima alla propria torre dello stregone (bonus 4200 punti,
+        # tasto destro del mouse, vedi try_place_wizard_tower). Inviata al
+        # client in to_public cosi' la telecamera in prima persona puo'
+        # sollevare la propria quota invece di restare fissa a EYE_HEIGHT.
+        self.z = 0.0
         self.direction = None
         # Direzione "richiesta" dal giocatore ma non ancora applicabile (es.
         # muro nella cella successiva): viene tenuta in memoria e applicata
@@ -365,6 +374,22 @@ class Player:
         self.airstrike_row = 0          # fila attualmente selezionata dal mirino (indice y)
         self.airstrike_used = False     # True dopo il lancio: tasto "1" (a fine catena) esaurito
 
+        # ---- bonus 4200 punti: torre dello stregone (TASTO DESTRO del mouse) ----
+        # Binding dedicato, indipendente dalla catena del tasto "1". La
+        # torre vera e propria (posizione, proprietario) vive come dict
+        # dentro self.wizard_towers della Room, non qui.
+        self.has_wizard_tower = False     # bonus sbloccato (una volta per round)
+        self.wizard_tower_placed = False  # True dopo l'evocazione: tasto destro utilizzabile una sola volta per round
+        self.on_wizard_tower = False      # True mentre il giocatore si trova in cima alla propria torre (player.z > 0)
+        # Munizioni di palle di fuoco ancora disponibili mentre si e' in
+        # cima alla torre: caricate a WIZARD_TOWER_FIREBALLS_COUNT nel
+        # momento dell'evocazione/teletrasporto (vedi try_place_wizard_tower)
+        # e consumate una a una dal tasto sinistro del mouse (vedi
+        # try_fire_fireball). A 0 il tasto sinistro torna a non fare nulla
+        # finche' non si ridiscende e risale (il bonus si usa una sola
+        # volta per round, quindi in pratica sono le uniche 50 disponibili).
+        self.fireballs_left = 0
+
         # ---- modalita' 2v2 a squadre ----
         # 1 o 2 quando la stanza e' in modalita' "2v2" (vedi Room.mode e
         # assign_teams), None in tutti-contro-tutti. Decide colori
@@ -397,6 +422,7 @@ class Player:
             "id": self.id, "name": self.name, "colors": self.colors,
             "character": self.character,
             "host": self.host, "x": round(fx, 4), "y": round(fy, 4),
+            "z": round(self.z, 4),
             "direction": self.direction,
             "alive": self.alive,
             # In attesa di riconnessione (vedi RECONNECT_GRACE_SECONDS):
@@ -468,6 +494,10 @@ class Player:
             "mega_mushroom_used": self.mega_mushroom_used,
             "airstrike": self.has_airstrike,
             "airstrike_aiming": self.airstrike_aiming,
+            "wizard_tower": self.has_wizard_tower,
+            "wizard_tower_placed": self.wizard_tower_placed,
+            "on_wizard_tower": self.on_wizard_tower,
+            "fireballs_left": self.fireballs_left,
             "airstrike_row": self.airstrike_row,
             "airstrike_used": self.airstrike_used,
             "team": self.team,
@@ -608,6 +638,17 @@ class Room:
         # Attacchi aerei in corso (bonus 4000 punti): aerei che
         # attraversano una fila bombardando (vedi update_airstrikes).
         self.airstrikes = []
+        # Torri dello stregone evocate (bonus 4200 punti, tasto destro del
+        # mouse): permanenti per tutto il round come mortai/torrette/Tesla,
+        # bloccano fisicamente la casella su cui sorgono (come i muri di
+        # spunzoni) e fungono da piattaforma su cui il proprietario resta
+        # teletrasportato finche' non ridiscende. Azzerate ad ogni round.
+        self.wizard_towers = []
+        # Palle di fuoco in volo (arma della torre dello stregone): come i
+        # lasers, riusano lo stesso motore di volo/collisione ma esplodono
+        # ad area all'impatto invece di colpire un solo bersaglio (vedi
+        # spawn_fireball/move_fireballs). Azzerate ad ogni nuovo round.
+        self.fireballs = []
         # Mappa corrente della stanza: viene ripescata a caso tra le 10
         # disponibili a OGNI inizio round (vedi run_round), cosi' ogni
         # partita puo' capitare su una mappa diversa per forma/colore/misura.
@@ -1163,6 +1204,11 @@ class Room:
             p.airstrike_aiming = False
             p.airstrike_row = 0
             p.airstrike_used = False
+            p.has_wizard_tower = False
+            p.wizard_tower_placed = False
+            p.on_wizard_tower = False
+            p.fireballs_left = 0
+            p.z = 0.0
             p.next_lives_milestone = LIVES_EVERY_POINTS
             p.kills = 0
         self.lasers = []
@@ -1189,6 +1235,8 @@ class Room:
         # Attacchi aerei in corso (bonus 4000 punti): aerei che
         # attraversano una fila bombardando (vedi update_airstrikes).
         self.airstrikes = []
+        self.wizard_towers = []  # torri dello stregone evocate (bonus 4200 punti)
+        self.fireballs = []  # palle di fuoco in volo (arma della torre dello stregone)
         self.bombs = []
         self.poison_zones = []  # nuvole velenose lasciate a terra dagli impatti del mortaio
 
@@ -2020,6 +2068,22 @@ class Room:
                 "bonus": "airstrike", "points": AIRSTRIKE_THRESHOLD,
             })
 
+        # Bonus 4200 punti: sblocca la torre dello stregone, ma NON la
+        # evoca subito. Si evoca a comando col TASTO DESTRO del mouse
+        # (binding dedicato, indipendente dalla catena del tasto "1", vedi
+        # try_place_wizard_tower), UNA SOLA VOLTA per round.
+        if (
+            p.alive
+            and p.points >= WIZARD_TOWER_THRESHOLD
+            and WIZARD_TOWER_THRESHOLD not in p.claimed
+        ):
+            p.claimed.add(WIZARD_TOWER_THRESHOLD)
+            p.has_wizard_tower = True
+            self.push_event({
+                "kind": "bonus", "player": p.id,
+                "bonus": "wizard_tower", "points": WIZARD_TOWER_THRESHOLD,
+            })
+
     def try_portal(self, p):
         """Se il giocatore e' su un portale (e non e' appena arrivato da un
         teletrasporto), lo sposta al portale opposto mantenendo la direzione.
@@ -2088,6 +2152,11 @@ class Room:
         p.direction = None
         p.next_direction = None
         p.move_accum = 0.0
+        # Chi muore mentre e' in cima alla propria torre dello stregone
+        # rinasce a terra, non lassu': la torre resta comunque in piedi
+        # sulla mappa (e' permanente).
+        p.z = 0.0
+        p.on_wizard_tower = False
         p.prot_left = SPAWN_PROTECT_SECONDS
         p.portal_cd = 0.5  # se lo spawn fosse vicino a un portale, niente teletrasporto istantaneo
         p.pos_history.clear()  # vedi assign_spawns
@@ -2457,6 +2526,12 @@ class Room:
                     destroyed = True
                     destroy_reason = "wall"
                     break
+                # Torre dello stregone avversaria (bonus 4200 punti): come
+                # un muro di spunzoni, ferma i proiettili altrui.
+                if self.wizard_tower_blocking(ncx, ncy, lz["owner"]) is not None:
+                    destroyed = True
+                    destroy_reason = "wall"
+                    break
                 lz["x"], lz["y"], lz["z"] = nx, ny, nz
                 entered_new_cell = (ncx, ncy) != last_cell
                 last_cell = (ncx, ncy)
@@ -2622,6 +2697,7 @@ class Room:
             "teslas": lambda: any(o["x"] == x and o["y"] == y for o in self.teslas),
             "bushes": lambda: any((x, y) in b["cells"] for b in self.bushes),
             "mushrooms": lambda: any(o["x"] == x and o["y"] == y for o in self.mushrooms),
+            "wizard_towers": lambda: any(o["x"] == x and o["y"] == y for o in self.wizard_towers),
         }
         for name, fn in checks.items():
             if name == exclude:
@@ -3065,6 +3141,11 @@ class Room:
                     # quindi il controllo va fatto qui a ogni passo). I
                     # missili del PROPRIETARIO del muro lo attraversano.
                     if self.spike_wall_blocking(nx, ny, mz["owner"]) is not None:
+                        destroyed = True
+                        break
+                    # Torre dello stregone avversaria (bonus 4200 punti):
+                    # blocca anche il missile guidato, come un muro vero.
+                    if self.wizard_tower_blocking(nx, ny, mz["owner"]) is not None:
                         destroyed = True
                         break
                     mz["move_accum"] -= 1.0
@@ -5822,6 +5903,247 @@ class Room:
 
     # ---- bonus 4000 punti: attacco aereo (tasto "1", DOPO il fungo madre) ----
 
+    # ---- bonus 4200 punti: torre dello stregone (tasto destro del mouse) ----
+
+    def try_place_wizard_tower(self, player):
+        """Tasto destro del mouse: binding DEDICATO, indipendente dalla
+        catena del tasto "1". Evoca, UNA SOLA VOLTA per round, un'enorme
+        torre dello stregone nella cella in cui il giocatore si trova in
+        quel momento (stessa logica di arrotondamento sulla posizione
+        frazionaria reale gia' usata da try_place_spike_wall, per non far
+        apparire la torre "alle spalle" del giocatore mentre sta
+        scivolando verso la cella successiva) e lo teletrasporta
+        ISTANTANEAMENTE in cima: da questo momento player.z resta a
+        WIZARD_TOWER_HEIGHT_CELLS finche' non ridiscende (vedi
+        try_descend_wizard_tower). La torre e' PERMANENTE e blocca
+        fisicamente la cella (vedi wizard_tower_blocking), come i muri di
+        spunzoni.
+
+        Se il giocatore e' intrappolato dalla trappola di un avversario,
+        NON puo' usare alcun bonus finche' non torna libero di muoversi."""
+        if (not player.alive or player.trapped_left > 0 or not player.has_wizard_tower
+                or player.wizard_tower_placed or player.is_assassin or player.armor_active):
+            return
+        dx, dy = DIRECTIONS.get(player.direction, (0, 0)) if player.direction else (0, 0)
+        wx = int(round(player.x + dx * player.move_accum))
+        wy = int(round(player.y + dy * player.move_accum))
+        if self.cell_has_gadget(wx, wy, exclude="wizard_towers"):
+            cell = self.find_nearest_free_cell(wx, wy, exclude="wizard_towers")
+            if cell is None:
+                # Mappa satura di gadget: bonus comunque consumato, invece
+                # di restare per sempre disponibile senza poter mai
+                # scattare.
+                player.wizard_tower_placed = True
+                return
+            wx, wy = cell
+        player.wizard_tower_placed = True
+        tower_id = uuid.uuid4().hex[:8]
+        tower = {"id": tower_id, "owner": player.id, "x": wx, "y": wy}
+        self.wizard_towers.append(tower)
+        self.push_event({
+            "kind": "wizard_tower_place", "id": tower_id, "player": player.id,
+            "x": wx, "y": wy,
+        })
+        # Teletrasporto istantaneo in cima alla torre appena evocata:
+        # stessa cella (x, y), ma quota sollevata. Il movimento orizzontale
+        # resta invariato (il giocatore puo' comunque spostarsi sulle
+        # celle adiacenti restando in quota, verra' gestito quando si
+        # aggiungera' la possibilita' di camminare lassu'); per ora la
+        # torre e' una piattaforma fissa e il giocatore vi resta sopra.
+        player.x, player.y = wx, wy
+        player.move_accum = 0.0
+        player.direction = None
+        player.next_direction = None
+        player.z = WIZARD_TOWER_HEIGHT_CELLS
+        player.on_wizard_tower = True
+        # Carica le 50 palle di fuoco disponibili per questa salita: e'
+        # l'unica volta per round che si sale (wizard_tower_placed sopra
+        # impedisce di rievocare/riteletrasportarsi), quindi in pratica sono
+        # le uniche 50 dell'intero round (vedi try_fire_fireball).
+        player.fireballs_left = WIZARD_TOWER_FIREBALLS_COUNT
+        self.push_event({
+            "kind": "wizard_tower_teleport", "player": player.id,
+            "x": wx, "y": wy, "z": WIZARD_TOWER_HEIGHT_CELLS,
+        })
+
+    def try_descend_wizard_tower(self, player):
+        """Fa ridiscendere il giocatore dalla propria torre dello
+        stregone, se ci si trova sopra: player.z torna a 0. La torre
+        resta comunque in piedi sulla mappa (e' permanente)."""
+        if not player.on_wizard_tower:
+            return
+        player.on_wizard_tower = False
+        player.z = 0.0
+        # Le munizioni residue restano legate al tempo trascorso in cima
+        # alla torre: una volta ridisceso, il tasto sinistro torna a non
+        # fare nulla di speciale (il laser normale, sbloccato a 150 punti,
+        # e' comunque sempre disponibile a terra tramite try_fire_laser).
+        player.fireballs_left = 0
+        self.push_event({
+            "kind": "wizard_tower_descend", "player": player.id,
+            "x": player.x, "y": player.y,
+        })
+
+    def wizard_tower_public(self, w):
+        return {"id": w["id"], "x": w["x"], "y": w["y"], "owner": w["owner"]}
+
+    def wizard_tower_blocking(self, x, y, owner_id):
+        """Ritorna la torre dello stregone presente in (x, y) che BLOCCA
+        chi appartiene a owner_id (cioe' una torre piazzata da un ALTRO
+        giocatore), oppure None. Il proprietario la attraversa/vi sale
+        liberamente."""
+        for w in self.wizard_towers:
+            if w["x"] == x and w["y"] == y and self.is_enemy_ids(w["owner"], owner_id):
+                return w
+        return None
+
+    # ---- palle di fuoco: arma della torre dello stregone (bonus 4200) ----
+    # Attive SOLO mentre il giocatore si trova in cima alla propria torre
+    # (player.on_wizard_tower). Il tasto sinistro del mouse e' lo stesso
+    # binding gia' usato per il laser normale (vedi try_fire_laser): e'
+    # il client a decidere quale messaggio mandare in base allo stato
+    # corrente (fire_laser se a terra, fire_fireball se in cima alla
+    # torre), il server resta comunque l'autorita' finale sulle condizioni
+    # sotto. A differenza del laser hanno munizioni limitate
+    # (WIZARD_TOWER_FIREBALLS_COUNT per salita, vedi
+    # Player.fireballs_left/try_place_wizard_tower) e infliggono danno ad
+    # AREA invece che colpire un solo bersaglio (vedi explode_fireball).
+
+    def try_fire_fireball(self, shooter, direction=None, aim=None, pitch=None):
+        """Spara una palla di fuoco dalla cima della torre. Stessa mira
+        libera del laser (vedi try_fire_laser/_resolve_aim_vector): il
+        colpo parte esattamente dove il giocatore sta guardando, comprese
+        le diagonali. Consuma una munizione ad ogni sparo; a munizioni
+        esaurite non fa nulla."""
+        if not shooter.alive or not shooter.on_wizard_tower:
+            return
+        if shooter.trapped_left > 0:
+            return
+        if shooter.fireballs_left <= 0:
+            return
+        shooter.fireballs_left -= 1
+        dx, dy = self._resolve_aim_vector(aim, direction, shooter.facing)
+        self.spawn_fireball(shooter, dx, dy, direction or shooter.facing, pitch=pitch)
+
+    def spawn_fireball(self, shooter, dx=None, dy=None, facing=None, pitch=None):
+        """Crea un nuovo proiettile-palla di fuoco, stessa meccanica di
+        volo del laser (spawn_laser): parte dal centro della cella/quota
+        reale dello sparatore (in cima alla torre, quindi da
+        WIZARD_TOWER_HEIGHT_CELLS) e viaggia in linea retta lungo il
+        vettore di mira libero. Avanza poi un tick alla volta dentro
+        move_fireballs()."""
+        if dx is None or dy is None:
+            dx, dy = DIRECTIONS.get(shooter.facing, (1, 0))
+        length = math.hypot(dx, dy)
+        if length > 1e-6:
+            dx, dy = dx / length, dy / length
+        else:
+            dx, dy = DIRECTIONS.get(shooter.facing, (1, 0))
+        facing = facing or shooter.facing
+        try:
+            pitch_val = float(pitch) if pitch is not None else 0.0
+        except (TypeError, ValueError):
+            pitch_val = 0.0
+        if pitch_val > LASER_MAX_PITCH:
+            pitch_val = LASER_MAX_PITCH
+        elif pitch_val < -LASER_MAX_PITCH:
+            pitch_val = -LASER_MAX_PITCH
+        vz = math.sin(pitch_val) * WIZARD_TOWER_FIREBALL_SPEED
+        horiz_scale = math.cos(pitch_val)
+        fireball = {
+            "id": uuid.uuid4().hex[:8],
+            "owner": shooter.id,
+            "x": shooter.x + 0.5, "y": shooter.y + 0.5,
+            "dx": dx, "dy": dy,
+            "pitch": pitch_val,
+            "z": WIZARD_TOWER_HEIGHT_CELLS,
+            "vz": vz,
+            "horiz_scale": horiz_scale,
+        }
+        self.fireballs.append(fireball)
+        self.push_event({
+            "kind": "fireball_fire", "id": fireball["id"], "shooter": shooter.id,
+            "x": fireball["x"], "y": fireball["y"], "z": fireball["z"], "dir": facing,
+            "dx": dx, "dy": dy, "vz": vz,
+        })
+
+    def explode_fireball(self, fireball, reason):
+        """Impatto di una palla di fuoco: infligge danno ad area, non solo
+        a chi viene colpito in pieno. Chiunque (nemico, vivo, non ghost/non
+        protetto) si trovi entro WIZARD_TOWER_FIREBALL_RADIUS_CELLS caselle
+        (distanza Manhattan, stesso criterio del bombolone) dal punto di
+        impatto perde una vita. Stessa immunita' ghost/protezione
+        post-respawn di laser/mortaio/bombolone."""
+        ox, oy = fireball["x"], fireball["y"]
+        owner = fireball["owner"]
+        self.push_event({
+            "kind": "fireball_end", "id": fireball["id"], "x": ox, "y": oy,
+            "z": fireball.get("z", WIZARD_TOWER_HEIGHT_CELLS), "reason": reason,
+            "radius": WIZARD_TOWER_FIREBALL_RADIUS_CELLS,
+        })
+        victims = [
+            p for p in self.players.values()
+            if p.alive and self.is_enemy_ids(p.id, owner)
+            and p.ghost_left <= 0 and p.prot_left <= 0
+            and abs(p.x - ox) + abs(p.y - oy) <= WIZARD_TOWER_FIREBALL_RADIUS_CELLS
+        ]
+        for victim in victims:
+            self.kill_player(victim, "fireball", shooter_id=owner)
+
+    def move_fireballs(self):
+        """Avanza tutte le palle di fuoco attive di un tick. Stessa
+        meccanica a micro-passi del laser (move_lasers), ma senza rimbalzo:
+        si estingue esplodendo (danno ad area, vedi explode_fireball) al
+        primo muro o al primo nemico colpito lungo la traiettoria, oppure
+        contro una torre dello stregone avversaria."""
+        if not self.fireballs:
+            return
+        step_dist = WIZARD_TOWER_FIREBALL_SPEED * TICK_DT
+        n_steps = max(1, math.ceil(step_dist / 0.4))
+        micro = step_dist / n_steps
+
+        survivors = []
+        for fb in self.fireballs:
+            destroyed = False
+            destroy_reason = None
+            hscale = fb.get("horiz_scale", 1.0)
+            micro_h = micro * hscale
+            micro_z = fb.get("vz", 0.0) * TICK_DT / n_steps
+            for _ in range(n_steps):
+                if destroyed:
+                    break
+                nx, ny = fb["x"] + fb["dx"] * micro_h, fb["y"] + fb["dy"] * micro_h
+                nz = fb.get("z", WIZARD_TOWER_HEIGHT_CELLS) + micro_z
+                ncx, ncy = int(math.floor(nx)), int(math.floor(ny))
+                if nz < WALL_TOP_Z and is_wall(self.maze, self.maze_w, self.maze_h, ncx, ncy):
+                    destroyed = True
+                    destroy_reason = "wall"
+                    break
+                if self.spike_wall_blocking(ncx, ncy, fb["owner"]) is not None:
+                    destroyed = True
+                    destroy_reason = "wall"
+                    break
+                if self.wizard_tower_blocking(ncx, ncy, fb["owner"]) is not None:
+                    destroyed = True
+                    destroy_reason = "wall"
+                    break
+                fb["x"], fb["y"], fb["z"] = nx, ny, nz
+                victims = [
+                    q for q in self.players.values()
+                    if q.alive and self.is_enemy_ids(q.id, fb["owner"])
+                    and q.ghost_left <= 0 and q.prot_left <= 0
+                    and hitbox_hit(fb["x"], fb["y"], q.x + 0.5, q.y + 0.5, PLAYER_HITBOX_RADIUS)
+                ]
+                if victims:
+                    destroyed = True
+                    destroy_reason = "hit"
+                    break
+            if destroyed:
+                self.explode_fireball(fb, destroy_reason)
+            else:
+                survivors.append(fb)
+        self.fireballs = survivors
+
     def try_use_airstrike(self, player):
         """Tasto '1', RIUSATO come VERO ultimo gradino della catena.
         Funziona in DUE tempi:
@@ -6643,6 +6965,10 @@ class Room:
                 {"id": lz["id"], "x": lz["x"], "y": lz["y"], "z": lz.get("z", LASER_EYE_HEIGHT), "dir": [lz["dx"], lz["dy"]]}
                 for lz in self.lasers
             ],
+            "fireballs": [
+                {"id": fb["id"], "x": fb["x"], "y": fb["y"], "z": fb.get("z", WIZARD_TOWER_HEIGHT_CELLS), "dir": [fb["dx"], fb["dy"]]}
+                for fb in self.fireballs
+            ],
             "mines": [{"id": m["id"], "x": m["x"], "y": m["y"], "owner": m["owner"]} for m in self.mines],
             "turrets": [self.turret_public(t) for t in self.turrets],
             "pets": [self.pet_public(pt) for pt in self.pets],
@@ -6668,6 +6994,7 @@ class Room:
             "balloons": [self.balloon_public(b) for b in self.balloons],
             "blobs": [self.blob_public(b) for b in self.blobs],
             "spike_walls": [self.spike_wall_public(w) for w in self.spike_walls],
+            "wizard_towers": [self.wizard_tower_public(w) for w in self.wizard_towers],
             "bushes": [self.bush_public(b) for b in self.bushes],
             "mushrooms": [self.mushroom_public(m) for m in self.mushrooms],
             # Terremoti attivi della pozione (bonus 3400 punti): il client
@@ -6736,6 +7063,8 @@ class Room:
         # Attacchi aerei in corso (bonus 4000 punti): aerei che
         # attraversano una fila bombardando (vedi update_airstrikes).
         self.airstrikes = []
+        self.wizard_towers = []  # torri dello stregone evocate (bonus 4200 punti)
+        self.fireballs = []  # palle di fuoco in volo (arma della torre dello stregone)
         self.bombs = []
         self.poison_zones = []  # nuvole velenose lasciate a terra dagli impatti del mortaio
         for p in self.players.values():
@@ -6806,6 +7135,11 @@ class Room:
             p.airstrike_aiming = False
             p.airstrike_row = 0
             p.airstrike_used = False
+            p.has_wizard_tower = False
+            p.wizard_tower_placed = False
+            p.on_wizard_tower = False
+            p.fireballs_left = 0
+            p.z = 0.0
             p.next_lives_milestone = LIVES_EVERY_POINTS
             p.kills = 0
         # Si torna in LOBBY dopo la fine di un round: il conto alla
@@ -6863,6 +7197,7 @@ class Room:
                 self.update_pets()    # bonus 900 punti: il pet insegue il proprietario e attacca chi si avvicina
                 self.update_mortars() # bonus 1200 punti: il mortaio spara bombe ad arco contro il nemico piu' vicino entro 15 caselle
                 self.move_lasers()    # avanza i proiettili laser in volo (con eventuale rimbalzo)
+                self.move_fireballs() # avanza le palle di fuoco della torre dello stregone in volo
                 self.check_mines()    # bonus 200 punti: fa esplodere le mine calpestate
                 self.update_blobs_wander()  # bonus 2000 punti: fa vagare i blob "vivi" lasciando la scia velenosa
                 self.check_blobs()    # bonus 1800/2000 punti: fa mangiare al blob (fermo o vivo) chiunque tocchi o gli sia adiacente
@@ -7273,6 +7608,29 @@ async def handle_client(ws):
                     pitch,
                 )
 
+            elif mtype == "fire_fireball":
+                # Bonus 4200 punti: arma della torre dello stregone. Stesso
+                # schema di "fire_laser" (mira libera "aim"/"pitch" presa
+                # dallo sguardo corrente), ma il client la manda SOLO mentre
+                # myState.on_wizard_tower e' vero (vedi index.html); il
+                # server resta comunque l'autorita' finale su condizioni e
+                # munizioni residue (vedi try_fire_fireball).
+                if not room or not player:
+                    continue
+                direction = msg.get("direction")
+                aim = msg.get("aim")
+                if not (isinstance(aim, (list, tuple)) and len(aim) == 2):
+                    aim = None
+                pitch = msg.get("pitch")
+                if not isinstance(pitch, (int, float)):
+                    pitch = None
+                room.try_fire_fireball(
+                    player,
+                    direction if direction in DIRECTIONS else None,
+                    aim,
+                    pitch,
+                )
+
             elif mtype == "activate_trap":
                 # Bonus 500 punti: pressione del tasto "4" lato client
                 # (sia per intrappolare che per far detonare).
@@ -7481,6 +7839,24 @@ async def handle_client(ws):
                     room.try_place_superbomb(player)
                 else:
                     room.try_place_mortar(player)
+
+            elif mtype == "place_wizard_tower":
+                # Tasto destro del mouse: binding DEDICATO, indipendente
+                # dalla catena del tasto "1". Evoca la torre dello
+                # stregone (bonus 4200 punti, vedi try_place_wizard_tower)
+                # e teletrasporta il giocatore in cima. Il server resta
+                # l'autorita': se il bonus non e' ancora sbloccato o e'
+                # gia' stato usato, la chiamata non fa nulla.
+                if not room or not player:
+                    continue
+                room.try_place_wizard_tower(player)
+
+            elif mtype == "descend_wizard_tower":
+                # Fa ridiscendere il giocatore dalla propria torre, se ci
+                # si trova sopra (vedi try_descend_wizard_tower).
+                if not room or not player:
+                    continue
+                room.try_descend_wizard_tower(player)
 
             elif mtype == "stop":
                 # Il tasto/direzione e' stato rilasciato: il personaggio si

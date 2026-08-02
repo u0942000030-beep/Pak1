@@ -147,6 +147,7 @@
   <div id="hudTurret" class="hidden" style="color:#ff8a6e;"></div>
   <div id="hudPet" class="hidden" style="color:#ffd400;"></div>
   <div id="hudRobot" class="hidden" style="color:#c6ff3f;"></div>
+  <div id="hudWizardTower" class="hidden" style="color:#c07bff;"></div>
 </div>
 <div id="minimapWrap" class="hidden">
   <canvas id="minimap" width="320" height="320"></canvas>
@@ -952,6 +953,21 @@ function playLaser(){
   sweep(1200, 260, 0.16, "square", 0.14);
   tone(180, 0.10, "sawtooth", 0.10, 0.02);
 }
+// Palla di fuoco (torre dello stregone, bonus 4200 punti): sweep piu'
+// grave e "caldo" del laser, con un crepitio breve, per farla sentire
+// piu' pesante/infuocata rispetto al colpo laser secco.
+function playFireballFire(){
+  sweep(700, 180, 0.20, "sawtooth", 0.15);
+  noiseBurst(0.10, 0.08);
+}
+// Impatto della palla di fuoco: boato piccolo e secco (raggio di 1 sola
+// casella, molto piu' piccolo del bombolone/mortaio), ma comunque con un
+// basso caldo per farlo sentire come un'esplosione vera.
+function playFireballExplode(){
+  noiseBurst(0.22, 0.16);
+  tone(120, 0.22, "sawtooth", 0.16, 0);
+  tone(70, 0.28, "sine", 0.14, 0.03);
+}
 // Teletrasporto attraverso un portale: piccolo "whoosh" ascendente.
 function playTeleport(){
   sweep(240, 760, 0.18, "sine", 0.12);
@@ -1089,6 +1105,7 @@ let pelletMeshes = {};   // "x,y" -> THREE.Group (sfera + bagliori)
 let powerPelletCells = new Set();
 let remotePlayers = {};  // id -> {group, targetX, targetZ, colorHex}
 let laserMeshes = {};    // id -> {mesh, x, z, targetX, targetZ} bonus 150 punti: proiettili laser in volo
+let fireballMeshes = {}; // id -> {mesh, x, z, targetX, targetZ} bonus 4200 punti: palle di fuoco della torre dello stregone in volo
 let missileMeshes = {};  // id -> {mesh, x, z, targetX, targetZ} bonus 400 punti: missile guidato in volo
 let mineMeshes = {};     // id -> mesh bonus 200 punti: mine posate, statiche (nessuna interpolazione)
 let turretMeshes = {};   // id -> THREE.Group con userData {halo, barrelPivot, core, ring, aim, currentAng} — bonus 600 punti: torrette automatiche permanenti
@@ -1098,6 +1115,7 @@ let superbombMeshes = {}; // id -> THREE.Group con userData {halo, skull, fuseLe
 let balloonMeshes = {};   // id -> {group, x, z, targetX, targetZ} — bonus 1600 punti: mongolfiere mobili, vagano da sole sganciando bombe (userData.shadow/body vivono in group.userData)
 let blobMeshes = {};      // id -> {group, x, z, targetX, targetZ} — bonus 1800 punti: blob gelatinoso, fermo finche' non risvegliato (b.alive, bonus 2000 punti), poi vaga lasciando una scia velenosa
 let spikeWallMeshes = {};  // id -> THREE.Group — bonus 2200 punti: muri di spunzoni, fermi e permanenti (nessuna interpolazione, come le mine), rimossi solo da un evento esplicito (Tesla/fungo atomico)
+let wizardTowerMeshes = {}; // id -> THREE.Group — bonus 4200 punti: torri dello stregone, ferme e permanenti per tutto il round (nessun evento di rimozione, come mortai/torrette)
 let teslaMeshes = {};      // id -> THREE.Group con userData {trapdoor, tower, core, envelope, coilRing, coilRing2, halo, sparks, rangeRing, charge, hidden, occult} — bonus 2400 punti: Tesla laser, fissa e permanente, PIU' ALTA dei muri (vedi TESLA_TOP_Y)
 let teslaBolts = [];       // fulmini in corso di una Tesla: {mesh, start} — evento "tesla_fire", lampo a zig-zag per ogni bersaglio colpito, dura pochissimo (200ms) come le scintille
 let teslaTrapdoorFx = [];  // {x,z,color,start,kind:"open"|"close"} — animazione one-shot della botola (bonus 3200 punti, Tesla occulta)
@@ -1191,6 +1209,12 @@ let quakeReticle = null;        // THREE.Group della X bianca di mira della pozi
 // laser_fire in arrivo con shooter===myId al pitch piu' vecchio in coda
 // (FIFO: gli spari vengono confermati nello stesso ordine in cui partono).
 let myLaserPitchQueue = [];
+// Stessa coda FIFO di sopra, ma dedicata alle palle di fuoco (bonus 4200
+// punti): tenuta separata dalla coda del laser normale cosi' un pitch
+// destinato a uno sparo non viene mai "rubato" dall'altro tipo di colpo,
+// anche se il giocatore alterna rapidamente laser/palle di fuoco (es.
+// salendo/scendendo dalla torre a ripetizione).
+let myFireballPitchQueue = [];
 let portals = [];          // [[x,y], ...] ricevuti dal server con la mappa (msg.portals) — coordinate di griglia, fisse per tutto il round
 let portalMeshes = [];     // THREE.Group per ciascun portale, stesso ordine di "portals"
 let portalOn = true;       // stato acceso/spento a cicli (msg.portal_on), aggiornato ad ogni "state"
@@ -1202,10 +1226,13 @@ let playerColorHex = {}; // playerId -> colore primario (int), aggiornato da onS
 let explosions = [];     // { mesh, start } - piccola sfera che si espande e sfuma, riusata da
                           // qualsiasi evento "botto" (missile_end, missile_reflect, e in futuro
                           // mine_boom/superbomb/ecc.) invece di scrivere un effetto ad hoc ognuno.
-function spawnExplosion(wx, wz, colorHex){
+function spawnExplosion(wx, wz, colorHex, wy){
   const mat = new THREE.MeshBasicMaterial({ color: colorHex, transparent:true, opacity:0.9 });
   const mesh = new THREE.Mesh(new THREE.SphereGeometry(0.22, 10, 8), mat);
-  mesh.position.set(wx, 0.55, wz);
+  // wy opzionale: di default resta a terra (0.55, come sempre), ma un
+  // chiamante puo' passare una quota diversa (es. la palla di fuoco della
+  // torre dello stregone, che esplode in alto e non a terra).
+  mesh.position.set(wx, (typeof wy === "number") ? wy : 0.55, wz);
   scene.add(mesh);
   explosions.push({ mesh, start: performance.now() });
 }
@@ -3321,6 +3348,28 @@ function orientLaserBolt(mesh, dx, dy, dz){
   mesh.lookAt(target);
 }
 
+/* Palla di fuoco (arma della torre dello stregone, bonus 4200 punti):
+   nucleo sferico incandescente + alone piu' grande e trasparente, stesso
+   schema "nucleo/halo" gia' usato per il dardo laser (makeLaserBoltMesh) e
+   il missile (makeMissileMesh), ma piu' grossa e coi toni caldi del fuoco
+   invece del colore del proprietario, per distinguerla a colpo d'occhio
+   da entrambe le altre armi. */
+function makeFireballMesh(colorHex){
+  const g = new THREE.Group();
+  const core = new THREE.Mesh(
+    new THREE.SphereGeometry(0.16, 14, 10),
+    new THREE.MeshStandardMaterial({ color: 0xffb347, emissive: 0xff5a1a, emissiveIntensity: 2.4 })
+  );
+  g.add(core);
+  const halo = new THREE.Mesh(
+    new THREE.SphereGeometry(0.28, 14, 10),
+    new THREE.MeshBasicMaterial({ color: colorHex, transparent: true, opacity: 0.32 })
+  );
+  g.add(halo);
+  g.userData.isFireball = true;
+  return g;
+}
+
 function makeMissileMesh(colorHex){
   const g = new THREE.Group();
   const halo = new THREE.Mesh(
@@ -4388,6 +4437,13 @@ function makeSpikeWallMesh(colorHex){
    occulta): quando t.hidden e' vero la torre sparisce e resta visibile
    solo la botola di legno chiusa (g.userData.trapdoor), invariato. ---- */
 const TESLA_TOP_Y = WALL_TOTAL_H + 1.1; // la cupola spunta ben oltre la cima dei muri
+
+// Bonus 4200 punti: torre dello stregone (tasto destro del mouse). Alta
+// WIZARD_TOWER_HEIGHT_CELLS volte un muro normale (vedi common.py), con
+// una piattaforma in cima su cui il proprietario viene teletrasportato.
+const WIZARD_TOWER_HEIGHT_CELLS = 3.0;
+const WIZARD_TOWER_TOTAL_H = WALL_TOTAL_H * WIZARD_TOWER_HEIGHT_CELLS;
+const WIZARD_TOWER_FIREBALLS_COUNT = 50; // munizioni di palle di fuoco caricate ad ogni salita (vedi common.py)
 const TESLA_RANGE_CELLS_3D = 8; // deve restare identico a TESLA_RANGE_CELLS in common.py
 function makeTeslaMesh(colorHex){
   const g = new THREE.Group();
@@ -4481,22 +4537,26 @@ function makeTeslaMesh(colorHex){
     panel.rotation.y = -a;
     tower.add(panel);
   }
-  // Fasce a rivetti nel colore del proprietario, a 3 altezze lungo il
-  // fusto (invece dei pioli a scaletta del vecchio traliccio).
+  // Fasce a rivetti a 3 altezze lungo il fusto, stesso identico stile
+  // delle bande a rivetti del mortaio (makeMortarMesh): un anello
+  // metallico SOLIDO (cilindro pieno, non un sottile toro) con rivetti
+  // color oro sporgenti tutt'intorno, invece dei pioli a scaletta del
+  // vecchio traliccio.
+  const RIVET = 0xd8c48a; // stesso oro dei rivetti del mortaio (makeMortarMesh)
+  const teslaRivetMat = new THREE.MeshStandardMaterial({ color: RIVET });
   [0.3, 0.58, 0.86].forEach(frac => {
     const yy = 0.28 + shaftH * frac;
     const rr = shaftBottomR + (shaftTopR - shaftBottomR) * frac;
     const band = new THREE.Mesh(
-      new THREE.TorusGeometry(rr + 0.015, 0.022, 6, 12),
-      new THREE.MeshStandardMaterial({ color: colorHex, roughness:0.3, metalness:0.5, emissive: colorHex, emissiveIntensity:0.22 })
+      new THREE.CylinderGeometry(rr + 0.02, rr + 0.02, 0.04, 22),
+      gadgetSurfaceMaterial(METAL, "tesla-band", { roughness:0.05, metalness:0.55 })
     );
-    band.rotation.x = Math.PI / 2;
     band.position.y = yy;
     tower.add(band);
-    for (let i = 0; i < 6; i++){
-      const a = (i / 6) * Math.PI * 2;
-      const rivet = new THREE.Mesh(new THREE.SphereGeometry(0.02, 6, 6), rivetMat);
-      rivet.position.set(Math.cos(a) * (rr + 0.015), yy, Math.sin(a) * (rr + 0.015));
+    for (let i = 0; i < 8; i++){
+      const a = (i / 8) * Math.PI * 2;
+      const rivet = new THREE.Mesh(new THREE.SphereGeometry(0.018, 6, 5), teslaRivetMat);
+      rivet.position.set(Math.cos(a) * (rr + 0.02), yy, Math.sin(a) * (rr + 0.02));
       tower.add(rivet);
     }
   });
@@ -4598,6 +4658,124 @@ function makeTeslaMesh(colorHex){
   g.userData.rangeRing = rangeRing;
   g.userData.charge = 0;
   g.userData.hidden = false;
+  return g;
+}
+
+/* ---- bonus 4200 punti: torre dello stregone (tasto destro del mouse) —
+   ispirata alla Torre dello Stregone di livello 16 di Clash of Clans:
+   una torre di pietra massiccia, molto piu' larga e alta di quella
+   Tesla, che sale fino a WIZARD_TOWER_TOTAL_H (3 volte un muro normale)
+   restando larga esattamente quanto una cella. Base ottagonale in
+   pietra scura, fusto conico rastremato a fasce di blocchi, cima aperta
+   a "corona" merlata con al centro un cristallo/globo fluttuante nel
+   colore del proprietario (il vero dettaglio iconico della torre del
+   gioco), che pulsa lentamente nel render loop come il nucleo del
+   bombolone. E' permanente, fissa e (per ora) solo una struttura/
+   piattaforma: nessun attacco. ---- */
+function makeWizardTowerMesh(colorHex){
+  const g = new THREE.Group();
+  const H = WIZARD_TOWER_TOTAL_H;
+  const HALF = CELL / 2 - 0.04; // riempie quasi tutta la cella, e' un edificio massiccio
+  const STONE = 0x5b564e, STONE_DARK = 0x3a362f, STONE_LIGHT = 0x726c60;
+
+  // Base ottagonale larga in pietra scura, stesso linguaggio della base
+  // della Tesla ma piu' tozza e larga (edificio, non traliccio).
+  const baseShape = new THREE.Shape();
+  for (let i = 0; i < 8; i++){
+    const a = i * Math.PI / 4;
+    const px = Math.cos(a) * HALF * 0.99, py = Math.sin(a) * HALF * 0.99;
+    if (i === 0) baseShape.moveTo(px, py); else baseShape.lineTo(px, py);
+  }
+  baseShape.closePath();
+  const baseH = 0.4;
+  const base = new THREE.Mesh(
+    new THREE.ExtrudeGeometry(baseShape, { depth: baseH, bevelEnabled:true, bevelThickness:0.04, bevelSize:0.04, bevelSegments:2 }),
+    gadgetSurfaceMaterial(STONE_DARK, "wizard-tower-base", { roughness:0.95, flatShading:true })
+  );
+  base.rotation.x = -Math.PI / 2;
+  base.position.y = baseH;
+  g.add(base);
+
+  // Fusto principale: tre tronchi di cono impilati, ciascuno leggermente
+  // piu' stretto del precedente, per dare l'idea di una torre in pietra
+  // costruita "a blocchi" che si restringe salendo, come la torre dello
+  // stregone originale.
+  const segCount = 3;
+  const segH = (H - baseH - 1.1) / segCount; // margine in cima per la corona merlata
+  let curY = baseH;
+  const rBottomStart = HALF * 0.94;
+  const rTopEnd = HALF * 0.58;
+  const stoneMat = gadgetSurfaceMaterial(STONE, "wizard-tower-shaft", { roughness:0.9, flatShading:true });
+  for (let i = 0; i < segCount; i++){
+    const rBottom = rBottomStart - (rBottomStart - rTopEnd) * (i / segCount);
+    const rTop = rBottomStart - (rBottomStart - rTopEnd) * ((i + 1) / segCount);
+    const seg = new THREE.Mesh(
+      new THREE.CylinderGeometry(rTop, rBottom, segH, 8, 1),
+      stoneMat
+    );
+    seg.position.y = curY + segH / 2;
+    g.add(seg);
+    // Fascia decorativa nel colore del proprietario a ogni giunzione,
+    // stesso schema a rivetti gia' usato da bombolone/muro di spunzoni/Tesla.
+    const band = new THREE.Mesh(
+      new THREE.TorusGeometry(rBottom * 1.01, 0.05, 6, 8),
+      new THREE.MeshStandardMaterial({ color: colorHex, roughness:0.35, metalness:0.4, emissive: colorHex, emissiveIntensity:0.22 })
+    );
+    band.rotation.x = Math.PI / 2;
+    band.position.y = curY;
+    g.add(band);
+    curY += segH;
+  }
+  const topShaftR = rTopEnd;
+
+  // Corona merlata in cima: 8 piccoli merli in pietra chiara che
+  // ricordano gli spalti di una torre da fortezza.
+  const merlonMat = gadgetSurfaceMaterial(STONE_LIGHT, "wizard-tower-merlon", { roughness:0.85, flatShading:true });
+  const merlonCount = 8;
+  for (let i = 0; i < merlonCount; i++){
+    const a = (i / merlonCount) * Math.PI * 2;
+    const merlon = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.34, 0.14), merlonMat);
+    merlon.position.set(Math.cos(a) * topShaftR * 0.95, curY + 0.17, Math.sin(a) * topShaftR * 0.95);
+    merlon.rotation.y = -a;
+    g.add(merlon);
+  }
+  // Piattaforma superiore: disco piatto su cui il proprietario appare
+  // teletrasportato, leggermente incassato dentro la corona di merli.
+  const platform = new THREE.Mesh(
+    new THREE.CylinderGeometry(topShaftR * 0.98, topShaftR * 0.98, 0.12, 8),
+    gadgetSurfaceMaterial(STONE_DARK, "wizard-tower-platform", { roughness:0.9, flatShading:true })
+  );
+  platform.position.y = curY + 0.06;
+  g.add(platform);
+
+  // Cristallo/globo magico fluttuante al centro della corona, nel colore
+  // del proprietario: il dettaglio iconico della torre, pulsa lentamente
+  // nel render loop (vedi animate(), stessa idea del nucleo del bombolone).
+  const crystal = new THREE.Mesh(
+    new THREE.OctahedronGeometry(0.26, 1),
+    new THREE.MeshStandardMaterial({ color: colorHex, transparent:true, opacity:0.85, emissive: colorHex, emissiveIntensity:0.6, roughness:0.2, metalness:0.1 })
+  );
+  crystal.position.y = curY + 0.55;
+  g.add(crystal);
+  const crystalGlow = new THREE.Mesh(
+    new THREE.SphereGeometry(0.36, 16, 12),
+    new THREE.MeshBasicMaterial({ color: colorHex, transparent:true, opacity:0.22 })
+  );
+  crystalGlow.position.y = curY + 0.55;
+  g.add(crystalGlow);
+
+  // Alone morbido a terra nel colore del proprietario, stesso linguaggio
+  // di mortaio/bombolone/Tesla.
+  const halo = new THREE.Mesh(
+    new THREE.CylinderGeometry(HALF * 1.3, HALF * 1.3, 0.02, 26),
+    new THREE.MeshBasicMaterial({ color: colorHex, transparent:true, opacity:0.15 })
+  );
+  halo.position.y = 0.01;
+  g.add(halo);
+
+  g.userData.crystal = crystal;
+  g.userData.crystalGlow = crystalGlow;
+  g.userData.topY = curY + 0.12; // quota della piattaforma calpestabile, per riferimento
   return g;
 }
 
@@ -4806,6 +4984,20 @@ document.addEventListener("mousedown", e => {
   if (e.button !== 0) return; // solo tasto sinistro
   e.preventDefault();
   const fx = -Math.sin(yaw), fz = -Math.cos(yaw); // direzione in cui sto guardando (piano orizzontale)
+  const dir = dirFromVector(fx, fz);
+  // Bonus 4200 punti: in cima alla propria torre dello stregone, il tasto
+  // sinistro spara PALLE DI FUOCO (danno ad area, munizioni limitate a
+  // 50/salita) invece del laser normale. Stesso identico schema di mira
+  // libera (aim/pitch) del laser, solo il messaggio cambia: il server
+  // resta comunque l'unica autorita' su munizioni/condizioni (vedi
+  // try_fire_fireball in main.py). A munizioni esaurite il tasto sinistro
+  // non fa piu' nulla finche' non si ridiscende e si risale sulla torre.
+  if (myState && myState.on_wizard_tower){
+    if (!myState.fireballs_left || myState.fireballs_left <= 0) return;
+    myFireballPitchQueue.push(pitch);
+    sendMsg({ type:"fire_fireball", direction: dir, aim: [fx, fz], pitch: pitch });
+    return;
+  }
   // Manda il vettore di mira LIBERO (non piu' agganciato ai 4 cardinali):
   // cosi' il proiettile viaggia esattamente dove sto guardando, comprese
   // le diagonali e qualunque angolo intermedio. "direction" cardinale
@@ -4816,7 +5008,6 @@ document.addEventListener("mousedown", e => {
   // viene colpito e' deciso comunque dalla cella sul piano orizzontale
   // esattamente come prima - qui serve solo a vedere meglio dove si sta
   // sparando (utile su pet/bersagli bassi).
-  const dir = dirFromVector(fx, fz);
   myLaserPitchQueue.push(pitch);
   // "pitch" non e' solo estetico: il server lo usa anche per decidere se
   // il colpo e' abbastanza rivolto verso il basso da poter colpire un
@@ -4837,6 +5028,13 @@ document.addEventListener("mousedown", e => {
 // il tasto destro puo' richiamarla senza duplicare la logica.
 function fireMissile(){
   sendMsg({ type:"fire_missile" });
+}
+// Bonus 4200 punti: torre dello stregone (tasto destro del mouse,
+// binding dedicato). Il server e' l'unica autorita' su quando e' davvero
+// utilizzabile (vedi try_place_wizard_tower in main.py); qui si manda
+// solo il messaggio.
+function placeWizardTower(){
+  sendMsg({ type:"place_wizard_tower" });
 }
 window.addEventListener("keydown", e => {
   if (currentScreen !== "game") return;
@@ -4883,6 +5081,18 @@ window.addEventListener("keydown", e => {
   if (currentScreen !== "game") return;
   if (e.key !== "1") return;
   placeMineChainStep();
+});
+
+/* ============================================================
+   BONUS 4200 PUNTI: torre dello stregone, discesa (tasto "0").
+   Attivo solo mentre myState.on_wizard_tower e' vero: premendolo si
+   torna a terra (la torre resta comunque in piedi, e' permanente).
+   ============================================================ */
+window.addEventListener("keydown", e => {
+  if (currentScreen !== "game") return;
+  if (e.key !== "0") return;
+  if (!myState || !myState.on_wizard_tower) return;
+  sendMsg({ type:"descend_wizard_tower" });
 });
 
 /* ============================================================
@@ -4981,6 +5191,12 @@ document.addEventListener("mousedown", e => {
   if (myState.golem && !myState.golem_placed){ placeMineChainStep(); return; }
   if (myState.mega_mushroom && !myState.mega_mushroom_used){ placeMineChainStep(); return; }
   if (myState.airstrike && !myState.airstrike_used){ placeMineChainStep(); return; }
+  // Bonus 4200 punti: torre dello stregone. Binding DEDICATO (non fa
+  // parte della catena del tasto "1"): appena sbloccata ha priorita' su
+  // tutto il resto del tasto destro, tranne se e' gia' stata usata (in
+  // quel caso il tasto destro torna a fare le sue solite cose, missile
+  // compreso).
+  if (myState.wizard_tower && !myState.wizard_tower_placed){ placeWizardTower(); return; }
   // Tasto "3": missile guidato, solo se ne restano.
   if (myState.missile && myState.missiles_left > 0){ fireMissile(); return; }
   // Tasto "5": torretta, solo se non ancora piazzata.
@@ -5019,6 +5235,12 @@ function exitGame(){
    ============================================================ */
 let myRenderX = 0, myRenderZ = 0, myInited = false;
 let myTargetX = 0, myTargetZ = 0; // ultima posizione confermata dal server: myRenderX/Z la insegue
+// Bonus 4200 punti: altezza (in world-units, non celle) del giocatore
+// locale rispetto al suolo, quando si trova in cima alla propria torre
+// dello stregone. myRenderY insegue myTargetY con lo stesso lerp morbido
+// gia' usato per X/Z, cosi' la telecamera sale/scende dolcemente invece
+// di scattare di colpo al momento del teletrasporto.
+let myRenderY = 0, myTargetY = 0;
                                    // con un lerp nel render loop, invece di scattarci sopra di colpo
                                    // (stesso schema gia' usato per remotePlayers, vedi animate())
 let myState = {}; // ultimo stato noto del giocatore locale (aggiornato in onState): serve al tasto "1"
@@ -5187,7 +5409,8 @@ function onState(msg){
 
     if (p.id === myId){
       myTargetX = wx; myTargetZ = wz;
-      if (!myInited){ myRenderX = wx; myRenderZ = wz; myInited = true; } // solo al primo stato: niente scivolata dall'origine
+      myTargetY = (p.z||0) * CELL;
+      if (!myInited){ myRenderX = wx; myRenderZ = wz; myRenderY = myTargetY; myInited = true; } // solo al primo stato: niente scivolata dall'origine
       myState = p; // usato dal tasto "1" per decidere quale messaggio inviare (vedi mineChainNextMsg)
       document.getElementById("hudScore").textContent = "punti: " + (p.points||0);
       document.getElementById("hudLives").textContent = "vite: " + (p.lives||0);
@@ -5318,6 +5541,26 @@ function onState(msg){
       } else {
         hudRobot.classList.add("hidden");
       }
+      // Bonus 4200 punti: torre dello stregone. Mostra il prompt per
+      // evocarla finche' non e' ancora stata piazzata; una volta in cima
+      // (on_wizard_tower) mostra invece il prompt per ridiscendere.
+      const hudWizardTower = document.getElementById("hudWizardTower");
+      if (p.wizard_tower && !p.wizard_tower_placed){
+        hudWizardTower.textContent = "torre dello stregone: tasto destro";
+        hudWizardTower.classList.remove("hidden");
+      } else if (p.on_wizard_tower){
+        // Bonus 4200 punti, arma della torre: mostra anche le munizioni
+        // di palle di fuoco residue (tasto sinistro), cosi' il giocatore
+        // sa sempre quante ne restano prima di doversi ricaricare
+        // ridiscendendo e risalendo (in pratica: mai piu', sono le uniche
+        // 50 del round).
+        hudWizardTower.textContent = "in cima alla torre — tasto sinistro: palle di fuoco ("
+          + (p.fireballs_left||0) + "/" + WIZARD_TOWER_FIREBALLS_COUNT
+          + ") · tasto 0 per scendere";
+        hudWizardTower.classList.remove("hidden");
+      } else {
+        hudWizardTower.classList.add("hidden");
+      }
       return;
     }
 
@@ -5326,9 +5569,10 @@ function onState(msg){
       const hex = playerColorHex[p.id];
       const group = makeCharacterMesh(hex);
       scene.add(group);
-      rp = remotePlayers[p.id] = { group, x:wx, z:wz, targetX:wx, targetZ:wz };
+      rp = remotePlayers[p.id] = { group, x:wx, z:wz, targetX:wx, targetZ:wz, y:0, targetY:0 };
     }
     rp.targetX = wx; rp.targetZ = wz;
+    rp.targetY = (p.z||0) * CELL;
     rp.group.visible = p.alive !== false;
     if (p.facing){
       const ang = { right:Math.PI/2, left:-Math.PI/2, down:Math.PI, up:0 }[p.facing];
@@ -5370,6 +5614,19 @@ function onState(msg){
     // cardinali): l'orientamento visivo si calcola con atan2 sul vettore
     // dx/dz reale invece di una tabella fissa a 4 valori.
     entry.mesh.rotation.y = Math.atan2(lz.dir[0], lz.dir[1]);
+  });
+
+  // Bonus 4200 punti: palle di fuoco della torre dello stregone, stessa
+  // identica logica di interpolazione dei laser normali qui sopra.
+  const seenFireballs = new Set();
+  (msg.fireballs||[]).forEach(fb => {
+    seenFireballs.add(fb.id);
+    const entry = fireballMeshes[fb.id];
+    if (!entry) return; // fireball_fire non ancora arrivato/processato: aspetta il prossimo state
+    entry.targetX = fb.x*CELL;
+    entry.targetZ = fb.y*CELL;
+    if (typeof fb.z === "number") entry.targetY = fb.z*CELL + (entry.yOffset || 0);
+    entry.mesh.rotation.y = Math.atan2(fb.dir[0], fb.dir[1]);
   });
 
   // bonus 400 punti: missile guidato. Il server manda gia' x/y continui
@@ -5604,6 +5861,26 @@ function onState(msg){
   });
   Object.keys(spikeWallMeshes).forEach(id => {
     if (!seenSpikeWalls.has(id)){ scene.remove(spikeWallMeshes[id]); delete spikeWallMeshes[id]; }
+  });
+
+  // bonus 4200 punti: torre dello stregone. Fissa e permanente per tutto
+  // il round (stesso schema dei muri di spunzoni sopra: nessuna
+  // interpolazione, creata una sola volta e mai piu' toccata finche' non
+  // sparisce dalla lista, evenienza che qui non si verifica mai perche'
+  // la torre non viene mai rimossa).
+  const seenWizardTowers = new Set();
+  (msg.wizard_towers||[]).forEach(w => {
+    seenWizardTowers.add(w.id);
+    if (!wizardTowerMeshes[w.id]){
+      const hex = playerColorHex[w.owner] !== undefined ? playerColorHex[w.owner] : 0xc9c9c9;
+      const mesh = makeWizardTowerMesh(hex);
+      mesh.position.set(w.x*CELL + CELL/2, 0, w.y*CELL + CELL/2);
+      scene.add(mesh);
+      wizardTowerMeshes[w.id] = mesh;
+    }
+  });
+  Object.keys(wizardTowerMeshes).forEach(id => {
+    if (!seenWizardTowers.has(id)){ scene.remove(wizardTowerMeshes[id]); delete wizardTowerMeshes[id]; }
   });
 
   // bonus 2400 punti: Tesla laser. Fissa e permanente (nessuna
@@ -6197,6 +6474,69 @@ function onGameEvent(msg){
       }
       break;
     }
+    case "fireball_fire": {
+      // Bonus 4200 punti: nuovo colpo di palla di fuoco sparato dalla
+      // cima della torre dello stregone. Stessa identica logica del
+      // "laser_fire" (proiettile luminoso interpolato morbidamente verso
+      // la posizione confermata ad ogni state successivo), solo con la
+      // mesh/suono dedicati e la quota di nascita ancorata all'altezza
+      // della torre (myRenderY) invece che a EYE_HEIGHT a terra.
+      const fbOwner = (typeof msg.shooter !== "undefined") ? msg.shooter
+                        : (typeof msg.owner !== "undefined") ? msg.owner : null;
+      const fbHex = (fbOwner !== null && playerColorHex[fbOwner] !== undefined)
+                        ? playerColorHex[fbOwner] : 0xff5a4d;
+      const fbMesh = makeFireballMesh(fbHex);
+      const isMyFireball = (fbOwner !== null && fbOwner === myId);
+      let fwx, fwy, fwz;
+      let fyOffset = 0;
+      if (isMyFireball){
+        // Stessa idea del proprio laser (vedi case "laser_fire"): nasce
+        // esattamente al centro della visuale, non dalla cella che il
+        // server crede di usare per lo spawn. La quota reale di partenza
+        // e' pero' quella della camera IN CIMA ALLA TORRE (EYE_HEIGHT +
+        // myRenderY), non EYE_HEIGHT da solo come per il laser a terra.
+        const lookX = -Math.sin(yaw) * Math.cos(pitch);
+        const lookY =  Math.sin(pitch);
+        const lookZ = -Math.cos(yaw) * Math.cos(pitch);
+        const MUZZLE_CAMERA_DIST = 0.35 * CELL;
+        fwx = myRenderX + lookX * MUZZLE_CAMERA_DIST;
+        fwy = (EYE_HEIGHT + myRenderY) + lookY * MUZZLE_CAMERA_DIST;
+        fwz = myRenderZ + lookZ * MUZZLE_CAMERA_DIST;
+        const serverFwy = (typeof msg.z === "number" ? msg.z : WIZARD_TOWER_HEIGHT_CELLS) * CELL;
+        fyOffset = fwy - serverFwy;
+      } else {
+        fwx = msg.x*CELL; fwz = msg.y*CELL;
+        fwy = (typeof msg.z === "number" ? msg.z : WIZARD_TOWER_HEIGHT_CELLS) * CELL;
+      }
+      fbMesh.position.set(fwx, fwy, fwz);
+      if (typeof msg.dx === "number" && typeof msg.dy === "number"){
+        orientLaserBolt(fbMesh, msg.dx, (typeof msg.vz === "number" ? msg.vz : 0), msg.dy);
+      }
+      scene.add(fbMesh);
+      fireballMeshes[msg.id] = { mesh: fbMesh, x:fwx, z:fwz, y:fwy, targetX:fwx, targetZ:fwz, targetY:fwy, dir: msg.dir, yOffset: fyOffset, prevWpX:fwx, prevWpZ:fwz };
+      playFireballFire();
+      break;
+    }
+    case "fireball_end": {
+      // Bonus 4200 punti: impatto della palla di fuoco. A differenza del
+      // laser, qui l'evento porta anche il raggio del danno ad area
+      // (msg.radius): l'effetto visivo/sonoro deve rendere chiaramente
+      // che l'esplosione copre piu' di una singola cella, non solo il
+      // punto di impatto - stesso schema shockwaves gia' usato dal
+      // bombolone/mongolfiera (spawnExplosion + onda concentrica).
+      const fb = fireballMeshes[msg.id];
+      const feHex = 0xff7a2e;
+      const fex = msg.x*CELL, fez = msg.y*CELL;
+      const fey = (typeof msg.z === "number" ? msg.z*CELL + (fb ? (fb.yOffset||0) : 0) : (fb ? fb.y : 0.55));
+      spawnExplosion(fex, fez, feHex, fey);
+      shockwaves.push({ x: fex, z: fez, color: feHex, start: performance.now(), radiusCells: msg.radius || 1 });
+      playFireballExplode();
+      if (fb){
+        scene.remove(fb.mesh);
+        delete fireballMeshes[msg.id];
+      }
+      break;
+    }
     case "missile_fire": {
       // bonus 400 punti: missile guidato lanciato. Il colore dell'alone
       // e' quello del proprietario (playerColorHex), cosi' si riconosce
@@ -6698,7 +7038,11 @@ function animate(){
   Object.values(remotePlayers).forEach(rp => {
     rp.x += (rp.targetX - rp.x) * LERP;
     rp.z += (rp.targetZ - rp.z) * LERP;
-    rp.group.position.set(rp.x, 0, rp.z);
+    // Bonus 4200 punti: altezza (torre dello stregone) con lo stesso lerp
+    // morbido di X/Z, cosi' un avversario che sale/scende dalla propria
+    // torre si vede muoversi in verticale invece di scattare di colpo.
+    rp.y = (rp.y||0) + ((rp.targetY||0) - (rp.y||0)) * LERP;
+    rp.group.position.set(rp.x, rp.y||0, rp.z);
     // mastica solo se si sta ancora avvicinando alla cella target
     // (altrimenti, fermo, la bocca resta chiusa come nel gioco originale)
     const moving = Math.abs(rp.targetX - rp.x) > 0.01 || Math.abs(rp.targetZ - rp.z) > 0.01;
@@ -6724,6 +7068,20 @@ function animate(){
     }
     lz.mesh.position.set(lz.x, lz.y ?? EYE_HEIGHT, lz.z);
     orientLaserBolt(lz.mesh, dx, dy, dz);
+  });
+  // Bonus 4200 punti: palle di fuoco, stessa interpolazione morbida dei
+  // laser (leggermente piu' lenta: WIZARD_TOWER_FIREBALL_SPEED < LASER_PROJECTILE_SPEED lato server).
+  Object.values(fireballMeshes).forEach(fb => {
+    const dx = fb.targetX - fb.x;
+    const dz = fb.targetZ - fb.z;
+    const dy = (typeof fb.targetY === "number" && typeof fb.y === "number") ? (fb.targetY - fb.y) : 0;
+    fb.x += dx * LASER_LERP;
+    fb.z += dz * LASER_LERP;
+    if (typeof fb.targetY === "number"){
+      fb.y = (fb.y ?? fb.targetY) + (fb.targetY - (fb.y ?? fb.targetY)) * LASER_LERP;
+    }
+    fb.mesh.position.set(fb.x, fb.y ?? (WIZARD_TOWER_HEIGHT_CELLS*CELL), fb.z);
+    orientLaserBolt(fb.mesh, dx, dy, dz);
   });
   // bonus 400 punti: missile guidato, stessa interpolazione dei laser
   Object.values(missileMeshes).forEach(mz => {
@@ -7100,6 +7458,16 @@ function animate(){
     if (!g.userData.core) return;
     const pulse = 0.55 + 0.45 * Math.abs(Math.sin(nowSuperbomb / 900));
     g.userData.core.material.opacity = pulse * 0.6;
+  });
+  // bonus 4200 punti: torre dello stregone. Ferma e permanente: l'unica
+  // animazione e' il cristallo magico in cima che pulsa lentamente,
+  // stessa idea del nucleo del bombolone/muro di spunzoni.
+  Object.values(wizardTowerMeshes).forEach(g => {
+    if (!g.userData.crystal) return;
+    const pulse = 0.6 + 0.4 * Math.abs(Math.sin(nowSuperbomb / 700));
+    g.userData.crystal.material.emissiveIntensity = 0.4 + 0.4 * pulse;
+    g.userData.crystalGlow.material.opacity = 0.15 + 0.15 * pulse;
+    g.userData.crystalGlow.scale.setScalar(0.9 + 0.15 * pulse);
   });
   // bonus 2400 punti: Tesla laser. Fissa e permanente, come i muri di
   // spunzoni: qui si anima solo la bobina in cima, che pulsa sempre piu'
@@ -7613,6 +7981,10 @@ function animate(){
   const MY_LERP = Math.min(1, dt*10);
   myRenderX += (myTargetX - myRenderX) * MY_LERP;
   myRenderZ += (myTargetZ - myRenderZ) * MY_LERP;
+  // Bonus 4200 punti: la quota (altezza sopra il suolo) insegue lo
+  // stesso lerp morbido di X/Z, cosi' salire/scendere dalla torre dello
+  // stregone e' un movimento fluido invece di uno scatto secco.
+  myRenderY += (myTargetY - myRenderY) * MY_LERP;
 
   // Interpolazione morbida yaw/pitch -> camYaw/camPitch: fattore alto
   // (dt*28) cosi' resta praticamente impercettibile in termini di ritardo
@@ -7629,7 +8001,7 @@ function animate(){
   camera.rotation.order = "YXZ";
   camera.rotation.y = camYaw;
   camera.rotation.x = camPitch;
-  camera.position.set(myRenderX, EYE_HEIGHT, myRenderZ);
+  camera.position.set(myRenderX, EYE_HEIGHT + myRenderY, myRenderZ);
   // il cielo stellato segue la camera (mai il resto della scena): cosi'
   // le stelle restano sempre alla stessa "distanza infinita" qualunque
   // punto della mappa si stia visitando, come un vero cielo notturno.
