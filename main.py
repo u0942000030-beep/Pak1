@@ -2179,6 +2179,11 @@ class Room:
         # (vedi is_enemy_ids).
         if shooter_id is not None and shooter_id != victim.id and not self.is_enemy_ids(victim.id, shooter_id):
             return
+        # Chi si trova in cima alla propria torre dello stregone e' IMMORTALE
+        # finche' non ridiscende (vedi player.on_wizard_tower / try_descend_wizard_tower):
+        # nessuna causa di morte lo tocca fin quando resta lassu'.
+        if victim.on_wizard_tower:
+            return
         self.last_kill = {"cause": cause, "by": shooter_id}
         killer_player = self.players.get(shooter_id) if shooter_id else None
         stolen = 0
