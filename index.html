@@ -1031,7 +1031,7 @@ const EVOLVED_ROAM_SPEED = 2.6;      // celle al secondo, simile al passo di un 
 const EVOLVED_CHASE_RANGE_CELLS = 12; // oltre questa distanza vaga a caso invece di inseguire
 const EVOLVED_RETHINK_MS = 550;      // ogni quanto ricalcola la prossima cella target
 function simulateEvolvedTurrets(dt, now){
-  Object.values(turretMeshes).forEach(g => {
+  forEachValue(turretMeshes, g => {
     const roam = g.userData.roam;
     if (!roam) return; // torretta non (ancora) evoluta: nessuna simulazione
 
@@ -1039,7 +1039,7 @@ function simulateEvolvedTurrets(dt, now){
     // giocatore locale, in distanza Manhattan sulla griglia (coerente
     // con le altre portate del gioco, es. TESLA_RANGE_CELLS_3D).
     let bestDist = Infinity, bestX = null, bestZ = null;
-    Object.values(remotePlayers).forEach(rp => {
+    forEachValue(remotePlayers, rp => {
       if (rp.group.visible === false) return; // morto: ignorato come bersaglio
       const d = Math.abs(rp.x - roam.x) + Math.abs(rp.z - roam.z);
       if (d < bestDist){ bestDist = d; bestX = rp.x; bestZ = rp.z; }
@@ -2846,7 +2846,13 @@ function initThree(){
   camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.05, 100);
   renderer = new THREE.WebGLRenderer({ antialias:true, powerPreference:"high-performance" });
   renderer.setSize(window.innerWidth, window.innerHeight);
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 3));
+  // Cap a 2x invece di 3x: oltre il 2x la nitidezza aggiuntiva e'
+  // pressoche' impercettibile a distanza normale dallo schermo, ma il
+  // costo di rendering scala col QUADRATO del pixel ratio (3x = 9 volte
+  // i pixel di 1x, contro le 4 volte di un cap a 2x) - su schermi con
+  // devicePixelRatio 3 (comune su molti telefoni) e' un terzo di lavoro
+  // in meno per la GPU ad ogni frame, senza differenza visiva percepibile.
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   // Senza tone mapping, un riflesso che supera il bianco (1.0) viene
   // TAGLIATO di netto a bianco piatto, perdendo ogni dettaglio/texture -
   // e' quello che succedeva sui muri visti da vicino con un glint quasi
@@ -3028,7 +3034,7 @@ function applyMapData(msg){
 
   // ripulisce la scena (muri/pallini della mappa precedente, se ce n'era una)
   if (wallMeshGroup) scene.remove(wallMeshGroup);
-  Object.values(pelletMeshes).forEach(m => scene.remove(m));
+  forEachValue(pelletMeshes, m => scene.remove(m));
   pelletMeshes = {};
 
   const bgColor    = hexToInt(mazeTheme.bg    || "#0d0202");
@@ -6981,7 +6987,7 @@ function onGameEvent(msg){
       myTerritoryMarking = true;
       myTerritoryReady = false;
       myTerritoryTiles = [];
-      Object.values(territoryTileMeshes).forEach(m => scene.remove(m));
+      forEachValue(territoryTileMeshes, m => scene.remove(m));
       territoryTileMeshes = {};
       if (msg.player === myId) showToast("Trappola territoriale: cammina su " + msg.required + " caselle per marcarle!");
       playTerritoryStart();
@@ -7027,7 +7033,7 @@ function onGameEvent(msg){
         myTerritoryTiles = [];
         myTerritoryMarking = false;
         myTerritoryReady = false;
-        Object.values(territoryTileMeshes).forEach(m => scene.remove(m));
+        forEachValue(territoryTileMeshes, m => scene.remove(m));
         territoryTileMeshes = {};
         showToast("Trappola territoriale attivata!");
       }
@@ -7133,6 +7139,26 @@ function showToast(text){
    RENDER LOOP
    ============================================================ */
 const clock = new THREE.Clock();
+// Oggetti THREE.Color riutilizzabili per le animazioni di mina/Tesla
+// qui sotto: evitano di allocare 2 nuovi Color ad ogni frame per ogni
+// mina/Tesla attiva sulla mappa (prima venivano ricreati ogni volta con
+// "new THREE.Color(...)" dentro il loop, puro overhead di garbage
+// collection senza alcun effetto visivo diverso).
+const _mineColorA = new THREE.Color(), _mineColorB = new THREE.Color();
+const _teslaColorA = new THREE.Color(), _teslaColorB = new THREE.Color();
+
+// Le ~20 mappe di mesh qui sotto (laser, missili, mine, torrette, ecc.)
+// vengono lette con Object.values(...).forEach(...) ad OGNI frame anche
+// quando sono vuote (il caso comune: la maggior parte dei gadget non e'
+// quasi mai piazzata in un dato istante), il che alloca un array
+// temporaneo inutile 20 volte al secondo per frame per niente. Questo
+// helper salta l'allocazione quando la mappa e' vuota, senza cambiare il
+// comportamento quando contiene elementi.
+function forEachValue(obj, fn){
+  const keys = Object.keys(obj);
+  if (keys.length === 0) return;
+  for (let i = 0; i < keys.length; i++) fn(obj[keys[i]]);
+}
 function animate(){
   requestAnimationFrame(animate);
   if (!scene || currentScreen !== "game"){ return; }
@@ -7141,7 +7167,7 @@ function animate(){
   // smorza gli scatti dei pacchetti di rete interpolando verso l'ultima
   // posizione nota invece di scattare di colpo ad ogni "state" ricevuto.
   const LERP = Math.min(1, dt*10);
-  Object.values(remotePlayers).forEach(rp => {
+  forEachValue(remotePlayers, rp => {
     rp.x += (rp.targetX - rp.x) * LERP;
     rp.z += (rp.targetZ - rp.z) * LERP;
     // Bonus 4200 punti: altezza (torre dello stregone) con lo stesso lerp
@@ -7156,7 +7182,7 @@ function animate(){
   });
   // bonus 150 punti: proiettili laser, stessa interpolazione morbida
   const LASER_LERP = Math.min(1, dt*14); // leggermente piu' reattivo: il proiettile e' veloce
-  Object.values(laserMeshes).forEach(lz => {
+  forEachValue(laserMeshes, lz => {
     // Direzione di volo istantanea = verso il bersaglio corrente
     // dell'interpolazione (target - posizione attuale), calcolata PRIMA
     // di muovere lz.x/y/z cosi' il dardo punta esattamente dove sta
@@ -7177,7 +7203,7 @@ function animate(){
   });
   // Bonus 4200 punti: palle di fuoco, stessa interpolazione morbida dei
   // laser (leggermente piu' lenta: WIZARD_TOWER_FIREBALL_SPEED < LASER_PROJECTILE_SPEED lato server).
-  Object.values(fireballMeshes).forEach(fb => {
+  forEachValue(fireballMeshes, fb => {
     const dx = fb.targetX - fb.x;
     const dz = fb.targetZ - fb.z;
     const dy = (typeof fb.targetY === "number" && typeof fb.y === "number") ? (fb.targetY - fb.y) : 0;
@@ -7190,7 +7216,7 @@ function animate(){
     orientLaserBolt(fb.mesh, dx, dy, dz);
   });
   // bonus 400 punti: missile guidato, stessa interpolazione dei laser
-  Object.values(missileMeshes).forEach(mz => {
+  forEachValue(missileMeshes, mz => {
     mz.x += (mz.targetX - mz.x) * LASER_LERP;
     mz.z += (mz.targetZ - mz.z) * LASER_LERP;
     mz.mesh.position.set(mz.x, 0.55, mz.z);
@@ -7198,7 +7224,7 @@ function animate(){
   // bonus 200 punti: mine ferme, solo il nucleo bianco pulsa (stessa idea
   // del nucleo lampeggiante di drawMines nella 2D) per restare visibile.
   const minePulse = 0.75 + 0.25*Math.sin(performance.now()*0.006);
-  Object.values(mineMeshes).forEach(mesh => {
+  forEachValue(mineMeshes, mesh => {
     if (mesh.userData.core) mesh.userData.core.scale.setScalar(minePulse);
   });
   // Portali: doppio anello controrotante (stessa idea della 2D:
@@ -7259,7 +7285,7 @@ function animate(){
   // ("pattugliamento"). Il nucleo pulsa piu' veloce e diventa rosso
   // quando sta tracciando, esattamente come nella 2D.
   const nowTurret = performance.now();
-  Object.values(turretMeshes).forEach(g => {
+  forEachValue(turretMeshes, g => {
     const tracking = g.userData.aim !== null;
     if (tracking){
       let d = g.userData.aim - g.userData.currentAng;
@@ -7293,7 +7319,7 @@ function animate(){
   // nella direzione del bersaglio agganciato (userData.aim), o resta
   // nascosto se non sta puntando nessuno - stessa idea del puntino 2D
   // "davanti alla bocca".
-  Object.values(petMeshes).forEach(pm => {
+  forEachValue(petMeshes, pm => {
     pm.x += (pm.targetX - pm.x) * LERP;
     pm.z += (pm.targetZ - pm.z) * LERP;
     pm.group.position.set(pm.x, 0, pm.z);
@@ -7315,7 +7341,7 @@ function animate(){
   // leggermente quando ha agganciato un bersaglio) e il nucleo pulsa
   // piu' rosso, stessa idea del "respiro"/pulse della 2D (drawMortars).
   const nowMortar = performance.now();
-  Object.values(mortarMeshes).forEach(g => {
+  forEachValue(mortarMeshes, g => {
     const tracking = g.userData.aim;
     const mouthScale = (tracking ? 1.12 : 1) + Math.sin(nowMortar / (tracking ? 180 : 500)) * 0.04;
     g.userData.mouth.scale.set(mouthScale, 1, mouthScale);
@@ -7334,7 +7360,7 @@ function animate(){
   // verticale, senza bisogno di "specchiarsi" verso il senso di marcia
   // (nessuna faccia da orientare). Da addormentata mostra gli "Zzz"
   // fluttuanti sopra, stessa idea del vecchio golem.
-  Object.values(golemMeshes).forEach(entry => {
+  forEachValue(golemMeshes, entry => {
     entry.x += (entry.targetX - entry.x) * LERP;
     entry.z += (entry.targetZ - entry.z) * LERP;
     const ud = entry.group.userData;
@@ -7406,7 +7432,7 @@ function animate(){
     const anyInside = Object.values(airstrikeMeshes).some(g => g.position.x > 0 && g.position.x < mazeW*CELL);
     if (anyInside) playAirstrikeBoom();
   }
-  Object.values(airstrikeMeshes).forEach(g => {
+  forEachValue(airstrikeMeshes, g => {
     g.position.y = ALTITUDE_AIRSTRIKE + Math.sin(nowAir/140) * 0.03;
     const bob = Math.sin(nowAir/220) * 0.05;
     g.userData.body.rotation.z = bob;
@@ -7535,7 +7561,7 @@ function animate(){
   // dell'esplosione — tutto derivato dallo stesso fuseFrac, nessun nuovo
   // stato da sincronizzare col server.
   const nowSuperbomb = performance.now();
-  Object.values(superbombMeshes).forEach(g => {
+  forEachValue(superbombMeshes, g => {
     const fuseFrac = Math.max(0, Math.min(1, g.userData.fuseLeft / SUPERBOMB_FUSE_SECONDS));
     const blinkPeriod = 110 + fuseFrac * 390;
     const lit = Math.floor(nowSuperbomb / blinkPeriod) % 2 === 0;
@@ -7544,8 +7570,8 @@ function animate(){
     const urgency = 1 - fuseFrac; // 0 = appena piazzato, 1 = sta per esplodere
     const corePulse = 0.7 + 0.3 * Math.abs(Math.sin(nowSuperbomb / blinkPeriod));
     g.userData.core.scale.setScalar(corePulse);
-    const coreColor = new THREE.Color(0xffaa33).lerp(new THREE.Color(0xff2020), urgency);
-    g.userData.core.material.color.copy(coreColor);
+    _mineColorA.set(0xffaa33); _mineColorB.set(0xff2020);
+    g.userData.core.material.color.copy(_mineColorA).lerp(_mineColorB, urgency);
     g.userData.core.material.opacity = 0.45 + urgency * 0.4;
     g.userData.haloInner.material.opacity = 0.28 + urgency * 0.4;
 
@@ -7560,7 +7586,7 @@ function animate(){
   // interno che pulsa lentamente e di continuo, per dare l'idea di una
   // trappola "armata e vigile" invece di un blocco inerte (nessun
   // fusibile da leggere qui, a differenza del bombolone).
-  Object.values(spikeWallMeshes).forEach(g => {
+  forEachValue(spikeWallMeshes, g => {
     if (!g.userData.core) return;
     const pulse = 0.55 + 0.45 * Math.abs(Math.sin(nowSuperbomb / 900));
     g.userData.core.material.opacity = pulse * 0.6;
@@ -7568,7 +7594,7 @@ function animate(){
   // bonus 4200 punti: torre dello stregone. Ferma e permanente: l'unica
   // animazione e' il cristallo magico in cima che pulsa lentamente,
   // stessa idea del nucleo del bombolone/muro di spunzoni.
-  Object.values(wizardTowerMeshes).forEach(g => {
+  forEachValue(wizardTowerMeshes, g => {
     if (!g.userData.crystal) return;
     const pulse = 0.6 + 0.4 * Math.abs(Math.sin(nowSuperbomb / 700));
     g.userData.crystal.material.emissiveIntensity = 0.4 + 0.4 * pulse;
@@ -7582,7 +7608,7 @@ function animate(){
   // idea della 2D (drawTeslas: pulse = sin(now/(140-charge*90))). Quando
   // e' nascosta (bonus 3200 punti, Tesla occulta sottoterra) la torre
   // sparisce del tutto e resta visibile solo la botola chiusa.
-  Object.values(teslaMeshes).forEach(g => {
+  forEachValue(teslaMeshes, g => {
     g.userData.tower.visible = !g.userData.hidden;
     g.userData.trapdoor.visible = g.userData.hidden || g.userData.occult;
     if (g.userData.hidden){
@@ -7599,8 +7625,8 @@ function animate(){
     // L'occhio/feritoia in cima vira dal giallo tenue al rosso acceso
     // man mano che la carica sale, come l'iconico bagliore della Torre
     // Infernale che si intensifica prima di colpire.
-    const eyeColor = new THREE.Color(0xffcf6b).lerp(new THREE.Color(0xff2e1a), charge);
-    g.userData.core.material.color.copy(eyeColor);
+    _teslaColorA.set(0xffcf6b); _teslaColorB.set(0xff2e1a);
+    g.userData.core.material.color.copy(_teslaColorA).lerp(_teslaColorB, charge);
     g.userData.envelope.rotation.y += 0.004;
     g.userData.coilRing.rotation.z += 0.01;
     g.userData.coilRing2.rotation.y += 0.012;
@@ -7687,7 +7713,7 @@ function animate(){
   // (drawMyTerritoryTiles: pulse = ready ? 0.5 : 0.22 + sin(now/220)*0.12).
   if (Object.keys(territoryTileMeshes).length){
     const pulse = myTerritoryReady ? 0.5 : 0.22 + Math.sin(nowSuperbomb / 220) * 0.12;
-    Object.values(territoryTileMeshes).forEach(panel => {
+    forEachValue(territoryTileMeshes, panel => {
       panel.material.opacity = pulse;
     });
   }
@@ -7716,7 +7742,7 @@ function animate(){
   // il corpo sospeso (pallone+cesto, separato dall'ombra a terra) oscilla
   // dolcemente su e giu' per sembrare sospeso nell'aria, stessa idea del
   // "bob" della 2D (Math.sin(now/900 + ...)*4), qui in unita' di mondo.
-  Object.values(balloonMeshes).forEach(bm => {
+  forEachValue(balloonMeshes, bm => {
     bm.x += (bm.targetX - bm.x) * LERP;
     bm.z += (bm.targetZ - bm.z) * LERP;
     bm.group.position.set(bm.x, 0, bm.z);
@@ -7734,7 +7760,7 @@ function animate(){
   // dolcemente il corpo - piu' vistoso e rapido quando e' vivo E si sta
   // muovendo davvero, stessa idea del wob della 2D (Math.sin(now/150)
   // quando in moto, altrimenti now/260 piu' lento).
-  Object.values(blobMeshes).forEach(bm => {
+  forEachValue(blobMeshes, bm => {
     const dx = bm.targetX - bm.x, dz = bm.targetZ - bm.z;
     const moving = bm.group.userData.alive && (Math.abs(dx) > 0.003 || Math.abs(dz) > 0.003);
     bm.x += dx * LERP;
@@ -7794,7 +7820,7 @@ function animate(){
   // espandono a ripetizione, un disco di accrescimento che ruota su se
   // stesso, un bagliore centrale che respira e il nucleo/calotta corazzata
   // che pulsa leggermente, molto piu' evidente di prima.
-  Object.values(mushroomMeshes).forEach(g => {
+  forEachValue(mushroomMeshes, g => {
     (g.userData.caps||[]).forEach((cap, ci) => {
       const sway = Math.sin(now3d/900 + g.position.x*3 + ci*1.7) * 0.04;
       cap.rotation.z = sway;
@@ -7999,7 +8025,7 @@ function animate(){
   // (drawQuakes: grow = min(1, progress/0.15), fade = min(1, left/0.6)).
   // Le crepe si allungano progressivamente, con un piccolo sfasamento tra
   // l'una e l'altra, e tremano leggermente come nella 2D.
-  Object.values(quakeMeshes).forEach(g => {
+  forEachValue(quakeMeshes, g => {
     const ud = g.userData;
     const dur = ud.duration || 5;
     const left = (typeof ud.left === "number") ? ud.left : dur;
