@@ -2645,8 +2645,16 @@ function getGadgetTexture(colorHex, seedStr){
 }
 function gadgetSurfaceMaterial(colorHex, seedStr, extra){
   const tex = getGadgetTexture(colorHex, seedStr);
+  // normalScale di default abbassato da 0.5 a 0.15 - la STESSA identica
+  // intensita' di rilievo usata dal pavimento (vedi floorMatA/floorMatB):
+  // con 0.5 i gadget apparivano visibilmente piu' "grezzi/butterati" del
+  // pavimento anche a parita' di roughness/metalness, perche' la normal
+  // map (identica, generata dalla stessa makeMetalFloorTexture) veniva
+  // applicata con un rilievo 3 volte piu' marcato. Resta comunque
+  // sovrascrivibile passando normalScale dentro extra, per i pochi
+  // gadget che vogliono un aspetto volutamente grezzo/opaco.
   return new THREE.MeshStandardMaterial(Object.assign({
-    map: tex.map, normalMap: tex.normalMap, normalScale: new THREE.Vector2(0.5, 0.5),
+    map: tex.map, normalMap: tex.normalMap, normalScale: new THREE.Vector2(0.15, 0.15),
   }, extra || {}));
 }
 
@@ -3863,7 +3871,7 @@ function makeSuperbombMesh(colorHex){
   // di una sfera piatta.
   const body = new THREE.Mesh(
     new THREE.IcosahedronGeometry(R, 2),
-    gadgetSurfaceMaterial(0x232326, "superbomb-body", { flatShading:true, roughness:0.05, metalness:0.55 })
+    gadgetSurfaceMaterial(0x232326, "superbomb-body", { roughness:0.05, metalness:0.55 })
   );
   body.position.y = R + 0.02;
   g.add(body);
@@ -4001,7 +4009,7 @@ function makeBalloonMesh(colorHex){
   // Cesto di vimini appeso sotto il pallone, con le corde di collegamento.
   const basket = new THREE.Mesh(
     new THREE.BoxGeometry(0.22, 0.16, 0.22),
-    gadgetSurfaceMaterial(0x8a5a34, "balloon-basket", { roughness:0.8 })
+    gadgetSurfaceMaterial(0x8a5a34, "balloon-basket", { roughness:0.8, normalScale: new THREE.Vector2(0.5, 0.5) })
   );
   basket.position.y = -0.42;
   body.add(basket);
@@ -4031,7 +4039,7 @@ function makeBalloonMesh(colorHex){
   const R = 0.3;
   const envelope = new THREE.Mesh(
     new THREE.IcosahedronGeometry(R, 2),
-    gadgetSurfaceMaterial(0x2a2a2e, "balloon-envelope", { flatShading:true, roughness:0.05, metalness:0.55 })
+    gadgetSurfaceMaterial(0x2a2a2e, "balloon-envelope", { roughness:0.05, metalness:0.55 })
   );
   envelope.scale.set(1, 1.25, 1);
   body.add(envelope);
@@ -4159,7 +4167,7 @@ function makeBlobMesh(colorHex){
   // (colorHex) cosi' il blob si riconosce a colpo d'occhio come quello
   // della torretta/mongolfiera, con un contorno leggermente piu' scuro
   // dello stesso colore per dare volume senza perdere l'identita' cromatica.
-  const bodyMat = gadgetSurfaceMaterial(colorHex, "blob-body", { roughness:0.6, metalness:0.05 });
+  const bodyMat = gadgetSurfaceMaterial(colorHex, "blob-body", { roughness:0.6, metalness:0.05, normalScale: new THREE.Vector2(0.5, 0.5) });
   const lumps = [
     { dx: 0,     dy: 0.10, dz: 0,     r: 0.30 }, // base larga
     { dx: -0.17, dy: 0.16, dz: -0.05, r: 0.19 },
@@ -4448,18 +4456,21 @@ const TESLA_RANGE_CELLS_3D = 8; // deve restare identico a TESLA_RANGE_CELLS in 
 function makeTeslaMesh(colorHex){
   const g = new THREE.Group();
   const colDark = new THREE.Color(colorHex).multiplyScalar(0.55).getHex();
-  const METAL = 0x33363e, METAL_DARK = 0x1f2127, METAL_LIGHT = 0x585c68;
+  // Palette piu' scura e fredda (METAL_LIGHT era 0x585c68, troppo chiaro
+  // per un aspetto minaccioso): ora quasi nero-bluastro come la corazza
+  // della torre dello stregone, coerente con il resto delle torri.
+  const METAL = 0x2b2e36, METAL_DARK = 0x16181d, METAL_LIGHT = 0x40444e;
   const HALF = CELL / 2 - 0.1;
 
   // Botola di legno a terra: sempre presente (anche a torre visibile,
   // come indizio permanente se la Tesla e' occulta), mostrata DA SOLA
   // quando t.hidden e' vero. Invariata rispetto a prima.
   const trapdoor = new THREE.Group();
-  const doorMat = gadgetSurfaceMaterial(0x5c4326, "tesla-door", { roughness:0.9 });
+  const doorMat = gadgetSurfaceMaterial(0x5c4326, "tesla-door", { roughness:0.9, normalScale: new THREE.Vector2(0.5, 0.5) });
   const doorBase = new THREE.Mesh(new THREE.CylinderGeometry(HALF * 0.9, HALF * 0.9, 0.05, 8), doorMat);
   doorBase.position.y = 0.025;
   trapdoor.add(doorBase);
-  const plankMat = gadgetSurfaceMaterial(0x3a2a15, "tesla-plank", { roughness:0.9 });
+  const plankMat = gadgetSurfaceMaterial(0x3a2a15, "tesla-plank", { roughness:0.9, normalScale: new THREE.Vector2(0.5, 0.5) });
   for (let i = -2; i <= 2; i++){
     const plank = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.052, HALF * 1.7), plankMat);
     plank.position.set(i * (HALF * 0.32), 0.03, 0);
@@ -4492,10 +4503,15 @@ function makeTeslaMesh(colorHex){
   baseShape.closePath();
   const base = new THREE.Mesh(
     new THREE.ExtrudeGeometry(baseShape, { depth:0.24, bevelEnabled:true, bevelThickness:0.03, bevelSize:0.03, bevelSegments:1 }),
-    gadgetSurfaceMaterial(METAL_DARK, "tesla-base", { roughness:0.05, metalness:0.55, flatShading:true })
+    gadgetSurfaceMaterial(METAL_DARK, "tesla-base", { roughness:0.05, metalness:0.55 })
   );
   base.rotation.x = -Math.PI / 2;
-  base.position.y = 0.24;
+  // ExtrudeGeometry estrude lungo Z da 0 a depth: dopo la rotazione di
+  // -90 gradi su X, il bordo a z_local=0 finisce esattamente a y_world=0
+  // (quindi position.y DEVE restare a 0, non a depth). Con position.y=0.24
+  // l'intera base veniva spinta in aria (stesso bug gia' corretto sulla
+  // torre dello stregone, vedi makeWizardTowerMesh).
+  base.position.y = 0;
   tower.add(base);
   const baseBand = new THREE.Mesh(
     new THREE.TorusGeometry(HALF * 0.98, 0.035, 6, 8),
@@ -4511,6 +4527,19 @@ function makeTeslaMesh(colorHex){
     rivet.position.set(Math.cos(a) * HALF * 0.98, 0.1, Math.sin(a) * HALF * 0.98);
     tower.add(rivet);
   }
+  // Zoccolo di lame/spuntoni metallici bassi tutto intorno alla base,
+  // come denti d'acciaio che sporgono dal terreno - stesso linguaggio
+  // "aggressivo" gia' usato per lo zoccolo della torre dello stregone
+  // (makeWizardTowerMesh), qui in metallo affilato invece che in pietra.
+  const baseSpikeMat = new THREE.MeshStandardMaterial({ color: METAL_DARK, roughness:0.2, metalness:0.6 });
+  const baseSpikeCount = 12;
+  for (let i = 0; i < baseSpikeCount; i++){
+    const a = (i / baseSpikeCount) * Math.PI * 2 + 0.1;
+    const spike = new THREE.Mesh(new THREE.ConeGeometry(0.035, 0.11 + (i % 2) * 0.03, 4), baseSpikeMat);
+    spike.position.set(Math.cos(a) * HALF * 1.02, 0.055, Math.sin(a) * HALF * 1.02);
+    spike.rotation.y = -a + Math.PI/4;
+    tower.add(spike);
+  }
 
   // Fusto cilindrico corazzato: sale pieno (non piu' un traliccio aperto
   // a gambe sottili) fino quasi in cima, leggermente rastremato, con
@@ -4521,18 +4550,19 @@ function makeTeslaMesh(colorHex){
   const shaftH = (TESLA_TOP_Y - 0.55) ;
   const shaft = new THREE.Mesh(
     new THREE.CylinderGeometry(shaftTopR, shaftBottomR, shaftH, 20),
-    gadgetSurfaceMaterial(METAL, "tesla-shaft", { roughness:0.05, metalness:0.55, flatShading:true })
+    gadgetSurfaceMaterial(METAL, "tesla-shaft", { roughness:0.05, metalness:0.55 })
   );
   shaft.position.y = 0.28 + shaftH / 2;
   tower.add(shaft);
-  // Pannelli verticali leggermente sporgenti, per rompere la superficie
-  // liscia del cilindro con placche corazzate distinte (stesso effetto
-  // "a lamiere imbullonate" della torre del gioco).
+  // Alette/lame verticali sporgenti (erano semplici pannelli piatti a
+  // sezione rettangolare): ora a sezione triangolare, come lame d'acciaio
+  // che tagliano il profilo del fusto invece di placche imbullonate
+  // lisce - decisamente piu' aggressive/minacciose a colpo d'occhio.
   const panelMat = gadgetSurfaceMaterial(METAL_LIGHT, "tesla-panel", { roughness:0.05, metalness:0.55 });
   for (let i = 0; i < 6; i++){
     const a = (i / 6) * Math.PI * 2;
-    const panel = new THREE.Mesh(new THREE.BoxGeometry(0.05, shaftH * 0.92, 0.02), panelMat);
-    const rr = (shaftBottomR + shaftTopR) / 2 + 0.01;
+    const panel = new THREE.Mesh(new THREE.ConeGeometry(0.045, shaftH * 0.92, 3), panelMat);
+    const rr = (shaftBottomR + shaftTopR) / 2 + 0.02;
     panel.position.set(Math.cos(a) * rr, 0.28 + shaftH / 2, Math.sin(a) * rr);
     panel.rotation.y = -a;
     tower.add(panel);
@@ -4625,6 +4655,20 @@ function makeTeslaMesh(colorHex){
   coilRing2.rotation.x = Math.PI / 2;
   coilRing2.position.y = 0.05;
   coilGroup.add(coilRing2);
+  // Corona di punte metalliche attorno alla base della cupola, come denti
+  // d'acciaio che cingono l'occhio - dettaglio assente nella versione
+  // precedente (cupola completamente liscia), stesso linguaggio "a corona
+  // di spuntoni" gia' usato in cima alla torre dello stregone.
+  const domeSpikeMat = new THREE.MeshStandardMaterial({ color: METAL_DARK, roughness:0.2, metalness:0.6 });
+  const domeSpikeCount = 10;
+  for (let i = 0; i < domeSpikeCount; i++){
+    const a = (i / domeSpikeCount) * Math.PI * 2;
+    const spike = new THREE.Mesh(new THREE.ConeGeometry(0.028, 0.1, 4), domeSpikeMat);
+    spike.position.set(Math.cos(a) * (shaftTopR + 0.05), -0.08, Math.sin(a) * (shaftTopR + 0.05));
+    spike.rotation.y = -a + Math.PI/4;
+    spike.rotation.x = -0.35; // leggermente inclinate verso l'esterno/il basso
+    coilGroup.add(spike);
+  }
 
   // Micro-scintille intorno alla cupola, mostrate solo quando la carica
   // e' quasi piena (t.charge > 0.7): invariate rispetto a prima.
@@ -4672,14 +4716,44 @@ function makeTeslaMesh(colorHex){
    gioco), che pulsa lentamente nel render loop come il nucleo del
    bombolone. E' permanente, fissa e (per ora) solo una struttura/
    piattaforma: nessun attacco. ---- */
+// Materiale in vera pietra (grana + chiazze di logoramento + crepe +
+// normal map, vedi makeStoneTextures) per la torre dello stregone,
+// invece del "metallo lavorato" condiviso da tutti gli altri gadget
+// (gadgetSurfaceMaterial/makeMetalFloorTexture): qui e' un edificio in
+// muratura, non una macchina. repeatX/repeatY ripete la texture piu'
+// volte sulla superficie cosi' la grana resta fitta/leggibile anche
+// sulle superfici grandi del fusto invece di apparire sfocata/stirata.
+const wizardStoneTexCache = new Map();
+function wizardTowerStoneMaterial(colorHex, seedStr, extra, repeatX, repeatY){
+  const key = colorHex + ":" + seedStr;
+  let tex = wizardStoneTexCache.get(key);
+  if (!tex){
+    tex = makeStoneTextures(colorHex, seedStr);
+    wizardStoneTexCache.set(key, tex);
+  }
+  tex.map.repeat.set(repeatX || 1, repeatY || 1);
+  tex.normalMap.repeat.set(repeatX || 1, repeatY || 1);
+  return new THREE.MeshStandardMaterial(Object.assign({
+    map: tex.map, normalMap: tex.normalMap, normalScale: new THREE.Vector2(0.9, 0.9),
+  }, extra || {}));
+}
+
 function makeWizardTowerMesh(colorHex){
   const g = new THREE.Group();
   const H = WIZARD_TOWER_TOTAL_H;
   const HALF = CELL / 2 - 0.04; // riempie quasi tutta la cella, e' un edificio massiccio
-  const STONE = 0x5b564e, STONE_DARK = 0x3a362f, STONE_LIGHT = 0x726c60;
+  // Palette piu' scura e fredda (era 0x5b564e/0x3a362f/0x726c60): pietra
+  // quasi nera con riflessi bluastri, per un aspetto piu' minaccioso da
+  // fortezza oscura invece che da torre di pietra "chiara" da fiaba.
+  const STONE = 0x46423e, STONE_DARK = 0x232220, STONE_LIGHT = 0x5c564f;
+  // Segmenti radiali dei cilindri: 8 -> 16, per un profilo molto piu'
+  // rotondo/definito invece che vistosamente ottagonale (piu' risoluzione
+  // visiva sulla geometria, non solo sulla texture).
+  const RSEG = 16;
 
   // Base ottagonale larga in pietra scura, stesso linguaggio della base
-  // della Tesla ma piu' tozza e larga (edificio, non traliccio).
+  // della Tesla ma piu' tozza e larga (edificio, non traliccio). Resta a
+  // 8 lati (e' la sagoma d'impianto della fortezza, non un cilindro).
   const baseShape = new THREE.Shape();
   for (let i = 0; i < 8; i++){
     const a = i * Math.PI / 4;
@@ -4690,60 +4764,92 @@ function makeWizardTowerMesh(colorHex){
   const baseH = 0.4;
   const base = new THREE.Mesh(
     new THREE.ExtrudeGeometry(baseShape, { depth: baseH, bevelEnabled:true, bevelThickness:0.04, bevelSize:0.04, bevelSegments:2 }),
-    gadgetSurfaceMaterial(STONE_DARK, "wizard-tower-base", { roughness:0.95, flatShading:true })
+    wizardTowerStoneMaterial(STONE_DARK, "wizard-tower-base", { roughness:0.95 }, 1.5, 1.5)
   );
   base.rotation.x = -Math.PI / 2;
-  base.position.y = baseH;
+  // ExtrudeGeometry estrude lungo Z da 0 a baseH: dopo la rotazione di
+  // -90 gradi su X, il bordo a z_local=0 finisce esattamente a y_world=0
+  // (quindi position.y DEVE restare a 0, non a baseH) e il bordo a
+  // z_local=baseH sale fino a y_world=baseH. Con position.y=baseH l'intera
+  // base veniva spinta in aria (galleggiava sopra il terreno di baseH).
+  base.position.y = 0;
   g.add(base);
+  // Zoccolo di spuntoni bassi e aguzzi alla base, come denti di roccia
+  // che sporgono dal terreno tutto intorno alla fortezza: dettaglio
+  // "aggressivo" assente nella versione precedente, puramente liscia.
+  const spikeMat = wizardTowerStoneMaterial(STONE_DARK, "wizard-tower-spike", { roughness:0.9 }, 1, 1);
+  const baseSpikeCount = 14;
+  for (let i = 0; i < baseSpikeCount; i++){
+    const a = (i / baseSpikeCount) * Math.PI * 2 + 0.15;
+    const spike = new THREE.Mesh(new THREE.ConeGeometry(0.05, 0.16 + (i % 3) * 0.04, 5), spikeMat);
+    spike.position.set(Math.cos(a) * HALF * 1.05, 0.08, Math.sin(a) * HALF * 1.05);
+    spike.rotation.y = -a;
+    g.add(spike);
+  }
 
   // Fusto principale: tre tronchi di cono impilati, ciascuno leggermente
   // piu' stretto del precedente, per dare l'idea di una torre in pietra
   // costruita "a blocchi" che si restringe salendo, come la torre dello
-  // stregone originale.
+  // stregone originale. Ora a RSEG lati (16, era 8): profilo molto piu'
+  // rotondo e definito invece che vistosamente sfaccettato.
   const segCount = 3;
-  const segH = (H - baseH - 1.1) / segCount; // margine in cima per la corona merlata
+  const segH = (H - baseH - 1.1) / segCount; // margine in cima per la corona
   let curY = baseH;
   const rBottomStart = HALF * 0.94;
   const rTopEnd = HALF * 0.58;
-  const stoneMat = gadgetSurfaceMaterial(STONE, "wizard-tower-shaft", { roughness:0.9, flatShading:true });
+  const stoneMat = wizardTowerStoneMaterial(STONE, "wizard-tower-shaft", { roughness:0.88 }, 2, 1.4);
   for (let i = 0; i < segCount; i++){
     const rBottom = rBottomStart - (rBottomStart - rTopEnd) * (i / segCount);
     const rTop = rBottomStart - (rBottomStart - rTopEnd) * ((i + 1) / segCount);
     const seg = new THREE.Mesh(
-      new THREE.CylinderGeometry(rTop, rBottom, segH, 8, 1),
+      new THREE.CylinderGeometry(rTop, rBottom, segH, RSEG, 1),
       stoneMat
     );
     seg.position.y = curY + segH / 2;
     g.add(seg);
     // Fascia decorativa nel colore del proprietario a ogni giunzione,
-    // stesso schema a rivetti gia' usato da bombolone/muro di spunzoni/Tesla.
+    // stesso schema a rivetti gia' usato da bombolone/muro di spunzoni/Tesla,
+    // ora con una fila di piccole punte metalliche sporgenti (invece del
+    // toro liscio) per un profilo piu' tagliente/da fortezza da guerra.
     const band = new THREE.Mesh(
-      new THREE.TorusGeometry(rBottom * 1.01, 0.05, 6, 8),
+      new THREE.TorusGeometry(rBottom * 1.01, 0.05, 6, RSEG),
       new THREE.MeshStandardMaterial({ color: colorHex, roughness:0.35, metalness:0.4, emissive: colorHex, emissiveIntensity:0.22 })
     );
     band.rotation.x = Math.PI / 2;
     band.position.y = curY;
     g.add(band);
+    const spikeOnBandMat = new THREE.MeshStandardMaterial({ color: STONE_DARK, roughness:0.6, metalness:0.3 });
+    const bandSpikeCount = 12;
+    for (let k = 0; k < bandSpikeCount; k++){
+      const a = (k / bandSpikeCount) * Math.PI * 2;
+      const sp = new THREE.Mesh(new THREE.ConeGeometry(0.028, 0.09, 5), spikeOnBandMat);
+      sp.position.set(Math.cos(a) * rBottom * 1.05, curY, Math.sin(a) * rBottom * 1.05);
+      sp.rotation.x = Math.PI / 2;
+      sp.rotation.z = -a;
+      g.add(sp);
+    }
     curY += segH;
   }
   const topShaftR = rTopEnd;
 
-  // Corona merlata in cima: 8 piccoli merli in pietra chiara che
-  // ricordano gli spalti di una torre da fortezza.
-  const merlonMat = gadgetSurfaceMaterial(STONE_LIGHT, "wizard-tower-merlon", { roughness:0.85, flatShading:true });
-  const merlonCount = 8;
+  // Corona in cima: spuntoni di pietra alti e aguzzi (piramidi strette),
+  // molto piu' aggressivi dei precedenti merli tozzi a parallelepipedo -
+  // ricordano i denti di una corona da fortezza oscura invece degli
+  // spalti arrotondati di un castello di fiaba.
+  const merlonMat = wizardTowerStoneMaterial(STONE_LIGHT, "wizard-tower-merlon", { roughness:0.85 }, 1, 1);
+  const merlonCount = 10;
   for (let i = 0; i < merlonCount; i++){
     const a = (i / merlonCount) * Math.PI * 2;
-    const merlon = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.34, 0.14), merlonMat);
-    merlon.position.set(Math.cos(a) * topShaftR * 0.95, curY + 0.17, Math.sin(a) * topShaftR * 0.95);
-    merlon.rotation.y = -a;
+    const merlon = new THREE.Mesh(new THREE.ConeGeometry(0.13, 0.46, 4), merlonMat);
+    merlon.position.set(Math.cos(a) * topShaftR * 0.95, curY + 0.23, Math.sin(a) * topShaftR * 0.95);
+    merlon.rotation.y = -a + Math.PI/4; // piramide a 4 facce ruotata per un profilo a "lama" verso l'esterno
     g.add(merlon);
   }
   // Piattaforma superiore: disco piatto su cui il proprietario appare
-  // teletrasportato, leggermente incassato dentro la corona di merli.
+  // teletrasportato, leggermente incassato dentro la corona di spuntoni.
   const platform = new THREE.Mesh(
-    new THREE.CylinderGeometry(topShaftR * 0.98, topShaftR * 0.98, 0.12, 8),
-    gadgetSurfaceMaterial(STONE_DARK, "wizard-tower-platform", { roughness:0.9, flatShading:true })
+    new THREE.CylinderGeometry(topShaftR * 0.98, topShaftR * 0.98, 0.12, RSEG),
+    wizardTowerStoneMaterial(STONE_DARK, "wizard-tower-platform", { roughness:0.9 }, 1.4, 1.4)
   );
   platform.position.y = curY + 0.06;
   g.add(platform);
