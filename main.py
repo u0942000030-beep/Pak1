@@ -2460,6 +2460,17 @@ class Room:
                 lz["x"], lz["y"], lz["z"] = nx, ny, nz
                 entered_new_cell = (ncx, ncy) != last_cell
                 last_cell = (ncx, ncy)
+                # FIX: 'lzz' (quota verticale del colpo in questo micro-passo)
+                # deve essere calcolata QUI, ad ogni micro-passo, non solo
+                # dentro il ramo "rimbalzo esaurito" qualche riga sotto.
+                # Prima veniva assegnata solo li' dentro: al primissimo sparo
+                # (nessun rimbalzo ancora avvenuto, bounce_left None) quel
+                # ramo non veniva mai eseguito, quindi 'lzz' restava
+                # indefinita e il controllo hitbox piu' sotto (quello
+                # "normale", righe seguenti) andava in NameError non appena
+                # un nemico si trovava nel raggio del colpo - crash del tick
+                # del server e disconnessione di tutta la stanza.
+                lzz = lz.get("z", LASER_EYE_HEIGHT)
                 # PRIMA il controllo hitbox (player/pet/sonda, tutte le
                 # righe qui sotto) scattava SOLO in questo "if
                 # entered_new_cell", cioe' una volta sola per cella intera
@@ -2486,7 +2497,6 @@ class Room:
                     lz["bounce_left"] -= 1
                     if lz["bounce_left"] <= 0:
                         destroyed = True
-                        lzz = lz.get("z", LASER_EYE_HEIGHT)
                         victims = [
                             q for q in self.players.values()
                             if q.alive and self.is_enemy_ids(q.id, lz["owner"])

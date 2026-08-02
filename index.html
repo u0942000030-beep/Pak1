@@ -2984,6 +2984,10 @@ function applyMapData(msg){
     minimapCanvas.width = Math.round(cell * mazeW);
     minimapCanvas.height = Math.round(cell * mazeH);
   }
+  // Nuovo labirinto arrivato: la vecchia cache muri (se esisteva) non e'
+  // piu' valida, la si ricostruisce subito con i dati appena arrivati
+  // invece di aspettare il primo drawMinimap del prossimo frame.
+  rebuildMinimapWallsCache();
 
   if (!scene) initThree();
 
@@ -5035,6 +5039,59 @@ let lastPlayersForMinimap = []; // ultimo elenco giocatori ricevuto dal server, 
                                  // ridisegnare la minimappa ad ogni frame (freccia sempre fluida
                                  // anche tra un "state" e l'altro, la mira cambia col mouse).
 
+// FIX PERFORMANCE: sfondo (gradiente radiale) e muri del labirinto sono
+// STATICI per tutta la durata del round (non cambiano mai finche' non
+// arriva una nuova mappa), eppure prima venivano ridisegnati da zero -
+// intero doppio ciclo su ogni cella del labirinto + ricreazione del
+// gradiente - ad OGNI singolo frame (fino a 60 volte al secondo),
+// bloccando il thread principale un istante subito prima di applicare la
+// rotazione della camera nello stesso frame (vedi animate/CAM_LERP piu'
+// sotto). Il risultato era un microscatto sistematico nel movimento del
+// mouse, presente fin dal primo istante di ogni partita indipendentemente
+// da quanti giocatori/effetti ci fossero a schermo.
+// Ora sfondo+muri vengono disegnati UNA SOLA VOLTA per labirinto su un
+// canvas offscreen (minimapWallsCache, costruito da
+// rebuildMinimapWallsCache in applyMapData quando arriva una nuova mappa);
+// ad ogni frame drawMinimap si limita a "incollare" quell'immagine gia'
+// pronta (drawImage, un'operazione economicissima) e disegna sopra solo
+// gli elementi davvero dinamici (giocatori, mirino attacco aereo, freccia).
+let minimapWallsCache = null;
+
+function rebuildMinimapWallsCache(){
+  if (!minimapCanvas || !maze.length || !mazeW || !mazeH) { minimapWallsCache = null; return; }
+  const W = minimapCanvas.width, H = minimapCanvas.height;
+  const cache = document.createElement("canvas");
+  cache.width = W; cache.height = H;
+  const cctx = cache.getContext("2d");
+  const cell = Math.min(W / mazeW, H / mazeH);
+  const offX = (W - cell * mazeW) / 2, offY = (H - cell * mazeH) / 2;
+
+  const themeGlow = (mazeTheme && mazeTheme.glow) || "#9df6ff";
+  const bgGrad = cctx.createRadialGradient(W/2, H/2, 0, W/2, H/2, Math.max(W,H)*0.7);
+  bgGrad.addColorStop(0, "#160a0a");
+  bgGrad.addColorStop(1, "#0a0404");
+  cctx.fillStyle = bgGrad;
+  cctx.fillRect(0, 0, W, H);
+
+  cctx.fillStyle = "#6a3232";
+  cctx.strokeStyle = themeGlow + "40";
+  cctx.lineWidth = 1;
+  const r = Math.min(2, cell*0.25);
+  for (let y = 0; y < mazeH; y++){
+    const row = maze[y];
+    for (let x = 0; x < mazeW; x++){
+      if (row[x] === "#"){
+        const cx = offX + x*cell, cy = offY + y*cell, cw = cell + 0.5, ch = cell + 0.5;
+        cctx.beginPath();
+        if (cctx.roundRect) cctx.roundRect(cx, cy, cw, ch, r);
+        else cctx.rect(cx, cy, cw, ch);
+        cctx.fill();
+      }
+    }
+  }
+  minimapWallsCache = cache;
+}
+
 function drawMinimap(players){
   if (!maze.length || !mazeW || !mazeH) return;
   const W = minimapCanvas.width, H = minimapCanvas.height;
@@ -5042,34 +5099,10 @@ function drawMinimap(players){
   const offX = (W - cell * mazeW) / 2, offY = (H - cell * mazeH) / 2;
 
   minimapCtx.clearRect(0, 0, W, H);
-  // sfondo: leggera sfumatura sul colore d'accento del tema invece del
-  // nero piatto di prima, cosi' la minimappa si legge meglio e non sembra
-  // un buco nero dentro la cornice.
-  const themeGlow = (mazeTheme && mazeTheme.glow) || "#9df6ff";
-  const bgGrad = minimapCtx.createRadialGradient(W/2, H/2, 0, W/2, H/2, Math.max(W,H)*0.7);
-  bgGrad.addColorStop(0, "#160a0a");
-  bgGrad.addColorStop(1, "#0a0404");
-  minimapCtx.fillStyle = bgGrad;
-  minimapCtx.fillRect(0, 0, W, H);
-
-  // muri del labirinto: quadretti leggermente smussati con un filo di
-  // bagliore nel colore d'accento del tema, invece del blocco piatto.
-  minimapCtx.fillStyle = "#6a3232";
-  minimapCtx.strokeStyle = themeGlow + "40";
-  minimapCtx.lineWidth = 1;
-  const r = Math.min(2, cell*0.25);
-  for (let y = 0; y < mazeH; y++){
-    const row = maze[y];
-    for (let x = 0; x < mazeW; x++){
-      if (row[x] === "#"){
-        const cx = offX + x*cell, cy = offY + y*cell, cw = cell + 0.5, ch = cell + 0.5;
-        minimapCtx.beginPath();
-        if (minimapCtx.roundRect) minimapCtx.roundRect(cx, cy, cw, ch, r);
-        else minimapCtx.rect(cx, cy, cw, ch);
-        minimapCtx.fill();
-      }
-    }
-  }
+  // sfondo + muri: presi dalla cache pre-renderizzata (vedi sopra), non
+  // piu' ridisegnati/ricalcolati ad ogni frame.
+  if (!minimapWallsCache) rebuildMinimapWallsCache();
+  if (minimapWallsCache) minimapCtx.drawImage(minimapWallsCache, 0, 0);
 
   // avversari vivi: pallino nel loro colore
   players.forEach(p => {
