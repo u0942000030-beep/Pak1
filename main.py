@@ -54,6 +54,7 @@ from common import (
     LASER_PROJECTILE_SPEED, LASER_BOUNCE_DISTANCE, MINES_COUNT, SUPERBOMB_COUNT,
     LASER_EYE_HEIGHT, LASER_MAX_PITCH, WALL_TOP_Z, PLAYER_HEAD_Z, PLAYER_FEET_Z, PET_HEAD_Z, PET_FEET_Z,
     PLAYER_HITBOX_RADIUS, PET_HITBOX_RADIUS, GOLEM_HITBOX_RADIUS,
+    BALLOON_HITBOX_RADIUS, BLOB_HITBOX_RADIUS,
     PORTAL_COOLDOWN_SECONDS, PORTAL_ON_SECONDS, PORTAL_OFF_SECONDS,
     MISSILE_SPEED_MULT, MISSILES_COUNT, MISSILE_RETARGET_SECONDS, MISSILE_LOCK_DISTANCE,
     TRAP_THRESHOLD, TRAP_DURATION_SECONDS, TRAP_RANGE, TRAP_MAX_USES,
@@ -2669,6 +2670,41 @@ class Room:
                         self.damage_golem(g, lz["owner"], "laser")
                     destroyed = True
                     break
+                # Bonus 1600 punti: la mongolfiera nemica incassa il colpo
+                # laser esattamente come bombolone/Tesla/terremoto/attacco
+                # aereo/fungo atomico (una vita sulla sua barra BALLOON_HP,
+                # vedi damage_balloon), sganciando anche la sua bomba in
+                # caduta come reazione al colpo - stessa hitbox euclidea
+                # del golem/player, non piu' un attraversamento libero.
+                balloon_victims = [
+                    bal for bal in self.balloons
+                    if self.is_enemy_ids(bal["owner"], lz["owner"]) and not bal.get("destroyed")
+                    and hitbox_hit(lz["x"], lz["y"], bal["x"] + 0.5, bal["y"] + 0.5, BALLOON_HITBOX_RADIUS)
+                ]
+                if balloon_victims:
+                    for bal in balloon_victims:
+                        self.explode_balloon_bomb(bal)
+                        self.damage_balloon(bal, lz["owner"], "laser")
+                    destroyed = True
+                    break
+                # Bonus 1800 punti: il blob gelatinoso nemico incassa il
+                # colpo laser (una vita sulla sua barra BLOB_HP, vedi
+                # damage_blob) - PRIMA ne era immune per scelta di design
+                # (insieme al missile), ora si comporta come le altre armi
+                # che gia' lo colpiscono (bombolone, Tesla, terremoto,
+                # attacco aereo, fungo atomico). Il missile guidato resta
+                # invece l'unico a ignorarlo, come da docstring di
+                # try_place_blob.
+                blob_victims = [
+                    blob for blob in self.blobs
+                    if self.is_enemy_ids(blob["owner"], lz["owner"])
+                    and hitbox_hit(lz["x"], lz["y"], blob["x"] + 0.5, blob["y"] + 0.5, BLOB_HITBOX_RADIUS)
+                ]
+                if blob_victims:
+                    for blob in blob_victims:
+                        self.damage_blob(blob, lz["owner"], "laser")
+                    destroyed = True
+                    break
             if destroyed:
                 self.push_event({"kind": "laser_end", "id": lz["id"], "x": lz["x"], "y": lz["y"], "z": lz.get("z", LASER_EYE_HEIGHT), "reason": destroy_reason})
             else:
@@ -4007,10 +4043,10 @@ class Room:
         cella e "mangia" (fa perdere una vita) chiunque non sia il
         proprietario ci passi sopra (vedi check_blobs) - senza pero'
         consumarsi: resta li' pronto a mangiare anche il prossimo che ci
-        passa. Ha una barra vita di BLOB_HP: solo bombolone, Tesla,
-        terremoto, attacco aereo e fungo atomico avversari gliela
-        intaccano (vedi damage_blob); e' invece immune al fuoco amico,
-        al laser e al missile guidato.
+        passa. Ha una barra vita di BLOB_HP: bombolone, Tesla, terremoto,
+        attacco aereo, fungo atomico e laser avversari gliela intaccano
+        (vedi damage_blob); e' invece immune al fuoco amico e al missile
+        guidato.
 
         Se il giocatore e' intrappolato dalla trappola di un avversario,
         NON puo' usare alcun bonus finche' non torna libero di muoversi."""

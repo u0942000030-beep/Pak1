@@ -108,35 +108,6 @@
     #minimapWrap{ transform: scale(0.5); transform-origin: top right; }
   }
 
-  /* ---- controlli touch (joystick virtuale + pulsanti azione) ----
-     Visibili SOLO su dispositivi touch (classe "touch-controls" aggiunta
-     al <body> via JS in base al rilevamento, vedi isMobileDevice) e solo
-     durante la partita (stesso schema hidden/visible di hud/minimap,
-     vedi showScreen). Posizionati fissi in basso cosi' non coprono la
-     visuale di gioco ne' l'HUD in alto. */
-  #mobileControls{ position:fixed; inset:0; z-index:6; pointer-events:none; }
-  body:not(.touch-controls) #mobileControls{ display:none; }
-  #joyBase{
-    position:absolute; left:24px; bottom:28px; width:110px; height:110px;
-    border-radius:50%; background:rgba(255,255,255,0.08);
-    border:2px solid rgba(255,255,255,0.35); pointer-events:auto; touch-action:none;
-  }
-  #joyKnob{
-    position:absolute; left:50%; top:50%; width:46px; height:46px;
-    margin:-23px 0 0 -23px; border-radius:50%;
-    background:rgba(255,255,255,0.55); border:2px solid rgba(255,255,255,0.8);
-    transition:transform 0.05s linear;
-  }
-  .mobileBtn{
-    position:absolute; border-radius:50%; pointer-events:auto; touch-action:none;
-    display:flex; align-items:center; justify-content:center;
-    background:rgba(255,255,255,0.12); border:2px solid rgba(255,255,255,0.4);
-    color:#fff; font-size:22px; user-select:none; -webkit-user-select:none;
-  }
-  #mobileFireBtn{ right:26px; bottom:32px; width:78px; height:78px; background:rgba(255,90,60,0.28); }
-  #mobileActionBtn{ right:118px; bottom:96px; width:60px; height:60px; font-size:20px; }
-  #mobileDescendBtn{ right:30px; bottom:150px; width:56px; height:56px; font-size:16px; }
-
 </style>
 </head>
 <body>
@@ -191,12 +162,6 @@
 </div>
 <div id="minimapWrap" class="hidden">
   <canvas id="minimap" width="320" height="320"></canvas>
-</div>
-<div id="mobileControls" class="hidden">
-  <div id="joyBase"><div id="joyKnob"></div></div>
-  <div id="mobileActionBtn" class="mobileBtn" title="scorciatoia bonus (come tasto destro)">★</div>
-  <div id="mobileFireBtn" class="mobileBtn" title="spara">🔥</div>
-  <div id="mobileDescendBtn" class="mobileBtn hidden" title="scendi dalla torre">⬇</div>
 </div>
 <div id="toast"></div>
 <div id="hint" class="hidden">Click per guardarti intorno — WASD = avanti/sinistra/indietro/destra rispetto allo sguardo, la visuale sterza da sola verso la direzione presa — tasto sinistro = spara laser · 1 = mina/mortaio · 3 = missile · 5 = torretta · 8 = pet · 9 = evolvi torretta (se sbloccati) · tasto destro = scorciatoia universale (usa il prossimo gadget disponibile)</div>
@@ -500,7 +465,6 @@ function showScreen(name){
   document.getElementById("hud").classList.toggle("hidden", name !== "game");
   document.getElementById("minimapWrap").classList.toggle("hidden", name !== "game");
   document.getElementById("hint").classList.toggle("hidden", name !== "game");
-  document.getElementById("mobileControls").classList.toggle("hidden", name !== "game");
 }
 
 function handleMessage(msg){
@@ -5140,7 +5104,7 @@ window.addEventListener("wheel", e => {
    ============================================================ */
 // Estratta dal listener mousedown (tasto sinistro) cosi' il pulsante
 // touch "spara" del joystick mobile puo' richiamare esattamente la
-// stessa logica senza duplicarla (vedi mobileFireBtn piu' in basso).
+// stessa logica senza duplicarla (vedi pollGamepad, tasto R2/Cross del controller PS5).
 function fireCurrentWeapon(){
   if (currentScreen !== "game" || !myState) return;
   const fx = -Math.sin(yaw), fz = -Math.cos(yaw); // direzione in cui sto guardando (piano orizzontale)
@@ -5337,7 +5301,7 @@ document.addEventListener("contextmenu", e => {
 // Estratta dal listener mousedown (tasto destro) cosi' il pulsante touch
 // "★" del joystick mobile puo' richiamare esattamente la stessa
 // scorciatoia senza duplicare la catena di controlli (vedi
-// mobileActionBtn piu' in basso).
+// pollGamepad, tasto Square/L1 del controller PS5).
 function universalShortcut(){
   if (!myState) return;
   // Tasto "1": la catena mine -> mortaio -> ... e' sempre "attiva" finche'
@@ -5381,16 +5345,9 @@ document.addEventListener("mousedown", e => {
   universalShortcut();
 });
 
-// Rilevamento dispositivo touch (telefono/tablet): su questi mostriamo il
-// joystick virtuale + i pulsanti azione al posto di WASD/mouse, e non
-// richiediamo il pointer lock (quasi mai supportato su mobile e comunque
-// inutile: la visuale la si gira trascinando il dito, vedi piu' sotto).
-const isMobileDevice = ("ontouchstart" in window) || navigator.maxTouchPoints > 0;
-if (isMobileDevice) document.body.classList.add("touch-controls");
-
 function enterGame(){
   showScreen("game");
-  if (renderer && !isMobileDevice) renderer.domElement.addEventListener("click", () => {
+  if (renderer) renderer.domElement.addEventListener("click", () => {
     renderer.domElement.requestPointerLock();
     // schermo intero al primo click in partita: va richiesto dentro un
     // gestore di un vero gesto dell'utente (i browser bloccano la chiamata
@@ -5402,139 +5359,109 @@ function enterGame(){
       document.documentElement.requestFullscreen().catch(() => {});
     }
   });
-  if (renderer && isMobileDevice) renderer.domElement.addEventListener("touchstart", () => {
-    // Su mobile niente pointer lock: solo lo schermo intero, al primo
-    // tocco in partita, stesso motivo del gesto utente di cui sopra.
-    if (!document.fullscreenElement && document.documentElement.requestFullscreen){
-      document.documentElement.requestFullscreen().catch(() => {});
-    }
-  }, { once:true, passive:true });
 }
 function exitGame(){
   document.getElementById("deadBanner").classList.add("hidden");
 }
 
 /* ============================================================
-   CONTROLLI TOUCH (mobile): joystick virtuale per il movimento +
-   trascinamento con un dito per la visuale + pulsanti per sparo e
-   scorciatoia bonus. Riusano ESATTAMENTE le stesse variabili/funzioni
-   di WASD e mouse (heldMoveKeys/heldBase/updateMovementDirection per il
-   movimento, yaw/pitch per la mira, fireCurrentWeapon/universalShortcut
-   per le azioni) cosi' il comportamento resta identico a quello desktop,
-   solo con un altro input.
+   CONTROLLER PS5 (DualSense) VIA BLUETOOTH — nessun elemento visibile a
+   schermo: si collega il controller al telefono/computer dal Bluetooth
+   del sistema operativo come si farebbe con qualsiasi altro dispositivo,
+   poi lo si "risveglia" premendo un tasto qualsiasi mentre la pagina e'
+   aperta (i browser espongono i gamepad via Gamepad API solo dopo una
+   prima pressione, per motivi di privacy/fingerprinting). Il browser lo
+   fa apparire come un gamepad standard, quindi usiamo la stessa mappatura
+   standard di qualunque controller (levetta sinistra = movimento, destra
+   = mira, dorsali/grilletti = azioni) - dovrebbe funzionare cosi' anche
+   con altri controller Bluetooth generici, non solo DualSense.
+   Il browser non emette eventi ad ogni movimento di levetta/pulsante:
+   va "interrogato" (poll) ad ogni frame, vedi pollGamepad() richiamata
+   dentro animate() piu' in basso nel file.
+   Riusa ESATTAMENTE le stesse variabili/funzioni di WASD e mouse
+   (heldMoveKeys/heldBase/updateMovementDirection per il movimento,
+   yaw/pitch per la mira, fireCurrentWeapon/universalShortcut per le
+   azioni) cosi' il comportamento resta identico a quello con
+   tastiera+mouse, solo con un altro input.
    ============================================================ */
-const joyBaseEl = document.getElementById("joyBase");
-const joyKnobEl = document.getElementById("joyKnob");
-const JOY_RADIUS = 40;   // raggio massimo (px) di spostamento del pomello
-const JOY_DEADZONE = 10; // sotto questa distanza (px) si considera "centro" = nessuna direzione
-let joyTouchId = null, joyCenterX = 0, joyCenterY = 0;
-
-// Dato lo spostamento (dx,dy) del pomello rispetto al centro, restituisce
-// "forward"/"backward"/"left"/"right" con la STESSA convenzione di WASD:
-// su schermo = avanti rispetto allo sguardo (non "nord" assoluto), giu' =
-// indietro, cosi' il joystick si comporta esattamente come i tasti WASD.
-function joyDirFromDelta(dx, dy){
-  if (Math.hypot(dx, dy) < JOY_DEADZONE) return null;
-  if (Math.abs(dx) > Math.abs(dy)) return dx > 0 ? "right" : "left";
-  return dy > 0 ? "backward" : "forward";
-}
-function joySetKnob(dx, dy){
-  joyKnobEl.style.transform = `translate(${dx}px, ${dy}px)`;
-}
-joyBaseEl.addEventListener("touchstart", e => {
-  e.preventDefault();
-  if (joyTouchId !== null) return; // gia' un dito sul joystick, ignora altre dita
-  const t = e.changedTouches[0];
-  joyTouchId = t.identifier;
-  const r = joyBaseEl.getBoundingClientRect();
-  joyCenterX = r.left + r.width/2;
-  joyCenterY = r.top + r.height/2;
-}, { passive:false });
-joyBaseEl.addEventListener("touchmove", e => {
-  e.preventDefault();
-  let t = null;
-  for (const ct of e.changedTouches) if (ct.identifier === joyTouchId) t = ct;
-  if (!t) return;
-  let dx = t.clientX - joyCenterX, dy = t.clientY - joyCenterY;
-  const dist = Math.hypot(dx, dy);
-  if (dist > JOY_RADIUS){ dx = dx / dist * JOY_RADIUS; dy = dy / dist * JOY_RADIUS; }
-  joySetKnob(dx, dy);
-  const dir = joyDirFromDelta(dx, dy);
-  if (dir){
-    heldMoveKeys.clear(); heldMoveKeys.add(dir);
-    heldBase = dir;
-    updateMovementDirection();
-  } else {
+let gamepadIndex = null;
+window.addEventListener("gamepadconnected", e => {
+  gamepadIndex = e.gamepad.index;
+  showToast("controller collegato: " + e.gamepad.id);
+});
+window.addEventListener("gamepaddisconnected", e => {
+  if (gamepadIndex === e.gamepad.index){
+    gamepadIndex = null;
     heldMoveKeys.clear(); heldBase = null;
   }
-}, { passive:false });
-function joyRelease(e){
-  let released = false;
-  for (const ct of e.changedTouches) if (ct.identifier === joyTouchId) released = true;
-  if (!released) return;
-  joyTouchId = null;
-  joySetKnob(0, 0);
-  heldMoveKeys.clear(); heldBase = null;
-}
-joyBaseEl.addEventListener("touchend", joyRelease);
-joyBaseEl.addEventListener("touchcancel", joyRelease);
+});
 
-// Trascinamento con un dito ovunque FUORI dai controlli (joystick/
-// pulsanti) per girare la visuale, equivalente touch del mousemove col
-// pointer lock. Ogni dito e' tracciato per identifier cosi' non entra in
-// conflitto col dito sul joystick o sui pulsanti.
-let lookTouchId = null, lookLastX = 0, lookLastY = 0;
-window.addEventListener("touchstart", e => {
-  if (currentScreen !== "game" || !isMobileDevice) return;
-  for (const t of e.changedTouches){
-    if (lookTouchId !== null) break;
-    const el = document.elementFromPoint(t.clientX, t.clientY);
-    if (el && el.closest && el.closest("#mobileControls")) continue; // dito sul joystick/pulsanti: non e' la mira
-    lookTouchId = t.identifier;
-    lookLastX = t.clientX; lookLastY = t.clientY;
+const GAMEPAD_STICK_DEADZONE = 0.25; // sotto questa soglia (0..1) la levetta si considera a riposo
+const GAMEPAD_LOOK_SPEED = 0.045;    // sensibilita' della levetta destra (mira)
+// stato dei pulsanti al frame precedente: serve a rilevare la PRESSIONE
+// (fronte di salita) e non ripetere l'azione ad ogni frame finche' resta
+// premuto, esattamente come un singolo click/keydown.
+let gpFirePrev = false, gpShortcutPrev = false, gpDescendPrev = false;
+let gpLastMoveDir = null;
+
+// Dati i due assi di una levetta (-1..1), restituisce "forward"/
+// "backward"/"left"/"right" con la STESSA convenzione di WASD: relativa
+// allo sguardo (non "nord" assoluto), cosi' la levetta si comporta
+// esattamente come i tasti WASD.
+function gpDirFromAxes(x, y){
+  if (Math.hypot(x, y) < GAMEPAD_STICK_DEADZONE) return null;
+  if (Math.abs(x) > Math.abs(y)) return x > 0 ? "right" : "left";
+  return y > 0 ? "backward" : "forward";
+}
+
+function pollGamepad(){
+  if (gamepadIndex === null || currentScreen !== "game") return;
+  // Chrome/Firefox non aggiornano l'oggetto salvato dall'evento
+  // "gamepadconnected": va richiesto un array fresco ad ogni frame.
+  const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+  const gp = pads[gamepadIndex];
+  if (!gp) return;
+
+  // Levetta sinistra (assi 0/1): movimento, stessa logica del joystick/WASD.
+  const dir = gpDirFromAxes(gp.axes[0] || 0, gp.axes[1] || 0);
+  if (dir !== gpLastMoveDir){
+    gpLastMoveDir = dir;
+    if (dir){ heldMoveKeys.clear(); heldMoveKeys.add(dir); heldBase = dir; }
+    else { heldMoveKeys.clear(); heldBase = null; }
   }
-}, { passive:true });
-window.addEventListener("touchmove", e => {
-  if (lookTouchId === null) return;
-  for (const t of e.changedTouches){
-    if (t.identifier !== lookTouchId) continue;
-    const dx = t.clientX - lookLastX, dy = t.clientY - lookLastY;
-    lookLastX = t.clientX; lookLastY = t.clientY;
-    yaw   -= dx * 0.0035;
-    pitch -= dy * 0.0035;
+  // Levetta destra (assi 2/3): mira, stessa logica del mousemove.
+  const rx = gp.axes[2] || 0, ry = gp.axes[3] || 0;
+  if (Math.abs(rx) > GAMEPAD_STICK_DEADZONE || Math.abs(ry) > GAMEPAD_STICK_DEADZONE){
+    yaw   -= rx * GAMEPAD_LOOK_SPEED;
+    pitch -= ry * GAMEPAD_LOOK_SPEED;
     pitch = Math.max(-Math.PI/2+0.05, Math.min(Math.PI/2-0.05, pitch));
-    // stessa ragione del mousemove: lo sguardo e' cambiato, ricalcola la
-    // direzione di griglia se un tasto/joystick di movimento e' attivo.
-    updateMovementDirection();
   }
-}, { passive:true });
-function lookRelease(e){
-  for (const t of e.changedTouches) if (t.identifier === lookTouchId) lookTouchId = null;
+  // Ricalcola la direzione di griglia se ci si sta muovendo (la mira puo'
+  // essere cambiata anche solo con la levetta destra, vedi mousemove).
+  if (heldBase) updateMovementDirection();
+
+  // R2 (grilletto destro, indice 7 nella mappatura standard) o X/Cross
+  // (indice 0): spara, stessa funzione condivisa del tasto sinistro del
+  // mouse. Rilevato solo sul fronte di salita (un colpo per pressione).
+  const fireDown = !!((gp.buttons[7] && gp.buttons[7].pressed) || (gp.buttons[0] && gp.buttons[0].pressed));
+  if (fireDown && !gpFirePrev) fireCurrentWeapon();
+  gpFirePrev = fireDown;
+
+  // Square (indice 2) o L1 (indice 4): scorciatoia bonus, stessa funzione
+  // condivisa del tasto destro del mouse.
+  const shortcutDown = !!((gp.buttons[2] && gp.buttons[2].pressed) || (gp.buttons[4] && gp.buttons[4].pressed));
+  if (shortcutDown && !gpShortcutPrev) universalShortcut();
+  gpShortcutPrev = shortcutDown;
+
+  // Triangle (indice 3): scendi dalla torre dello stregone (tasto "0"),
+  // solo se effettivamente in cima (stessa condizione del tasto "0").
+  const descendDown = !!(gp.buttons[3] && gp.buttons[3].pressed);
+  if (descendDown && !gpDescendPrev && myState && myState.on_wizard_tower){
+    sendMsg({ type:"descend_wizard_tower" });
+  }
+  gpDescendPrev = descendDown;
 }
-window.addEventListener("touchend", lookRelease);
-window.addEventListener("touchcancel", lookRelease);
 
-// Pulsante "spara" (tasto sinistro/laser o palle di fuoco in cima alla
-// torre): stessa funzione condivisa del click sinistro del mouse.
-document.getElementById("mobileFireBtn").addEventListener("touchstart", e => {
-  e.preventDefault();
-  fireCurrentWeapon();
-}, { passive:false });
-
-// Pulsante "★" (scorciatoia bonus): stessa funzione condivisa del tasto
-// destro del mouse.
-document.getElementById("mobileActionBtn").addEventListener("touchstart", e => {
-  e.preventDefault();
-  universalShortcut();
-}, { passive:false });
-
-// Pulsante "scendi dalla torre" (tasto "0"): visibile solo mentre
-// myState.on_wizard_tower e' vero (toggle in onState, vedi hudWizardTower).
-document.getElementById("mobileDescendBtn").addEventListener("touchstart", e => {
-  e.preventDefault();
-  if (!myState || !myState.on_wizard_tower) return;
-  sendMsg({ type:"descend_wizard_tower" });
-}, { passive:false });
 
 /* ============================================================
    STATO DI GIOCO -> POSIZIONI. Ogni giocatore (io compreso) e'
@@ -5871,9 +5798,6 @@ function onState(msg){
       } else {
         hudWizardTower.classList.add("hidden");
       }
-      // Pulsante touch "scendi dalla torre": stessa condizione dell'hud
-      // sopra, visibile solo mentre si e' effettivamente in cima.
-      document.getElementById("mobileDescendBtn").classList.toggle("hidden", !p.on_wizard_tower);
       return;
     }
 
@@ -7377,6 +7301,7 @@ function forEachValue(obj, fn){
 function animate(){
   requestAnimationFrame(animate);
   if (!scene || currentScreen !== "game"){ return; }
+  pollGamepad(); // controller PS5/Bluetooth: va interrogato ad ogni frame, vedi definizione sopra
   const dt = Math.min(clock.getDelta(), 0.05);
 
   // smorza gli scatti dei pacchetti di rete interpolando verso l'ultima

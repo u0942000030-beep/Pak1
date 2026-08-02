@@ -189,6 +189,16 @@ PET_HITBOX_RADIUS = 0.28      # celle: raggio della hitbox del pet, piu' piccolo
 # solido e voluminoso (vedi makeSondaMesh nel client), non deve sfuggire
 # ai colpi piu' facilmente di un giocatore.
 GOLEM_HITBOX_RADIUS = 0.40    # celle: raggio della hitbox della sonda (ex golem spaccapietra)
+# Mongolfiera e blob gelatinoso: PRIMA il laser le attraversava senza
+# alcuna collisione (nessuna hitbox era mai stata definita per loro),
+# mentre bombolone/Tesla/terremoto/attacco aereo/fungo atomico le
+# colpiscono gia' tutti (vedi damage_balloon/damage_blob in main.py).
+# Stessa hitbox euclidea di player/pet/sonda, non piu' "stessa cella
+# intera": la mongolfiera e' un corpo grande e visibile da lontano
+# (vedi makeBalloonMesh nel client), quindi un raggio generoso; il blob
+# e' un omino di gelatina piazzato a terra, ingombro simile a un player.
+BALLOON_HITBOX_RADIUS = 0.45  # celle: raggio della hitbox della mongolfiera
+BLOB_HITBOX_RADIUS = 0.38     # celle: raggio della hitbox del blob gelatinoso
 
 MINES_COUNT = 1                # numero di mine disponibili una volta sbloccato il bonus 200 punti (ridotto da 2 a 1)
 MINE_DOUBLE_TAP_MS = 350       # finestra (ms) del doppio tocco freccia destra/D che sgancia una mina (uso lato client)
