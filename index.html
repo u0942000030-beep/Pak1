@@ -1984,7 +1984,7 @@ function makeSondaMesh(colorHex){
   g.add(hpBar); // FUORI da "body": non deve ruotare insieme al guscio
 
   g.userData = {
-    body, shell, core, sparks, hitFlash, halo, hpBar, awake: false, facing: 1,
+    body, shell, core, sparks, zzzGroup, hitFlash, halo, hpBar, awake: false, facing: 1,
     floatPhase: Math.random() * Math.PI * 2, spinY: 0, baseY: R * 1.35,
   };
   return g;
@@ -2081,7 +2081,7 @@ function makeAirstrikeMesh(colorHex){
   // visibile anche alla quota di volo elevata.
   body.scale.setScalar(AIRSTRIKE_SCALE);
 
-  g.userData = { body, trail, beacon, fuselage };
+  g.userData = { body, trail, beacon, fuselage: fuselageGroup };
   return g;
 }
 
