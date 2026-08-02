@@ -435,7 +435,7 @@ SPIKE_WALL_HIT_RANGE = 0.6           # distanza (frazione di cella, per asse) so
 # avversari. E' permanente per tutto il round, come torretta/mortaio/pet.
 TESLA_THRESHOLD = 2400
 TESLA_FIRE_INTERVAL_SECONDS = 2.5    # cadenza dei fulmini ad area
-TESLA_RANGE_CELLS = 8                # raggio d'azione (distanza Manhattan), ignora i muri
+TESLA_RANGE_CELLS = 4                # raggio d'azione (distanza Manhattan), ignora i muri
 
 # ---- bonus 2600 punti: trappola territoriale a spunzoni (tasto "1", DOPO la Tesla) ----
 # Nuovo, ultimo gradino della catena del tasto "1", dopo la Tesla (2400).
@@ -1073,16 +1073,39 @@ class FlowFieldCache:
     passando ogni volta il tick corrente: cambiare tick invalida
     automaticamente le entry stantie senza doverle svuotare a mano."""
 
+    # Ogni goal "visto" (una torretta, una mina, un pet nemico... qualsiasi
+    # cella che un golem abbia mai inseguito) restava per sempre in
+    # _fields/_built_at, un intero distance-field (grande quanto l'intera
+    # mappa) a testa: siccome i bersagli cambiano di continuo nel corso del
+    # round (piazzati e distrutti), la cache cresceva senza mai svuotarsi,
+    # appesantendo via via ogni tick man mano che passava il tempo e si
+    # accumulavano bonus. MAX_STALE_TICKS pota le entry non piu' richieste
+    # da un po' (i golem interrogano il loro goal corrente ad ogni tick, se
+    # una entry non viene toccata per un po' vuol dire che nessuno la sta
+    # piu' usando).
+    MAX_STALE_TICKS = 120
+
     def __init__(self, maze, w, h):
         self.maze, self.w, self.h = maze, w, h
         self._fields = {}       # goal -> dist field
         self._built_at = {}     # goal -> ultimo tick in cui e' stato ricalcolato
+        self._last_used = {}    # goal -> ultimo tick in cui e' stato RICHIESTO
 
     def get_field(self, goal, tick):
         if self._built_at.get(goal) != tick:
             self._fields[goal] = build_distance_field(self.maze, self.w, self.h, goal)
             self._built_at[goal] = tick
+        self._last_used[goal] = tick
+        if tick % self.MAX_STALE_TICKS == 0:
+            self._prune(tick)
         return self._fields[goal]
+
+    def _prune(self, tick):
+        stale = [g for g, last in self._last_used.items() if tick - last > self.MAX_STALE_TICKS]
+        for g in stale:
+            self._fields.pop(g, None)
+            self._built_at.pop(g, None)
+            self._last_used.pop(g, None)
 
     def next_step(self, cur, goal, tick):
         """Prossima cella verso 'goal' partendo da 'cur', O(1) ammortizzato."""

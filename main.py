@@ -2491,7 +2491,7 @@ class Room:
                             q for q in self.players.values()
                             if q.alive and self.is_enemy_ids(q.id, lz["owner"])
                             and q.ghost_left <= 0 and q.prot_left <= 0
-                            and hitbox_hit(lz["x"], lz["y"], q.x, q.y, PLAYER_HITBOX_RADIUS)
+                            and hitbox_hit(lz["x"], lz["y"], q.x + 0.5, q.y + 0.5, PLAYER_HITBOX_RADIUS)
                             and z_hit(lzz, PLAYER_FEET_Z, PLAYER_HEAD_Z)
                         ]
                         for v in victims:
@@ -2506,12 +2506,24 @@ class Room:
                 # colpo mirato troppo in alto o troppo a terra rispetto al
                 # bersaglio ora lo manca davvero, non e' piu' sempre a segno
                 # a prescindere dal pitch.
-                lzz = lz.get("z", LASER_EYE_HEIGHT)
+                # NOTA: q.x/q.y sono l'angolo della cella (piu' l'eventuale
+                # avanzamento frazionario), non il suo centro - il laser
+                # invece parte SEMPRE dal centro (vedi spawn_laser,
+                # shooter.x+0.5) e il client disegna ogni personaggio
+                # anch'esso al centro della sua cella (wx = p.x*CELL +
+                # CELL/2). Confrontare lz["x"]/lz["y"] direttamente contro
+                # q.x/q.y introduceva un offset sistematico di mezza cella
+                # (ben oltre PLAYER_HITBOX_RADIUS): un bersaglio FERMO
+                # restava sempre esattamente su quell'offset e quindi
+                # praticamente intoccabile, mentre uno in movimento lo
+                # attraversava di continuo grazie al proprio move_accum,
+                # mascherando il problema. Si aggiunge +0.5 per confrontare
+                # contro il vero centro visivo del bersaglio.
                 victims = [
                     q for q in self.players.values()
                     if q.alive and self.is_enemy_ids(q.id, lz["owner"])
                     and q.ghost_left <= 0 and q.prot_left <= 0
-                    and hitbox_hit(lz["x"], lz["y"], q.x, q.y, PLAYER_HITBOX_RADIUS)
+                    and hitbox_hit(lz["x"], lz["y"], q.x + 0.5, q.y + 0.5, PLAYER_HITBOX_RADIUS)
                     and z_hit(lzz, PLAYER_FEET_Z, PLAYER_HEAD_Z)
                 ]
                 if victims:
@@ -2546,7 +2558,7 @@ class Room:
                 pet_victims = [
                     pet for pet in self.pets
                     if self.is_enemy_ids(pet["owner"], lz["owner"])
-                    and hitbox_hit(lz["x"], lz["y"], pet["x"], pet["y"], PET_HITBOX_RADIUS)
+                    and hitbox_hit(lz["x"], lz["y"], pet["x"] + 0.5, pet["y"] + 0.5, PET_HITBOX_RADIUS)
                     and z_hit(lzz, PET_FEET_Z, PET_HEAD_Z)
                 ]
                 if pet_victims:
@@ -2565,7 +2577,7 @@ class Room:
                 golem_victims = [
                     g for g in self.golems
                     if self.is_enemy_ids(g["owner"], lz["owner"])
-                    and hitbox_hit(lz["x"], lz["y"], g["x"], g["y"], GOLEM_HITBOX_RADIUS)
+                    and hitbox_hit(lz["x"], lz["y"], g["x"] + 0.5, g["y"] + 0.5, GOLEM_HITBOX_RADIUS)
                 ]
                 if golem_victims:
                     for g in golem_victims:
@@ -3069,7 +3081,7 @@ class Room:
                         if q.alive and not q.is_assassin
                         and q.ghost_left <= 0 and q.prot_left <= 0
                         and self.is_enemy_ids(q.id, mz["owner"])
-                        and hitbox_hit(nx, ny, q.x, q.y, PLAYER_HITBOX_RADIUS)
+                        and hitbox_hit(nx, ny, q.x + 0.5, q.y + 0.5, PLAYER_HITBOX_RADIUS)
                     ]
                     if victims:
                         armored = [v for v in victims if v.armor_active]
@@ -3092,7 +3104,7 @@ class Room:
                     pet_victims = [
                         pet for pet in self.pets
                         if self.is_enemy_ids(pet["owner"], mz["owner"])
-                        and hitbox_hit(nx, ny, pet["x"], pet["y"], PET_HITBOX_RADIUS)
+                        and hitbox_hit(nx, ny, pet["x"] + 0.5, pet["y"] + 0.5, PET_HITBOX_RADIUS)
                     ]
                     if pet_victims:
                         for pet in pet_victims:
@@ -3112,7 +3124,7 @@ class Room:
                     golem_victims = [
                         g for g in self.golems
                         if self.is_enemy_ids(g["owner"], mz["owner"])
-                        and hitbox_hit(nx, ny, g["x"], g["y"], GOLEM_HITBOX_RADIUS)
+                        and hitbox_hit(nx, ny, g["x"] + 0.5, g["y"] + 0.5, GOLEM_HITBOX_RADIUS)
                     ]
                     if golem_victims:
                         for g in golem_victims:

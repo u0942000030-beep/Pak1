@@ -7587,7 +7587,7 @@ function animate(){
   // evento mousemove e l'altro. Gestisce anche il wrap-around dello yaw
   // (differenza portata sempre nell'intervallo -PI..PI) per evitare che la
   // camera giri dal verso lungo quando yaw passa da +PI a -PI o viceversa.
-  const CAM_LERP = Math.min(1, dt*28);
+  const CAM_LERP = Math.min(1, dt*16);
   let dyaw = yaw - camYaw;
   dyaw = ((dyaw + Math.PI) % (Math.PI*2) + Math.PI*2) % (Math.PI*2) - Math.PI;
   camYaw += dyaw * CAM_LERP;
