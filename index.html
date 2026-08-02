@@ -2,10 +2,12 @@
 <html lang="it">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <title>Pac-Man Arena 3D — Prima Persona (online)</title>
 <style>
   html, body { margin:0; height:100%; background:#050203; overflow:hidden;
-    font-family: 'Courier New', monospace; color:#e8e0d8; }
+    font-family: 'Courier New', monospace; color:#e8e0d8;
+    touch-action:none; overscroll-behavior:none; }
   .hidden { display:none !important; }
 
   /* ---- schermate overlay (connessione / lobby / fine round) ---- */
@@ -97,6 +99,44 @@
   }
   #minimap { display:block; border-radius:8px; }
 
+  /* Su schermi piccoli/touch la minimappa (320px) risultava enorme rispetto
+     allo schermo: la rimpiccioliamo con un semplice scale CSS (la
+     risoluzione interna del canvas resta invariata, si vede solo piu'
+     piccola) invece di toccare tutta la logica di ridimensionamento in
+     applyMapData/rebuildMinimapWallsCache. */
+  @media (max-width:820px), (pointer:coarse){
+    #minimapWrap{ transform: scale(0.5); transform-origin: top right; }
+  }
+
+  /* ---- controlli touch (joystick virtuale + pulsanti azione) ----
+     Visibili SOLO su dispositivi touch (classe "touch-controls" aggiunta
+     al <body> via JS in base al rilevamento, vedi isMobileDevice) e solo
+     durante la partita (stesso schema hidden/visible di hud/minimap,
+     vedi showScreen). Posizionati fissi in basso cosi' non coprono la
+     visuale di gioco ne' l'HUD in alto. */
+  #mobileControls{ position:fixed; inset:0; z-index:6; pointer-events:none; }
+  body:not(.touch-controls) #mobileControls{ display:none; }
+  #joyBase{
+    position:absolute; left:24px; bottom:28px; width:110px; height:110px;
+    border-radius:50%; background:rgba(255,255,255,0.08);
+    border:2px solid rgba(255,255,255,0.35); pointer-events:auto; touch-action:none;
+  }
+  #joyKnob{
+    position:absolute; left:50%; top:50%; width:46px; height:46px;
+    margin:-23px 0 0 -23px; border-radius:50%;
+    background:rgba(255,255,255,0.55); border:2px solid rgba(255,255,255,0.8);
+    transition:transform 0.05s linear;
+  }
+  .mobileBtn{
+    position:absolute; border-radius:50%; pointer-events:auto; touch-action:none;
+    display:flex; align-items:center; justify-content:center;
+    background:rgba(255,255,255,0.12); border:2px solid rgba(255,255,255,0.4);
+    color:#fff; font-size:22px; user-select:none; -webkit-user-select:none;
+  }
+  #mobileFireBtn{ right:26px; bottom:32px; width:78px; height:78px; background:rgba(255,90,60,0.28); }
+  #mobileActionBtn{ right:118px; bottom:96px; width:60px; height:60px; font-size:20px; }
+  #mobileDescendBtn{ right:30px; bottom:150px; width:56px; height:56px; font-size:16px; }
+
 </style>
 </head>
 <body>
@@ -151,6 +191,12 @@
 </div>
 <div id="minimapWrap" class="hidden">
   <canvas id="minimap" width="320" height="320"></canvas>
+</div>
+<div id="mobileControls" class="hidden">
+  <div id="joyBase"><div id="joyKnob"></div></div>
+  <div id="mobileActionBtn" class="mobileBtn" title="scorciatoia bonus (come tasto destro)">★</div>
+  <div id="mobileFireBtn" class="mobileBtn" title="spara">🔥</div>
+  <div id="mobileDescendBtn" class="mobileBtn hidden" title="scendi dalla torre">⬇</div>
 </div>
 <div id="toast"></div>
 <div id="hint" class="hidden">Click per guardarti intorno — WASD = avanti/sinistra/indietro/destra rispetto allo sguardo, la visuale sterza da sola verso la direzione presa — tasto sinistro = spara laser · 1 = mina/mortaio · 3 = missile · 5 = torretta · 8 = pet · 9 = evolvi torretta (se sbloccati) · tasto destro = scorciatoia universale (usa il prossimo gadget disponibile)</div>
@@ -454,6 +500,7 @@ function showScreen(name){
   document.getElementById("hud").classList.toggle("hidden", name !== "game");
   document.getElementById("minimapWrap").classList.toggle("hidden", name !== "game");
   document.getElementById("hint").classList.toggle("hidden", name !== "game");
+  document.getElementById("mobileControls").classList.toggle("hidden", name !== "game");
 }
 
 function handleMessage(msg){
@@ -5091,10 +5138,11 @@ window.addEventListener("wheel", e => {
    cardinale (via dirFromVector) resta inviato in piu' solo come
    fallback per compatibilita'.
    ============================================================ */
-document.addEventListener("mousedown", e => {
-  if (currentScreen !== "game" || !locked) return;
-  if (e.button !== 0) return; // solo tasto sinistro
-  e.preventDefault();
+// Estratta dal listener mousedown (tasto sinistro) cosi' il pulsante
+// touch "spara" del joystick mobile puo' richiamare esattamente la
+// stessa logica senza duplicarla (vedi mobileFireBtn piu' in basso).
+function fireCurrentWeapon(){
+  if (currentScreen !== "game" || !myState) return;
   const fx = -Math.sin(yaw), fz = -Math.cos(yaw); // direzione in cui sto guardando (piano orizzontale)
   const dir = dirFromVector(fx, fz);
   // Bonus 4200 punti: in cima alla propria torre dello stregone, il tasto
@@ -5104,7 +5152,7 @@ document.addEventListener("mousedown", e => {
   // resta comunque l'unica autorita' su munizioni/condizioni (vedi
   // try_fire_fireball in main.py). A munizioni esaurite il tasto sinistro
   // non fa piu' nulla finche' non si ridiscende e si risale sulla torre.
-  if (myState && myState.on_wizard_tower){
+  if (myState.on_wizard_tower){
     if (!myState.fireballs_left || myState.fireballs_left <= 0) return;
     myFireballPitchQueue.push(pitch);
     sendMsg({ type:"fire_fireball", direction: dir, aim: [fx, fz], pitch: pitch });
@@ -5126,6 +5174,12 @@ document.addEventListener("mousedown", e => {
   // bersaglio A TERRA (pet nemico). Miralo in basso per prendere di mira
   // i pet, altrimenti il colpo li sorvola.
   sendMsg({ type:"fire_laser", direction: dir, aim: [fx, fz], pitch: pitch });
+}
+document.addEventListener("mousedown", e => {
+  if (currentScreen !== "game" || !locked) return;
+  if (e.button !== 0) return; // solo tasto sinistro
+  e.preventDefault();
+  fireCurrentWeapon();
 });
 
 /* ============================================================
@@ -5280,10 +5334,12 @@ window.addEventListener("keydown", e => {
 document.addEventListener("contextmenu", e => {
   if (currentScreen === "game") e.preventDefault(); // niente menu del browser durante la partita
 });
-document.addEventListener("mousedown", e => {
-  if (currentScreen !== "game" || !locked) return;
-  if (e.button !== 2) return; // solo tasto destro
-  e.preventDefault();
+// Estratta dal listener mousedown (tasto destro) cosi' il pulsante touch
+// "★" del joystick mobile puo' richiamare esattamente la stessa
+// scorciatoia senza duplicare la catena di controlli (vedi
+// mobileActionBtn piu' in basso).
+function universalShortcut(){
+  if (!myState) return;
   // Tasto "1": la catena mine -> mortaio -> ... e' sempre "attiva" finche'
   // c'e' un gradino successivo da consumare (myState.mines/mortar/ecc.),
   // quindi ha la priorita' piu' alta - stesso ordine numerico dei tasti.
@@ -5317,11 +5373,24 @@ document.addEventListener("mousedown", e => {
   if (myState.pet && !myState.pet_summoned){ activatePet(); return; }
   // Tasto "9": evoluzione, solo se non ancora usata.
   if (myState.robot && !myState.robot_used){ evolveTurret(); return; }
+}
+document.addEventListener("mousedown", e => {
+  if (currentScreen !== "game" || !locked) return;
+  if (e.button !== 2) return; // solo tasto destro
+  e.preventDefault();
+  universalShortcut();
 });
+
+// Rilevamento dispositivo touch (telefono/tablet): su questi mostriamo il
+// joystick virtuale + i pulsanti azione al posto di WASD/mouse, e non
+// richiediamo il pointer lock (quasi mai supportato su mobile e comunque
+// inutile: la visuale la si gira trascinando il dito, vedi piu' sotto).
+const isMobileDevice = ("ontouchstart" in window) || navigator.maxTouchPoints > 0;
+if (isMobileDevice) document.body.classList.add("touch-controls");
 
 function enterGame(){
   showScreen("game");
-  if (renderer) renderer.domElement.addEventListener("click", () => {
+  if (renderer && !isMobileDevice) renderer.domElement.addEventListener("click", () => {
     renderer.domElement.requestPointerLock();
     // schermo intero al primo click in partita: va richiesto dentro un
     // gestore di un vero gesto dell'utente (i browser bloccano la chiamata
@@ -5333,10 +5402,139 @@ function enterGame(){
       document.documentElement.requestFullscreen().catch(() => {});
     }
   });
+  if (renderer && isMobileDevice) renderer.domElement.addEventListener("touchstart", () => {
+    // Su mobile niente pointer lock: solo lo schermo intero, al primo
+    // tocco in partita, stesso motivo del gesto utente di cui sopra.
+    if (!document.fullscreenElement && document.documentElement.requestFullscreen){
+      document.documentElement.requestFullscreen().catch(() => {});
+    }
+  }, { once:true, passive:true });
 }
 function exitGame(){
   document.getElementById("deadBanner").classList.add("hidden");
 }
+
+/* ============================================================
+   CONTROLLI TOUCH (mobile): joystick virtuale per il movimento +
+   trascinamento con un dito per la visuale + pulsanti per sparo e
+   scorciatoia bonus. Riusano ESATTAMENTE le stesse variabili/funzioni
+   di WASD e mouse (heldMoveKeys/heldBase/updateMovementDirection per il
+   movimento, yaw/pitch per la mira, fireCurrentWeapon/universalShortcut
+   per le azioni) cosi' il comportamento resta identico a quello desktop,
+   solo con un altro input.
+   ============================================================ */
+const joyBaseEl = document.getElementById("joyBase");
+const joyKnobEl = document.getElementById("joyKnob");
+const JOY_RADIUS = 40;   // raggio massimo (px) di spostamento del pomello
+const JOY_DEADZONE = 10; // sotto questa distanza (px) si considera "centro" = nessuna direzione
+let joyTouchId = null, joyCenterX = 0, joyCenterY = 0;
+
+// Dato lo spostamento (dx,dy) del pomello rispetto al centro, restituisce
+// "forward"/"backward"/"left"/"right" con la STESSA convenzione di WASD:
+// su schermo = avanti rispetto allo sguardo (non "nord" assoluto), giu' =
+// indietro, cosi' il joystick si comporta esattamente come i tasti WASD.
+function joyDirFromDelta(dx, dy){
+  if (Math.hypot(dx, dy) < JOY_DEADZONE) return null;
+  if (Math.abs(dx) > Math.abs(dy)) return dx > 0 ? "right" : "left";
+  return dy > 0 ? "backward" : "forward";
+}
+function joySetKnob(dx, dy){
+  joyKnobEl.style.transform = `translate(${dx}px, ${dy}px)`;
+}
+joyBaseEl.addEventListener("touchstart", e => {
+  e.preventDefault();
+  if (joyTouchId !== null) return; // gia' un dito sul joystick, ignora altre dita
+  const t = e.changedTouches[0];
+  joyTouchId = t.identifier;
+  const r = joyBaseEl.getBoundingClientRect();
+  joyCenterX = r.left + r.width/2;
+  joyCenterY = r.top + r.height/2;
+}, { passive:false });
+joyBaseEl.addEventListener("touchmove", e => {
+  e.preventDefault();
+  let t = null;
+  for (const ct of e.changedTouches) if (ct.identifier === joyTouchId) t = ct;
+  if (!t) return;
+  let dx = t.clientX - joyCenterX, dy = t.clientY - joyCenterY;
+  const dist = Math.hypot(dx, dy);
+  if (dist > JOY_RADIUS){ dx = dx / dist * JOY_RADIUS; dy = dy / dist * JOY_RADIUS; }
+  joySetKnob(dx, dy);
+  const dir = joyDirFromDelta(dx, dy);
+  if (dir){
+    heldMoveKeys.clear(); heldMoveKeys.add(dir);
+    heldBase = dir;
+    updateMovementDirection();
+  } else {
+    heldMoveKeys.clear(); heldBase = null;
+  }
+}, { passive:false });
+function joyRelease(e){
+  let released = false;
+  for (const ct of e.changedTouches) if (ct.identifier === joyTouchId) released = true;
+  if (!released) return;
+  joyTouchId = null;
+  joySetKnob(0, 0);
+  heldMoveKeys.clear(); heldBase = null;
+}
+joyBaseEl.addEventListener("touchend", joyRelease);
+joyBaseEl.addEventListener("touchcancel", joyRelease);
+
+// Trascinamento con un dito ovunque FUORI dai controlli (joystick/
+// pulsanti) per girare la visuale, equivalente touch del mousemove col
+// pointer lock. Ogni dito e' tracciato per identifier cosi' non entra in
+// conflitto col dito sul joystick o sui pulsanti.
+let lookTouchId = null, lookLastX = 0, lookLastY = 0;
+window.addEventListener("touchstart", e => {
+  if (currentScreen !== "game" || !isMobileDevice) return;
+  for (const t of e.changedTouches){
+    if (lookTouchId !== null) break;
+    const el = document.elementFromPoint(t.clientX, t.clientY);
+    if (el && el.closest && el.closest("#mobileControls")) continue; // dito sul joystick/pulsanti: non e' la mira
+    lookTouchId = t.identifier;
+    lookLastX = t.clientX; lookLastY = t.clientY;
+  }
+}, { passive:true });
+window.addEventListener("touchmove", e => {
+  if (lookTouchId === null) return;
+  for (const t of e.changedTouches){
+    if (t.identifier !== lookTouchId) continue;
+    const dx = t.clientX - lookLastX, dy = t.clientY - lookLastY;
+    lookLastX = t.clientX; lookLastY = t.clientY;
+    yaw   -= dx * 0.0035;
+    pitch -= dy * 0.0035;
+    pitch = Math.max(-Math.PI/2+0.05, Math.min(Math.PI/2-0.05, pitch));
+    // stessa ragione del mousemove: lo sguardo e' cambiato, ricalcola la
+    // direzione di griglia se un tasto/joystick di movimento e' attivo.
+    updateMovementDirection();
+  }
+}, { passive:true });
+function lookRelease(e){
+  for (const t of e.changedTouches) if (t.identifier === lookTouchId) lookTouchId = null;
+}
+window.addEventListener("touchend", lookRelease);
+window.addEventListener("touchcancel", lookRelease);
+
+// Pulsante "spara" (tasto sinistro/laser o palle di fuoco in cima alla
+// torre): stessa funzione condivisa del click sinistro del mouse.
+document.getElementById("mobileFireBtn").addEventListener("touchstart", e => {
+  e.preventDefault();
+  fireCurrentWeapon();
+}, { passive:false });
+
+// Pulsante "★" (scorciatoia bonus): stessa funzione condivisa del tasto
+// destro del mouse.
+document.getElementById("mobileActionBtn").addEventListener("touchstart", e => {
+  e.preventDefault();
+  universalShortcut();
+}, { passive:false });
+
+// Pulsante "scendi dalla torre" (tasto "0"): visibile solo mentre
+// myState.on_wizard_tower e' vero (toggle in onState, vedi hudWizardTower).
+document.getElementById("mobileDescendBtn").addEventListener("touchstart", e => {
+  e.preventDefault();
+  if (!myState || !myState.on_wizard_tower) return;
+  sendMsg({ type:"descend_wizard_tower" });
+}, { passive:false });
 
 /* ============================================================
    STATO DI GIOCO -> POSIZIONI. Ogni giocatore (io compreso) e'
@@ -5673,6 +5871,9 @@ function onState(msg){
       } else {
         hudWizardTower.classList.add("hidden");
       }
+      // Pulsante touch "scendi dalla torre": stessa condizione dell'hud
+      // sopra, visibile solo mentre si e' effettivamente in cima.
+      document.getElementById("mobileDescendBtn").classList.toggle("hidden", !p.on_wizard_tower);
       return;
     }
 
