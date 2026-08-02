@@ -5397,7 +5397,7 @@ window.addEventListener("gamepaddisconnected", e => {
 });
 
 const GAMEPAD_STICK_DEADZONE = 0.25; // sotto questa soglia (0..1) la levetta si considera a riposo
-const GAMEPAD_LOOK_SPEED = 0.045;    // sensibilita' della levetta destra (mira)
+const GAMEPAD_LOOK_SPEED = 0.055;    // sensibilita' della levetta destra (mira)
 // stato dei pulsanti al frame precedente: serve a rilevare la PRESSIONE
 // (fronte di salita) e non ripetere l'azione ad ogni frame finche' resta
 // premuto, esattamente come un singolo click/keydown.
@@ -5422,8 +5422,18 @@ function pollGamepad(){
   const gp = pads[gamepadIndex];
   if (!gp) return;
 
-  // Levetta sinistra (assi 0/1): movimento, stessa logica del joystick/WASD.
-  const dir = gpDirFromAxes(gp.axes[0] || 0, gp.axes[1] || 0);
+  // Freccette/croce direzionale (pulsanti 12-15 nella mappatura standard):
+  // movimento, stessa logica del joystick/WASD. Al posto della levetta
+  // sinistra, cosi' il movimento e' un semplice on/off a 4 direzioni.
+  const dpadUp    = !!(gp.buttons[12] && gp.buttons[12].pressed);
+  const dpadDown  = !!(gp.buttons[13] && gp.buttons[13].pressed);
+  const dpadLeft  = !!(gp.buttons[14] && gp.buttons[14].pressed);
+  const dpadRight = !!(gp.buttons[15] && gp.buttons[15].pressed);
+  let dir = null;
+  if (dpadUp) dir = "forward";
+  else if (dpadDown) dir = "backward";
+  else if (dpadLeft) dir = "left";
+  else if (dpadRight) dir = "right";
   if (dir !== gpLastMoveDir){
     gpLastMoveDir = dir;
     if (dir){ heldMoveKeys.clear(); heldMoveKeys.add(dir); heldBase = dir; }
