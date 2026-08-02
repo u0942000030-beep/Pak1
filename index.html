@@ -6481,7 +6481,21 @@ function onGameEvent(msg){
         yOffset = wy - serverWy;
       } else {
         wx = msg.x*CELL; wz = msg.y*CELL;
-        wy = (typeof msg.z === "number" ? msg.z : EYE_HEIGHT/CELL) * CELL;
+        // Stesso bug/fix del MIO laser (vedi ramo isMyLaser sopra): msg.z
+        // e' la quota che usa il SERVER per lo sparatore (LASER_EYE_HEIGHT,
+        // in celle), NON la quota reale della camera del giocatore
+        // avversario (EYE_HEIGHT, gia' in world units). Senza correggere lo
+        // scarto fra le due, il laser altrui nasceva visivamente molto piu'
+        // in alto della testa/mirino di chi ha sparato. Non avendo accesso
+        // alla camera reale dell'avversario, si approssima la quota vera di
+        // nascita con EYE_HEIGHT (la stessa usata per la propria camera, dato
+        // che tutti i giocatori condividono la stessa altezza occhi) e si
+        // applica lo stesso yOffset costante ai target successivi (state/
+        // laser_bounce) cosi' la traiettoria mantiene la pendenza calcolata
+        // dal server ma resta ancorata all'altezza vera del mirino.
+        const serverWy = (typeof msg.z === "number" ? msg.z : EYE_HEIGHT/CELL) * CELL;
+        wy = EYE_HEIGHT;
+        yOffset = wy - serverWy;
       }
       mesh.position.set(wx, wy, wz);
       // Orienta SUBITO il dardo nella direzione di sparo reale (dx/dy
