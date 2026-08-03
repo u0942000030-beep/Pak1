@@ -44,7 +44,7 @@ from common import (
     TICK_DT, STATE_BROADCAST_EVERY_N_TICKS, COUNTDOWN_SECONDS, ROUND_SECONDS,
     MAX_PLAYERS, MIN_PLAYERS, NORMAL_SPEED, ASSASSIN_SPEED_MULT,
     COLORS, CHARACTERS, DIRECTIONS, is_wall, hitbox_hit, ROOM_CODE_CHARS, SECONDARY_ONLY_COLORS,
-    pick_random_maze_x4 as pick_random_maze, choose_power_pellet_cells, bfs_path,
+    pick_random_maze, choose_power_pellet_cells, bfs_path,
     FlowFieldCache, SpatialGrid,
     BONUS_THRESHOLDS, GHOST_SECONDS,
     PELLET_POINTS, POWER_PELLET_POINTS, POWER_PELLET_COUNT,
@@ -1293,6 +1293,19 @@ class Room:
             # giocatore e' inchiodato sul posto - qualsiasi input di
             # movimento residuo viene azzerato ad ogni tick.
             if p.airstrike_aiming:
+                p.direction = None
+                p.next_direction = None
+                p.move_accum = 0.0
+
+            # Bonus 4200 punti (torre dello stregone): chi si trova in cima
+            # alla propria torre resta FERMO sul punto esatto in cui e'
+            # piazzata (x, y invariati) - puo' SOLO girare la visuale col
+            # mouse, non spostarsi per la mappa. Stessa idea di
+            # airstrike_aiming sopra: qualsiasi input di movimento residuo
+            # (anche gia' in coda da prima di salire) viene azzerato ad
+            # ogni tick, cosi' non c'e' alcuna possibilita' di "volare"
+            # lontano dalla torre restando in quota.
+            if p.on_wizard_tower:
                 p.direction = None
                 p.next_direction = None
                 p.move_accum = 0.0
@@ -7560,6 +7573,16 @@ async def handle_client(ws):
                     # un eventuale "move" residuo viene semplicemente
                     # ignorato, esattamente come fa gia' update_movement
                     # azzerando p.direction ogni tick durante la mira.
+                    continue
+                if player.on_wizard_tower:
+                    # Bonus 4200 punti (torre dello stregone): in cima alla
+                    # torre il giocatore e' FERMO sul punto di piazzamento,
+                    # puo' solo girare la visuale col mouse. Un eventuale
+                    # "move" (WASD/frecce) arrivato mentre si e' lassu' viene
+                    # ignorato qui, PRIMA di _rewind_move: senza questo
+                    # controllo il riavvolgimento per compensare la latenza
+                    # avrebbe comunque fatto "volare" il giocatore sopra la
+                    # mappa restando in quota, esattamente il bug segnalato.
                     continue
                 direction = msg.get("direction")
                 if direction in DIRECTIONS:
