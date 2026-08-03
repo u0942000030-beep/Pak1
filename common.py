@@ -1015,6 +1015,166 @@ def pick_random_maze():
     }
 
 
+def _mirror_h(rows):
+    """Specchia ogni riga orizzontalmente (sinistra/destra invertite)."""
+    return [r[::-1] for r in rows]
+
+
+def _mirror_v(rows):
+    """Specchia l'intera griglia verticalmente (righe in ordine inverso)."""
+    return rows[::-1]
+
+
+def quad_tile_maze(rows, spawn_points):
+    """Trasforma UNA mappa base (39x19, gia' bordata di '#') in una mappa
+    2x2 di area x4, riusando lo stesso contenuto invece di ridisegnare a
+    mano una mappa 4 volte piu' grande. Tre accorgimenti, esattamente
+    quelli di cui bisogna preoccuparsi incollando mappe fianco a fianco:
+
+    1) BORDI: si toglie il vecchio muro perimetrale PRIMA di incollare
+       (altrimenti tra un quadrante e l'altro resterebbe un muro doppio
+       continuo che isola i 4 pezzi). Il nuovo bordo esterno si aggiunge
+       una volta sola, alla fine, intorno a tutta la mappa gigante.
+       La giunzione tra quadranti resta comunque attraversabile perche' i
+       4 angoli della mappa originale - (1,1)/(w-2,1)/(1,h-2)/(w-2,h-2) -
+       sono SEMPRE aperti per costruzione (vedi commento sopra MAZES):
+       specchiando il contenuto, il punto corrispondente resta aperto
+       anch'esso, quindi ogni coppia di quadranti adiacenti condivide
+       sempre almeno un varco vero in quel punto, senza dover scavare
+       nulla a mano. Verificato via flood-fill su tutte le mappe di
+       MAZES: tutte restano un'unica area connessa (vedi anche
+       _ensure_quad_connectivity, rete di sicurezza per mappe future che
+       non rispettassero questa garanzia).
+    2) RIPETIZIONE VISIVA: delle 4 copie, solo quella in alto a sinistra
+       resta identica all'originale; le altre 3 sono specchiate (in alto
+       a destra: orizzontale; in basso a sinistra: verticale; in basso a
+       destra: entrambe). Stessi corridoi/stessa difficolta', ma non
+       sembra affatto un copia-incolla a occhio.
+    3) SPAWN E POWER PELLET: NON servono ricalcoli manuali in questo
+       codebase. Gli spawn dei giocatori (pick_spaced_spawn/assign_spawns
+       in main.py) gia' scelgono a caso QUALSIASI cella libera dell'
+       intera mappa mantenendo una distanza minima dagli altri
+       giocatori: su una mappa x4 piu' grande si spargono da soli ancora
+       meglio, nessuno nasce ammassato in un angolo. Il campo
+       "spawn_points" qui sotto viene comunque popolato (uno "gruppo"
+       angoli+centro per quadrante, 20 celle in tutto, tutte
+       garantite libere) solo per coerenza col formato dati esistente,
+       ma non e' letto da nessuna logica di spawn reale. I power pellet
+       invece si ricalcolano automaticamente e restano ben distribuiti
+       su tutti e 4 i quadranti chiamando choose_power_pellet_cells
+       (farthest-point-sampling) sulla mappa gigante gia' assemblata,
+       con un count piu' alto (vedi pick_random_quad_map) per mantenere
+       la stessa densita' di prima sull'area x4.
+
+    Ritorna (righe_mappa_gigante, spawn_points_x4)."""
+    inner = [r[1:-1] for r in rows[1:-1]]      # via il vecchio bordo
+    h0 = len(inner)
+    w0 = len(inner[0])
+
+    tl = inner                                  # alto sinistra: originale
+    tr = _mirror_h(inner)                        # alto destra: specchio orizzontale
+    bl = _mirror_v(inner)                        # basso sinistra: specchio verticale
+    br = _mirror_v(_mirror_h(inner))             # basso destra: entrambi
+
+    top_rows = [tl[y] + tr[y] for y in range(h0)]
+    bottom_rows = [bl[y] + br[y] for y in range(h0)]
+    core = top_rows + bottom_rows                # (2*h0) x (2*w0), senza bordo
+
+    new_w = 2 * w0 + 2
+    out = ["#" * new_w] + ["#" + r + "#" for r in core] + ["#" * new_w]
+    out = _ensure_quad_connectivity(out, w0, h0)
+
+    # Ogni quadrante ripete gli stessi 5 punti (4 angoli + centro)
+    # dell'originale, trasformati con la STESSA specchiatura usata per il
+    # suo contenuto: restano quindi sempre su celle libere per costruzione,
+    # uno "gruppo" per quadrante invece che tutti ammassati in un angolo
+    # della mappa gigante.
+    def _transform(x, y, flip_h, flip_v):
+        ix, iy = x - 1, y - 1                    # coordinate dentro 'inner' (0-based)
+        if flip_h:
+            ix = w0 - 1 - ix
+        if flip_v:
+            iy = h0 - 1 - iy
+        return ix, iy
+
+    quads = [
+        (False, False, 0, 0),    # alto sinistra
+        (True, False, w0, 0),    # alto destra
+        (False, True, 0, h0),    # basso sinistra
+        (True, True, w0, h0),    # basso destra
+    ]
+    new_spawns = []
+    for flip_h, flip_v, ox, oy in quads:
+        for (sx, sy) in spawn_points:
+            ix, iy = _transform(sx, sy, flip_h, flip_v)
+            new_spawns.append([1 + ox + ix, 1 + oy + iy])
+
+    return out, new_spawns
+
+
+def _ensure_quad_connectivity(grid, w0, h0):
+    """Rete di sicurezza per quad_tile_maze: se in futuro venisse aggiunta
+    a MAZES una mappa che (a differenza di tutte quelle attuali, gia'
+    verificate) non garantisse i 4 angoli sempre aperti, una delle 4
+    giunzioni tra quadranti potrebbe restare chiusa da un muro doppio
+    continuo. Qui si controlla, per ciascuna delle 4 giunzioni (alto-sx/
+    alto-dx, basso-sx/basso-dx sulla cucitura verticale; alto-sx/basso-sx,
+    alto-dx/basso-dx su quella orizzontale), se esiste GIA' almeno un
+    punto con pavimento aperto su entrambi i lati; se nessuno esiste, ne
+    scava uno largo 1 cella esattamente a meta' di quella giunzione,
+    cosi' i 4 pezzi restano comunque un'unica mappa raggiungibile."""
+    grid = [list(r) for r in grid]
+
+    def floor_at(x, y):
+        return grid[y][x] == "."
+
+    def carve_if_needed(vertical, fixed, a, b):
+        for i in range(a, b):
+            if vertical:
+                if floor_at(fixed - 1, i) and floor_at(fixed, i):
+                    return
+            else:
+                if floor_at(i, fixed - 1) and floor_at(i, fixed):
+                    return
+        mid = (a + b) // 2
+        if vertical:
+            grid[mid][fixed - 1] = "."
+            grid[mid][fixed] = "."
+        else:
+            grid[fixed - 1][mid] = "."
+            grid[fixed][mid] = "."
+
+    seam_x = 1 + w0   # prima colonna dei quadranti di destra
+    seam_y = 1 + h0   # prima riga dei quadranti in basso
+    carve_if_needed(True, seam_x, 1, 1 + h0)             # cucitura verticale, meta' alta
+    carve_if_needed(True, seam_x, 1 + h0, 1 + 2 * h0)    # cucitura verticale, meta' bassa
+    carve_if_needed(False, seam_y, 1, 1 + w0)            # cucitura orizzontale, meta' sx
+    carve_if_needed(False, seam_y, 1 + w0, 1 + 2 * w0)   # cucitura orizzontale, meta' dx
+
+    return ["".join(r) for r in grid]
+
+
+def pick_random_quad_map():
+    """Come pick_random_maze, ma invece di allargare la mappa scelta con
+    le corsie riflesse (expand_maze), la usa come TASSELLO e la incolla
+    2x2 (quad_tile_maze) per un'area totale x4 (mappa base 39x19 ->
+    gigante 76x36). Stessa identica logica di gioco (flow field, portali,
+    is_wall, ecc: dipendono solo da maze/w/h) - cambia solo la mappa
+    stessa, molto piu' grande. Ritorna un dict con
+    maze/w/h/spawn_points/theme/name pronto da assegnare a una Room,
+    esattamente come pick_random_maze."""
+    m = random.choice(MAZES)
+    rows, spawns = quad_tile_maze(m["maze"], m["spawn_points"])
+    return {
+        "name": m["name"] + " (Gigante x4)",
+        "maze": rows,
+        "w": len(rows[0]),
+        "h": len(rows),
+        "spawn_points": spawns,
+        "theme": m["theme"],
+    }
+
+
 def is_wall(maze, w, h, x, y):
     if x < 0 or y < 0 or y >= h or x >= w:
         return True

@@ -44,7 +44,7 @@ from common import (
     TICK_DT, STATE_BROADCAST_EVERY_N_TICKS, COUNTDOWN_SECONDS, ROUND_SECONDS,
     MAX_PLAYERS, MIN_PLAYERS, NORMAL_SPEED, ASSASSIN_SPEED_MULT,
     COLORS, CHARACTERS, DIRECTIONS, is_wall, hitbox_hit, ROOM_CODE_CHARS, SECONDARY_ONLY_COLORS,
-    pick_random_maze, choose_power_pellet_cells, bfs_path,
+    pick_random_maze, pick_random_quad_map, choose_power_pellet_cells, bfs_path,
     FlowFieldCache, SpatialGrid,
     BONUS_THRESHOLDS, GHOST_SECONDS,
     PELLET_POINTS, POWER_PELLET_POINTS, POWER_PELLET_COUNT,
@@ -534,6 +534,12 @@ class Room:
         # check_win). Selezionabile dall'host in lobby col messaggio
         # "set_mode"; resta impostata anche tra un round e l'altro.
         self.mode = "ffa"
+        # Mappa "gigante" (area x4, vedi pick_random_quad_map in common.py):
+        # di default disattivata, comportamento identico a prima. Se
+        # impostata a True (da collegare a un futuro toggle di lobby,
+        # analogo a "set_mode"), pick_new_map usa la mappa piastrellata
+        # 2x2 invece di quella singola allargata.
+        self.giant_map = False
         self.countdown_left = 0.0
         self.timer_left = 0.0
         self.loop_task = None
@@ -657,7 +663,12 @@ class Room:
         self.pick_new_map()
 
     def pick_new_map(self):
-        map_data = pick_random_maze()
+        # Con giant_map=True si usa la mappa piastrellata 2x2 (area x4,
+        # vedi pick_random_quad_map/quad_tile_maze in common.py) invece
+        # della singola mappa allargata: stesso identico formato dict
+        # (maze/w/h/spawn_points/theme/name), quindi tutto il resto di
+        # questo metodo funziona invariato in entrambi i casi.
+        map_data = pick_random_quad_map() if self.giant_map else pick_random_maze()
         self.maze = map_data["maze"]
         self.maze_w = map_data["w"]
         self.maze_h = map_data["h"]
@@ -671,9 +682,13 @@ class Room:
         self.theme = map_data["theme"]
         self.compute_portals()
         # 10 celle (una per angolo/estremita' della mappa) con un pallino
-        # grosso arancione che vale 10 punti invece di 1.
+        # grosso arancione che vale 10 punti invece di 1. Sulla mappa
+        # gigante (area x4) se ne scelgono 4 volte tante, cosi' la
+        # DENSITA' di power pellet per cella resta identica a quella
+        # delle mappe normali invece di diluirsi sull'area piu' grande.
+        power_pellet_count = POWER_PELLET_COUNT * 4 if self.giant_map else POWER_PELLET_COUNT
         self.power_pellets = set(
-            choose_power_pellet_cells(self.maze, self.maze_w, self.maze_h, POWER_PELLET_COUNT)
+            choose_power_pellet_cells(self.maze, self.maze_w, self.maze_h, power_pellet_count)
         )
         self.reset_pellets()
         self.reset_pellets()
