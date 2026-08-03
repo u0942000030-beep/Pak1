@@ -5196,6 +5196,19 @@ window.addEventListener("keydown", e => {
 });
 
 /* ============================================================
+   SCORCIATOIA DI DEBUG (tasto "J"): porta subito i punti del
+   giocatore a 5000, sbloccando in un colpo solo tutti i bonus a
+   soglia gia' raggiunta con quel punteggio. Il client si limita a
+   inviare la richiesta: e' il SERVER (vedi "debug_maxpoints" in
+   main.py) l'unica autorita' che decide e applica davvero i punti.
+   ============================================================ */
+window.addEventListener("keydown", e => {
+  if (currentScreen !== "game") return;
+  if (e.key !== "j" && e.key !== "J") return;
+  sendMsg({ type: "debug_maxpoints" });
+});
+
+/* ============================================================
    CATENA MINE -> MORTAIO -> BOMBOLONE -> MONGOLFIERA -> BLOB -> BLOB
    VIVO -> MURO DI SPUNZONI -> TESLA LASER -> TRAPPOLA TERRITORIALE ->
    ARBUSTO SPINOSO -> FUNGO ATOMICO -> TESLA OCCULTA -> POZIONE TERREMOTO
@@ -6844,7 +6857,7 @@ function onGameEvent(msg){
       const fez = msg.y*CELL + (fb ? (fb.zOffset||0) : 0);
       const fey = (typeof msg.z === "number" ? msg.z*CELL + (fb ? (fb.yOffset||0) : 0) : (fb ? fb.y : 0.55));
       spawnExplosion(fex, fez, feHex, fey);
-      shockwaves.push({ x: fex, z: fez, color: feHex, start: performance.now(), radiusCells: msg.radius || 1 });
+      shockwaves.push({ x: fex, z: fez, y: fey, color: feHex, start: performance.now(), radiusCells: msg.radius || 1 });
       playFireballExplode();
       if (fb){
         scene.remove(fb.mesh);
@@ -8166,7 +8179,15 @@ function animate(){
     }
     if (!s.group){
       const group = new THREE.Group();
-      group.position.set(s.x, 0, s.z);
+      // FIX bug "colonne sopra i muri": la cupola era sempre ancorata a
+      // y=0 (terra), giusto per bombe/superbomba/nuke che esplodono al
+      // suolo, ma sbagliato per la palla di fuoco della torre dello
+      // stregone che esplode IN QUOTA (vedi case "fireball_end", che ora
+      // passa s.y). Senza questo la cupola partiva da terra ed espandeva
+      // verso l'alto proprio dentro la cella del muro colpito, dando
+      // l'impressione di una colonna che spuntava sopra i muri ad ogni
+      // sparo. Default 0 per gli altri chiamanti che non passano y.
+      group.position.set(s.x, s.y || 0, s.z);
       scene.add(group);
 
       // Guscio semisferico: mezza sfera (phiLength = PI di longitudine
