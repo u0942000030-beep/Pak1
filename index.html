@@ -6655,6 +6655,19 @@ function onGameEvent(msg){
         wz = myRenderZ + lookZ * MUZZLE_CAMERA_DIST;
         const serverWy = (typeof msg.z === "number" ? msg.z : EYE_HEIGHT/CELL) * CELL;
         yOffset = wy - serverWy;
+      } else if (msg.turret || msg.pet) {
+        // Colpo di torretta/robot o di pet: a differenza di un player, il
+        // server manda la quota REALE e ESATTA della canna/muso dello
+        // sparatore (TURRET_BARREL_Z / PET_MUZZLE_Z, non un'approssimazione
+        // come LASER_EYE_HEIGHT), quindi va usata direttamente senza alcuno
+        // scarto. PRIMA questo ramo ricadeva nel caso "player avversario"
+        // qui sotto, che forza SEMPRE wy = EYE_HEIGHT: il colpo nasceva
+        // percio' visivamente all'altezza occhi di un player umano (molto
+        // piu' in alto della canna della torretta o del centro-faccia del
+        // pet, entrambi bassi a terra).
+        wx = msg.x*CELL; wz = msg.y*CELL;
+        wy = (typeof msg.z === "number" ? msg.z : EYE_HEIGHT/CELL) * CELL;
+        yOffset = 0;
       } else {
         wx = msg.x*CELL; wz = msg.y*CELL;
         // Stesso bug/fix del MIO laser (vedi ramo isMyLaser sopra): msg.z

@@ -53,6 +53,7 @@ from common import (
     SPAWN_PROTECT_SECONDS, MIN_SPAWN_DISTANCE, LASER_INTERVAL_SECONDS, LASER_FIRST_DELAY_SECONDS,
     LASER_PROJECTILE_SPEED, LASER_BOUNCE_DISTANCE, MINES_COUNT, SUPERBOMB_COUNT,
     LASER_EYE_HEIGHT, LASER_MAX_PITCH, WALL_TOP_Z, PLAYER_HEAD_Z, PLAYER_FEET_Z, PET_HEAD_Z, PET_FEET_Z,
+    TURRET_BARREL_Z, PET_MUZZLE_Z,
     PLAYER_HITBOX_RADIUS, PET_HITBOX_RADIUS, GOLEM_HITBOX_RADIUS,
     BALLOON_HITBOX_RADIUS, BLOB_HITBOX_RADIUS,
     PORTAL_COOLDOWN_SECONDS, PORTAL_ON_SECONDS, PORTAL_OFF_SECONDS,
@@ -3517,11 +3518,17 @@ class Room:
                 # altezza): resta in grado di colpire i pet nemici sulla
                 # traiettoria come prima dell'introduzione del pitch.
                 "pitch": -1.0,
+                # Quota di partenza reale del proiettile (canna della
+                # torretta/robot, molto piu' bassa degli occhi di un
+                # player): senza questa chiave move_lasers ricadeva sul
+                # fallback LASER_EYE_HEIGHT (pensato per il player) facendo
+                # partire il colpo troppo in alto.
+                "z": TURRET_BARREL_Z,
             }
             self.lasers.append(laser)
             self.push_event({
                 "kind": "laser_fire", "id": laser["id"], "shooter": t["owner"],
-                "x": laser["x"], "y": laser["y"], "dir": dir_name, "turret": True,
+                "x": laser["x"], "y": laser["y"], "z": laser["z"], "dir": dir_name, "turret": True,
             })
 
     # ---- bonus 1200 punti: mortaio (tasto "1") ----
@@ -6965,11 +6972,17 @@ class Room:
                         # in altezza): resta in grado di colpire altri pet
                         # nemici sulla traiettoria come prima.
                         "pitch": -1.0,
+                        # Quota di partenza reale del proiettile (centro
+                        # faccia del pet, basso a terra): senza questa
+                        # chiave move_lasers ricadeva sul fallback
+                        # LASER_EYE_HEIGHT (pensato per il player) facendo
+                        # partire il colpo troppo in alto.
+                        "z": PET_MUZZLE_Z,
                     }
                     self.lasers.append(laser)
                     self.push_event({
                         "kind": "laser_fire", "id": laser["id"], "shooter": pet["owner"],
-                        "x": laser["x"], "y": laser["y"], "dir": dir_name, "pet": True,
+                        "x": laser["x"], "y": laser["y"], "z": laser["z"], "dir": dir_name, "pet": True,
                     })
 
     def check_win(self):

@@ -154,10 +154,19 @@ LASER_MAX_PITCH = 1.45          # radianti (~83 gradi): oltre questo il pitch di
 # QUALSIASI altezza, come se il muro fosse una colonna invisibile alta
 # all'infinito anche mirando ben sopra la sua cima visibile.
 WALL_TOP_Z = 2.0                 # celle: quota della cima del muro, sopra la quale un proiettile lo sorvola libero
-PLAYER_HEAD_Z = 1.75            # celle: quota della testa del player (limite superiore della sua hitbox verticale)
-PLAYER_FEET_Z = 0.15            # celle: quota dei piedi del player (limite inferiore della sua hitbox verticale)
+PLAYER_HEAD_Z = 0.53             # celle: quota della testa del player (limite superiore della sua hitbox verticale). PRIMA era 1.75, quasi 3x l'altezza visiva reale del modello Pac-Man (sfera raggio 0.34 centrata a y=0.62 world units, cioe' 0.14-0.48 celle): un colpo che sembrava passare ben sopra la testa uccideva comunque. Ora allineata al modello + piccolo margine di tolleranza (0.05 celle) per non essere frustrante al pixel.
+PLAYER_FEET_Z = 0.09              # celle: quota dei piedi del player (limite inferiore della sua hitbox verticale). PRIMA era 0.15; ora allineata al bordo inferiore reale del modello (0.14 celle) meno lo stesso margine di tolleranza.
 PET_HEAD_Z = 0.55               # celle: quota massima del pet (basso, a terra)
 PET_FEET_Z = 0.0                # celle: quota minima del pet (a livello pavimento)
+
+# ---- quota di partenza dei proiettili per sparatori NON player (fix bug:
+# torretta/robot e pet sparavano visivamente troppo in alto perche' sia il
+# server (evento laser_fire senza "z") sia il client (che forzava sempre
+# EYE_HEIGHT per gli spari altrui) ricadevano sulla quota occhi di un
+# player umano, LASER_EYE_HEIGHT, invece che sulla quota reale della canna/
+# muso dello sparatore) ----
+TURRET_BARREL_Z = 0.5            # celle: quota della canna di torretta/robot (piazzati a terra, molto piu' bassi degli occhi di un player)
+PET_MUZZLE_Z = (PET_HEAD_Z + PET_FEET_Z) / 2  # celle: quota del centro-faccia del pet, da cui parte visivamente il suo colpo
 # ---- hitbox precisa di player e pet (laser/missili) ----
 # Il vecchio sistema considerava un colpo "a segno" se il proiettile
 # entrava nella STESSA CELLA INTERA occupata dal bersaglio (int(floor(x)),
@@ -173,7 +182,7 @@ PET_FEET_Z = 0.0                # celle: quota minima del pet (a livello pavimen
 # centro del bersaglio e' entro il raggio della sua hitbox (vedi
 # hitbox_hit qui sotto). Il player e' un personaggio "in piedi" quindi ha
 # un ingombro maggiore del pet, piccolo e basso a terra.
-PLAYER_HITBOX_RADIUS = 0.35   # celle: raggio della hitbox del player (giocatore)
+PLAYER_HITBOX_RADIUS = 0.20   # celle: raggio della hitbox del player (giocatore). PRIMA era 0.35 (0.7 world units), oltre il doppio del raggio visivo reale del modello Pac-Man (sfera di raggio 0.34 world units = 0.17 celle): un colpo che sembrava passare a fianco del personaggio colpiva comunque. Ora allineato al modello + piccolo margine (0.03 celle).
 PET_HITBOX_RADIUS = 0.28      # celle: raggio della hitbox del pet, piu' piccolo del player
 # La sonda (bonus 3600 punti) si muove per celle intere sulla griglia
 # autoritativa (g["x"]/g["y"] sono interi, vedi try_place_golem/
