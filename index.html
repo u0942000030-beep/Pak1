@@ -142,6 +142,12 @@
     <ul id="lobbyList"></ul>
     <label>Scegli colore (primario + dettaglio opzionale)</label>
     <div class="color-grid" id="colorGrid"></div>
+    <label id="modeRow" class="hidden" style="display:flex;align-items:center;gap:6px;margin-top:8px;">
+      <input type="checkbox" id="chkMode2v2"> Modalit\u00e0 2v2 (squadre)
+    </label>
+    <label id="giantMapRow" class="hidden" style="display:flex;align-items:center;gap:6px;margin-top:8px;">
+      <input type="checkbox" id="chkGiantMap"> Mappa gigante (x4)
+    </label>
     <button id="btnStart" class="btn-main">Avvia partita</button>
     <div id="lobbyHint" style="font-size:11px;color:#c8a898;margin-top:10px;"></div>
   </div>
@@ -591,12 +597,20 @@ function onLobbyState(msg){
     list.appendChild(li);
   });
   document.getElementById("btnStart").style.display = iAmHost ? "block" : "none";
+  const modeRow = document.getElementById("modeRow");
+  modeRow.classList.toggle("hidden", !iAmHost);
+  document.getElementById("chkMode2v2").checked = (msg.mode === "2v2");
+  const giantMapRow = document.getElementById("giantMapRow");
+  giantMapRow.classList.toggle("hidden", !iAmHost);
+  document.getElementById("chkGiantMap").checked = !!msg.giant_map;
   document.getElementById("lobbyHint").textContent = iAmHost
     ? "Sei l'host: premi Avvia quando siete pronti."
     : "In attesa che l'host avvii la partita\u2026";
   renderColorGrid(msg.players);
 }
 document.getElementById("btnStart").addEventListener("click", () => sendMsg({ type:"start_game" }));
+document.getElementById("chkMode2v2").addEventListener("change", (e) => sendMsg({ type:"set_mode", mode: e.target.checked ? "2v2" : "ffa" }));
+document.getElementById("chkGiantMap").addEventListener("change", (e) => sendMsg({ type:"set_giant_map", giant_map: e.target.checked }));
 
 /* =========================================================================
    AUDIO (sintetizzato, nessun file esterno)

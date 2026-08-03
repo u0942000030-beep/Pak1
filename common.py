@@ -251,7 +251,7 @@ TURRET_FIRE_INTERVAL_SECONDS = LASER_INTERVAL_SECONDS  # stessa cadenza di fuoco
 # Raggio d'azione della torretta: traccia e spara SOLO ai nemici entro
 # questa distanza (in caselle, distanza Manhattan). Fuori raggio la
 # torretta resta in attesa e riprende a sparare appena qualcuno rientra.
-TURRET_RANGE_CELLS = 10
+TURRET_RANGE_CELLS = 4
 # Percentuale di punti che chi uccide GUADAGNA come bonus, calcolata sul
 # totale della vittima (10%): NON viene piu' sottratta alla vittima, che
 # conserva sempre tutti i suoi punti - e' un premio per il killer, non un

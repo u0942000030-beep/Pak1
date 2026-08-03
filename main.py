@@ -408,6 +408,29 @@ class Player:
         # Uccisioni fatte in questo round: ogni 2 kill si guadagna una vita extra.
         self.kills = 0
 
+    def hit_center(self):
+        """BUGFIX hitbox: centro VISIVO reale del player (fx+0.5, fy+0.5,
+        in celle), da usare in OGNI controllo hitbox contro questo player
+        (laser/missile/palla di fuoco) al posto di "self.x + 0.5,
+        self.y + 0.5". Prima i controlli usavano direttamente self.x/
+        self.y, che sono la griglia interna INTERA (la cella di
+        PARTENZA del tragitto corrente) e restano quella cella finche'
+        self.move_accum non raggiunge 1.0 e si scatta alla successiva -
+        ignorando quindi il vero avanzamento continuo verso la cella
+        successiva. to_public() manda invece al client la posizione
+        interpolata (self.x + dx*move_accum), che e' quella che il
+        client disegna DAVVERO sullo schermo: un player e' quasi sempre
+        in movimento, quindi il punto controllato dal server poteva
+        restare indietro fino a 1 CELLA intera rispetto a dove si vede
+        il personaggio. Con PLAYER_HITBOX_RADIUS di appena 0.20 celle,
+        bastava un piccolo avanzamento per far "passare attraverso"
+        ogni colpo che sembrava visivamente centrato. Stessa identica
+        formula di to_public (duplicata qui apposta, invece di farla
+        richiamare da to_public, per non toccare in alcun modo cosa
+        viene mandato al client)."""
+        dx, dy = DIRECTIONS.get(self.direction, (0, 0)) if self.direction else (0, 0)
+        return self.x + dx * self.move_accum + 0.5, self.y + dy * self.move_accum + 0.5
+
     def to_public(self):
         # Posizione "continua": la griglia interna (self.x/self.y, interi)
         # resta l'autorita' per collisioni/regole, ma al client mandiamo
@@ -995,6 +1018,7 @@ class Room:
             "min_players": MIN_PLAYERS,
             "max_players": MAX_PLAYERS,
             "mode": self.mode,
+            "giant_map": self.giant_map,
         })
 
     def assign_teams(self):
@@ -2415,14 +2439,23 @@ class Room:
         # in diagonale verticale.
         vz = math.sin(pitch_val) * LASER_PROJECTILE_SPEED
         horiz_scale = math.cos(pitch_val)
+        origin_x, origin_y = shooter.hit_center()
         laser = {
             "id": uuid.uuid4().hex[:8],
             "owner": shooter.id,
-            # Posizione continua (float), a differenza delle celle intere
-            # usate da molte altre entita' del gioco: parte dal CENTRO
-            # della cella dello sparatore cosi' il percorso in diagonale
-            # e' visivamente corretto fin dal primo istante.
-            "x": shooter.x + 0.5, "y": shooter.y + 0.5,
+            # BUGFIX: prima partiva da "shooter.x + 0.5, shooter.y + 0.5"
+            # (la cella INTERA di partenza dello sparatore, ferma finche'
+            # move_accum non arriva a 1.0), mentre la MIRA (dx, dy) arriva
+            # dalla telecamera del client, che segue invece la posizione
+            # REALE e continua dello sparatore (vedi Player.hit_center).
+            # Uno sparatore in movimento (praticamente sempre, essendo
+            # Pac-Man) mirava quindi correttamente al bersaglio dalla sua
+            # posizione vera, ma il colpo partiva fisicamente fino a 1
+            # CELLA indietro rispetto a quel punto: l'intera traiettoria
+            # risultava disallineata e mancava bersagli anche FERMI e
+            # perfettamente centrati nel mirino. Ora parte dallo stesso
+            # centro visivo reale (hit_center) usato per mirare.
+            "x": origin_x, "y": origin_y,
             "dx": dx, "dy": dy,
             "bounce_left": None,  # None finche' non ha ancora rimbalzato
             "pitch": pitch_val,
@@ -2611,7 +2644,7 @@ class Room:
                             q for q in self.players.values()
                             if q.alive and self.is_enemy_ids(q.id, lz["owner"])
                             and q.ghost_left <= 0 and q.prot_left <= 0
-                            and hitbox_hit(lz["x"], lz["y"], q.x + 0.5, q.y + 0.5, PLAYER_HITBOX_RADIUS)
+                            and hitbox_hit(lz["x"], lz["y"], *q.hit_center(), PLAYER_HITBOX_RADIUS)
                             and z_hit(lzz, PLAYER_FEET_Z, PLAYER_HEAD_Z)
                         ]
                         for v in victims:
@@ -2643,7 +2676,7 @@ class Room:
                     q for q in self.players.values()
                     if q.alive and self.is_enemy_ids(q.id, lz["owner"])
                     and q.ghost_left <= 0 and q.prot_left <= 0
-                    and hitbox_hit(lz["x"], lz["y"], q.x + 0.5, q.y + 0.5, PLAYER_HITBOX_RADIUS)
+                    and hitbox_hit(lz["x"], lz["y"], *q.hit_center(), PLAYER_HITBOX_RADIUS)
                     and z_hit(lzz, PLAYER_FEET_Z, PLAYER_HEAD_Z)
                 ]
                 if victims:
@@ -2678,7 +2711,7 @@ class Room:
                 pet_victims = [
                     pet for pet in self.pets
                     if self.is_enemy_ids(pet["owner"], lz["owner"])
-                    and hitbox_hit(lz["x"], lz["y"], pet["x"] + 0.5, pet["y"] + 0.5, PET_HITBOX_RADIUS)
+                    and hitbox_hit(lz["x"], lz["y"], *self._pet_hit_center(pet), PET_HITBOX_RADIUS)
                     and z_hit(lzz, PET_FEET_Z, PET_HEAD_Z)
                 ]
                 if pet_victims:
@@ -2732,7 +2765,7 @@ class Room:
                 blob_victims = [
                     blob for blob in self.blobs
                     if self.is_enemy_ids(blob["owner"], lz["owner"])
-                    and hitbox_hit(lz["x"], lz["y"], blob["x"] + 0.5, blob["y"] + 0.5, BLOB_HITBOX_RADIUS)
+                    and hitbox_hit(lz["x"], lz["y"], *self._blob_hit_center(blob), BLOB_HITBOX_RADIUS)
                 ]
                 if blob_victims:
                     for blob in blob_victims:
@@ -2884,6 +2917,21 @@ class Room:
             "kind": "pet_destroyed", "id": pet["id"], "owner": pet["owner"],
             "x": pet["x"], "y": pet["y"], "cause": cause, "by": by,
         })
+
+    def _pet_hit_center(self, pt):
+        """BUGFIX hitbox (vedi Player.hit_center): stessa identica
+        interpolazione di pet_public (duplicata qui apposta, per non
+        toccare cosa viene mandato al client), da usare in OGNI
+        controllo hitbox contro questo pet invece di "pt['x']+0.5,
+        pt['y']+0.5", che ignorava il suo avanzamento reale
+        (move_accum) verso la prossima cella del percorso."""
+        dx = dy = 0
+        path = pt.get("path")
+        if path:
+            nx, ny = path[0]
+            dx, dy = nx - pt["x"], ny - pt["y"]
+        accum = pt.get("move_accum", 0.0)
+        return pt["x"] + dx * accum + 0.5, pt["y"] + dy * accum + 0.5
 
     def pet_public(self, pt):
         """Come Player.to_public: la griglia interna (pt['x']/pt['y'],
@@ -3242,7 +3290,7 @@ class Room:
                         if q.alive and not q.is_assassin
                         and q.ghost_left <= 0 and q.prot_left <= 0
                         and self.is_enemy_ids(q.id, mz["owner"])
-                        and hitbox_hit(nx, ny, q.x + 0.5, q.y + 0.5, PLAYER_HITBOX_RADIUS)
+                        and hitbox_hit(nx, ny, *q.hit_center(), PLAYER_HITBOX_RADIUS)
                     ]
                     if victims:
                         armored = [v for v in victims if v.armor_active]
@@ -3265,7 +3313,7 @@ class Room:
                     pet_victims = [
                         pet for pet in self.pets
                         if self.is_enemy_ids(pet["owner"], mz["owner"])
-                        and hitbox_hit(nx, ny, pet["x"] + 0.5, pet["y"] + 0.5, PET_HITBOX_RADIUS)
+                        and hitbox_hit(nx, ny, *self._pet_hit_center(pet), PET_HITBOX_RADIUS)
                     ]
                     if pet_victims:
                         for pet in pet_victims:
@@ -3484,7 +3532,7 @@ class Room:
             if evolved:
                 self.update_robot_wander(t)
             # Tracciamento continuo: ad OGNI tick la torretta individua il
-            # nemico vivo piu' vicino e, se e' entro TURRET_RANGE_CELLS (10
+            # nemico vivo piu' vicino e, se e' entro TURRET_RANGE_CELLS (4
             # caselle, distanza Manhattan), gli punta contro la canna. La
             # mira (t["aim"]) finisce nello snapshot cosi' il client la
             # disegna che ruota verso il bersaglio in tempo reale.
@@ -4111,6 +4159,20 @@ class Room:
             "kind": "blob_place", "id": blob["id"], "player": player.id,
             "x": px, "y": py,
         })
+
+    def _blob_hit_center(self, b):
+        """BUGFIX hitbox (vedi Player.hit_center): stessa identica
+        interpolazione di blob_public (duplicata qui apposta, per non
+        toccare cosa viene mandato al client), da usare in OGNI
+        controllo hitbox contro questo blob invece di "b['x']+0.5,
+        b['y']+0.5", che ignorava il suo avanzamento reale
+        (move_accum) mentre vaga lungo il proprio percorso."""
+        dx = dy = 0
+        if b.get("alive") and b.get("wander_path"):
+            nx, ny = b["wander_path"][0]
+            dx, dy = nx - b["x"], ny - b["y"]
+        accum = b.get("move_accum", 0.0)
+        return b["x"] + dx * accum + 0.5, b["y"] + dy * accum + 0.5
 
     def blob_public(self, b):
         # Come turret_public/pet_public: se il blob e' "vivo" (bonus 2000
@@ -6126,10 +6188,19 @@ class Room:
             pitch_val = -LASER_MAX_PITCH
         vz = math.sin(pitch_val) * WIZARD_TOWER_FIREBALL_SPEED
         horiz_scale = math.cos(pitch_val)
+        origin_x, origin_y = shooter.hit_center()
         fireball = {
             "id": uuid.uuid4().hex[:8],
             "owner": shooter.id,
-            "x": shooter.x + 0.5, "y": shooter.y + 0.5,
+            # Stessa correzione di spawn_laser (vedi commento li'): usa il
+            # centro visivo reale dello sparatore invece della sua cella
+            # ferma. Chi e' in cima alla propria torre resta comunque
+            # sempre FERMO (vedi update_movement/on_wizard_tower), quindi
+            # qui in pratica coincide sempre col vecchio calcolo - ma
+            # tenerlo coerente con spawn_laser evita di reintrodurre lo
+            # stesso bug se in futuro la torre permettesse di sparare in
+            # movimento.
+            "x": origin_x, "y": origin_y,
             "dx": dx, "dy": dy,
             "pitch": pitch_val,
             "z": WIZARD_TOWER_HEIGHT_CELLS,
@@ -6208,7 +6279,7 @@ class Room:
                     q for q in self.players.values()
                     if q.alive and self.is_enemy_ids(q.id, fb["owner"])
                     and q.ghost_left <= 0 and q.prot_left <= 0
-                    and hitbox_hit(fb["x"], fb["y"], q.x + 0.5, q.y + 0.5, PLAYER_HITBOX_RADIUS)
+                    and hitbox_hit(fb["x"], fb["y"], *q.hit_center(), PLAYER_HITBOX_RADIUS)
                 ]
                 if victims:
                     destroyed = True
@@ -7555,6 +7626,19 @@ async def handle_client(ws):
                 else:
                     for p in room.players.values():
                         p.team = None
+                room.touch_lobby()
+                await room.broadcast_lobby()
+
+            elif mtype == "set_giant_map":
+                # L'host attiva/disattiva la mappa gigante (checkbox in
+                # lobby): area x4 tramite tiling 2x2 della stessa mappa
+                # (vedi pick_random_quad_map in common.py). Stesso
+                # identico pattern di set_mode: solo l'host, solo in LOBBY.
+                if not room or not player or not player.host:
+                    continue
+                if room.state != "LOBBY":
+                    continue
+                room.giant_map = bool(msg.get("giant_map"))
                 room.touch_lobby()
                 await room.broadcast_lobby()
 
