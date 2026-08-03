@@ -52,7 +52,7 @@ from common import (
     SUPER_ASSASSIN_DURATION_SECONDS, LASER_RANGE_CELLS,
     SPAWN_PROTECT_SECONDS, MIN_SPAWN_DISTANCE, LASER_INTERVAL_SECONDS, LASER_FIRST_DELAY_SECONDS,
     LASER_PROJECTILE_SPEED, LASER_BOUNCE_DISTANCE, MINES_COUNT, SUPERBOMB_COUNT,
-    LASER_EYE_HEIGHT, LASER_MAX_PITCH, WALL_TOP_Z, PLAYER_HEAD_Z, PLAYER_FEET_Z, PET_HEAD_Z, PET_FEET_Z,
+    LASER_EYE_HEIGHT, LASER_MAX_PITCH, WALL_TOP_Z, FLOOR_Z, PLAYER_HEAD_Z, PLAYER_FEET_Z, PET_HEAD_Z, PET_FEET_Z,
     TURRET_BARREL_Z, PET_MUZZLE_Z,
     PLAYER_HITBOX_RADIUS, PET_HITBOX_RADIUS, GOLEM_HITBOX_RADIUS,
     BALLOON_HITBOX_RADIUS, BLOB_HITBOX_RADIUS,
@@ -2541,6 +2541,15 @@ class Room:
                 nx, ny = lz["x"] + lz["dx"] * micro_h, lz["y"] + lz["dy"] * micro_h
                 nz = lz.get("z", LASER_EYE_HEIGHT) + micro_z
                 ncx, ncy = int(math.floor(nx)), int(math.floor(ny))
+                # BUGFIX: stessa lacuna di move_fireballs (vedi commento li'):
+                # senza limite inferiore, un laser mirato molto in basso
+                # scendeva sotto il pavimento all'infinito invece di
+                # fermarsi contro di esso.
+                if nz <= FLOOR_Z:
+                    lz["x"], lz["y"], lz["z"] = nx, ny, FLOOR_Z
+                    destroyed = True
+                    destroy_reason = "wall"
+                    break
                 if nz < WALL_TOP_Z and is_wall(self.maze, self.maze_w, self.maze_h, ncx, ncy):
                     shooter = self.players.get(lz["owner"])
                     can_bounce = (
@@ -6262,6 +6271,19 @@ class Room:
                 nx, ny = fb["x"] + fb["dx"] * micro_h, fb["y"] + fb["dy"] * micro_h
                 nz = fb.get("z", WIZARD_TOWER_HEIGHT_CELLS) + micro_z
                 ncx, ncy = int(math.floor(nx)), int(math.floor(ny))
+                # BUGFIX: senza questo controllo un colpo mirato abbastanza
+                # in basso (pitch negativo) scendeva sotto zero e continuava
+                # a scendere all'infinito, passando attraverso il pavimento
+                # invece di esplodervi contro: risultato, NESSUN danno ad
+                # area quando si mirava al pavimento sotto un nemico, perche'
+                # explode_fireball non veniva mai chiamata. Il pavimento
+                # ferma il colpo esattamente come farebbe un muro sotto i
+                # piedi, con danno ad area come qualunque altro impatto.
+                if nz <= FLOOR_Z:
+                    fb["x"], fb["y"], fb["z"] = nx, ny, FLOOR_Z
+                    destroyed = True
+                    destroy_reason = "floor"
+                    break
                 if nz < WALL_TOP_Z and is_wall(self.maze, self.maze_w, self.maze_h, ncx, ncy):
                     destroyed = True
                     destroy_reason = "wall"
