@@ -7625,6 +7625,19 @@ async def handle_client(ws):
                     measured = max(0.0, min(measured, 1.0))
                     player.rtt = 0.7 * player.rtt + 0.3 * measured
 
+            elif mtype == "debug_maxpoints":
+                # Scorciatoia di debug: pressione del tasto "J" lato client.
+                # Porta i punti del giocatore a 5000 in un colpo solo e
+                # riscatta subito tutti i bonus le cui soglie sono state
+                # superate (stessa logica di check_bonuses usata per i
+                # pallini), cosi' da poter testare rapidamente i bonus a
+                # soglie alte senza dover giocare una partita intera.
+                if not room or not player:
+                    continue
+                if player.points < 5000:
+                    player.points = 5000
+                room.check_bonuses(player)
+
             elif mtype == "place_mine":
                 # Bonus 200 punti: pressione del tasto "1" lato client.
                 # Il server resta l'autorita' su quante mine restano
