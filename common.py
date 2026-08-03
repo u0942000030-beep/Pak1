@@ -143,7 +143,7 @@ LASER_BOUNCE_DISTANCE = 12     # celle percorribili dopo il primo rimbalzo su un
 # derivata dalla stessa velocita' del proiettile (LASER_PROJECTILE_SPEED)
 # scomposta secondo l'angolo di mira, cosi' l'angolo percepito a schermo
 # coincide esattamente con quello usato per le collisioni lato server.
-LASER_EYE_HEIGHT = 1.6          # celle: altezza degli occhi/canna dello sparatore, quota di partenza del proiettile (asse Z)
+LASER_EYE_HEIGHT = 0.5          # celle: altezza degli occhi/canna dello sparatore, quota di partenza del proiettile (asse Z). BUGFIX: prima era 1.6, un residuo di quando PLAYER_HEAD_Z era ancora 1.75 (vedi commento su PLAYER_HEAD_Z). Da quando PLAYER_HEAD_Z e' stato stretto a 0.53 per allinearlo al modello visivo, un colpo sparato dritto (pitch=0) restava fisso a Z=1.6 per tutta la traiettoria, ben sopra il limite massimo (0.53) della hitbox verticale di QUALSIASI bersaglio: il laser passava sempre sopra la testa del nemico e non colpiva mai, a meno di mirare molto in basso col pitch. Ora parte da una quota dentro la fascia PLAYER_FEET_Z..PLAYER_HEAD_Z, stessa logica gia' usata per TURRET_BARREL_Z.
 LASER_MAX_PITCH = 1.45          # radianti (~83 gradi): oltre questo il pitch di mira viene comunque limitato, per evitare traiettorie quasi verticali degeneri
 # Altezza reale (asse Z, in celle) della cima dei muri: DEVE combaciare con
 # WALL_TOTAL_H nel client (index.html), calcolata li' come
