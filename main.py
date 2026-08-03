@@ -44,7 +44,7 @@ from common import (
     TICK_DT, STATE_BROADCAST_EVERY_N_TICKS, COUNTDOWN_SECONDS, ROUND_SECONDS,
     MAX_PLAYERS, MIN_PLAYERS, NORMAL_SPEED, ASSASSIN_SPEED_MULT,
     COLORS, CHARACTERS, DIRECTIONS, is_wall, hitbox_hit, ROOM_CODE_CHARS, SECONDARY_ONLY_COLORS,
-    pick_random_maze, choose_power_pellet_cells, bfs_path,
+    pick_random_maze_x4 as pick_random_maze, choose_power_pellet_cells, bfs_path,
     FlowFieldCache, SpatialGrid,
     BONUS_THRESHOLDS, GHOST_SECONDS,
     PELLET_POINTS, POWER_PELLET_POINTS, POWER_PELLET_COUNT,
