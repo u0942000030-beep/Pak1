@@ -153,7 +153,7 @@ LASER_MAX_PITCH = 1.45          # radianti (~83 gradi): oltre questo il pitch di
 # mancava del tutto, quindi qualunque cella-muro fermava il laser a
 # QUALSIASI altezza, come se il muro fosse una colonna invisibile alta
 # all'infinito anche mirando ben sopra la sua cima visibile.
-WALL_TOP_Z = 2.0                 # celle: quota della cima del muro, sopra la quale un proiettile lo sorvola libero
+WALL_TOP_Z = 1.0                 # celle: quota della cima del muro, sopra la quale un proiettile lo sorvola libero. BUGFIX: prima era 2.0, confuso con WALL_TOTAL_H del client (2.0 world units) senza convertirlo in "celle" (world/CELL, CELL=2): il server trattava quindi i muri come alti il DOPPIO di quanto sono visivamente (4.0 world units invece di 2.0), bloccando anche colpi che dal punto di vista del giocatore volavano chiaramente sopra la cima del muro. Ora 1.0 celle = 2.0 world units = WALL_TOTAL_H reale.
 PLAYER_HEAD_Z = 0.53             # celle: quota della testa del player (limite superiore della sua hitbox verticale). PRIMA era 1.75, quasi 3x l'altezza visiva reale del modello Pac-Man (sfera raggio 0.34 centrata a y=0.62 world units, cioe' 0.14-0.48 celle): un colpo che sembrava passare ben sopra la testa uccideva comunque. Ora allineata al modello + piccolo margine di tolleranza (0.05 celle) per non essere frustrante al pixel.
 PLAYER_FEET_Z = 0.09              # celle: quota dei piedi del player (limite inferiore della sua hitbox verticale). PRIMA era 0.15; ora allineata al bordo inferiore reale del modello (0.14 celle) meno lo stesso margine di tolleranza.
 PET_HEAD_Z = 0.55               # celle: quota massima del pet (basso, a terra)
