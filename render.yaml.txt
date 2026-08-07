@@ -1,0 +1,38 @@
+# render.yaml - Blueprint per il deploy su Render.
+#
+# Definisce DUE servizi:
+#   1) robot-arena-backend  -> Web Service Python, unico processo
+#      (server.py) che parla sia il protocollo garage che quello
+#      arena sulla stessa connessione WebSocket, con un unico DB
+#      SQLite su un Persistent Disk (sopravvive ai redeploy).
+#   2) robot-arena-client   -> Static Site che serve garage.html e
+#      arena.html (nessun backend, solo file statici).
+#
+# Uso: da dashboard Render -> "New +" -> "Blueprint", punta al repo
+# che contiene questo file. Render legge render.yaml e crea entrambi
+# i servizi in automatico.
+
+services:
+  - type: web
+    name: robot-arena-backend
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python3 server.py
+    envVars:
+      - key: DB_PATH
+        value: /var/data/robot_arena.db
+    disk:
+      name: robot-arena-data
+      mountPath: /var/data
+      sizeGB: 1
+
+  - type: web
+    name: robot-arena-client
+    runtime: static
+    buildCommand: "true"
+    staticPublishPath: .
+    routes:
+      - type: rewrite
+        source: /
+        destination: /garage.html

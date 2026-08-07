@@ -1,0 +1,836 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>ROBOT ARENA // OFFICINA</title>
+<style>
+  :root{
+    --bg:#05030a; --panel:#0c0816; --panel2:#0f0a1c; --line:#2a1a4a;
+    --accent:#a24bff; --accent-glow:#e3c6ff; --data:#4bd6ff;
+    --text:#d8cbe8; --dim:#8a7aa8; --danger:#ff5a4d; --ok:#7dffa8; --warn:#ffb35c;
+  }
+  html,body{ margin:0; height:100%; background:var(--bg); overflow:hidden;
+    font-family:'Courier New', monospace; color:var(--text); }
+  *{ box-sizing:border-box; }
+  ::-webkit-scrollbar{ width:6px; }
+  ::-webkit-scrollbar-thumb{ background:var(--line); border-radius:3px; }
+
+  .hidden{ display:none !important; }
+
+  /* ---------- grid di sfondo (blueprint) ---------- */
+  #bgGrid{ position:fixed; inset:0; z-index:0; pointer-events:none;
+    background-image:
+      linear-gradient(rgba(162,75,255,0.06) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(162,75,255,0.06) 1px, transparent 1px);
+    background-size:34px 34px; }
+
+  /* ---------- schermata AUTH ---------- */
+  #authScreen{ position:fixed; inset:0; z-index:10; display:flex; align-items:center;
+    justify-content:center; background:radial-gradient(ellipse at center, #140a26 0%, #05030a 75%); }
+  .authPanel{ width:340px; background:var(--panel); border:1px solid var(--line); border-radius:6px;
+    padding:26px 24px; box-shadow:0 0 40px rgba(162,75,255,0.12); }
+  .eyebrow{ font-size:10px; letter-spacing:3px; color:var(--dim); text-transform:uppercase; margin-bottom:4px; }
+  .authPanel h1{ font-size:17px; letter-spacing:2px; color:var(--accent-glow); margin:0 0 18px;
+    text-transform:uppercase; text-shadow:0 0 12px rgba(162,75,255,0.5); }
+  .authPanel label{ display:block; font-size:11px; color:var(--dim); margin:12px 0 4px; letter-spacing:1px; }
+  .authPanel input{ width:100%; background:#140a26; border:1px solid var(--line); color:var(--text);
+    padding:9px 10px; font-family:inherit; font-size:13px; border-radius:3px; }
+  .authPanel input:focus{ outline:none; border-color:var(--accent); }
+  .tabs{ display:flex; gap:6px; margin-top:4px; }
+  .tabs button{ flex:1; background:#140a26; border:1px solid var(--line); color:var(--dim);
+    padding:7px 0; font-family:inherit; font-size:11px; letter-spacing:1px; cursor:pointer; border-radius:3px; }
+  .tabs button.active{ background:var(--accent); color:#0a0212; border-color:var(--accent); font-weight:bold; }
+  .btnMain{ width:100%; margin-top:18px; padding:11px 0; background:var(--accent); color:#0a0212;
+    border:none; border-radius:3px; font-family:inherit; font-weight:bold; font-size:13px; letter-spacing:1px;
+    cursor:pointer; text-transform:uppercase; }
+  .btnMain:hover{ filter:brightness(1.15); }
+  .btnMain:disabled{ opacity:0.4; cursor:default; }
+  .authErr{ color:var(--danger); font-size:11px; margin-top:10px; min-height:14px; }
+  .serverRow{ font-size:10px; color:var(--dim); margin-top:16px; }
+  .serverRow input{ margin-top:4px; background:#0a0518; font-size:11px; padding:6px 8px; }
+
+  /* ---------- schermata GARAGE ---------- */
+  #garageScreen{ position:fixed; inset:0; z-index:5; display:flex; }
+
+  #viewport{ position:relative; flex:1 1 60%; min-width:0; }
+  #viewport canvas{ display:block; width:100%; height:100%; }
+
+  #topBar{ position:absolute; top:0; left:0; right:0; display:flex; align-items:center;
+    justify-content:space-between; padding:14px 20px; z-index:2; pointer-events:none; }
+  #topBar .brand{ font-size:12px; letter-spacing:3px; color:var(--accent-glow); text-transform:uppercase;
+    text-shadow:0 0 10px rgba(162,75,255,0.6); }
+  #topBar .brand small{ display:block; font-size:9px; letter-spacing:2px; color:var(--dim); margin-top:2px; }
+  #topBar .userBox{ display:flex; align-items:center; gap:10px; pointer-events:auto; }
+  #topBar .userBox span{ font-size:11px; color:var(--dim); }
+  #logoutBtn{ background:transparent; border:1px solid var(--line); color:var(--dim); font-family:inherit;
+    font-size:10px; letter-spacing:1px; padding:6px 10px; border-radius:3px; cursor:pointer; }
+  #logoutBtn:hover{ border-color:var(--danger); color:var(--danger); }
+
+  #robotStrip{ position:absolute; left:20px; bottom:20px; display:flex; gap:8px; z-index:2; flex-wrap:wrap; max-width:calc(100% - 40px); }
+  .robotChip{ background:rgba(12,8,22,0.85); border:1px solid var(--line); color:var(--dim); font-family:inherit;
+    font-size:10px; padding:7px 12px; border-radius:3px; cursor:pointer; letter-spacing:0.5px; white-space:nowrap; }
+  .robotChip.active{ border-color:var(--accent); color:var(--accent-glow); box-shadow:0 0 10px rgba(162,75,255,0.3); }
+  .robotChip.newChip{ color:var(--ok); border-color:#1a4a2a; }
+
+  #sidePanel{ flex:0 0 380px; max-width:42vw; background:var(--panel); border-left:1px solid var(--line);
+    display:flex; flex-direction:column; z-index:2; overflow:hidden; }
+
+  #nameRow{ padding:16px 16px 10px; border-bottom:1px solid var(--line); }
+  #nameRow .eyebrow{ margin-bottom:6px; }
+  #robotNameInput{ width:100%; background:#140a26; border:1px solid var(--line); color:var(--text);
+    padding:9px 10px; font-family:inherit; font-size:13px; border-radius:3px; letter-spacing:0.5px; }
+  #robotNameInput:focus{ outline:none; border-color:var(--accent); }
+
+  #slotTabs{ display:flex; border-bottom:1px solid var(--line); flex-shrink:0; }
+  #slotTabs button{ flex:1; background:var(--panel2); border:none; border-right:1px solid var(--line);
+    color:var(--dim); font-family:inherit; font-size:9px; letter-spacing:1px; padding:10px 2px; cursor:pointer;
+    text-transform:uppercase; }
+  #slotTabs button:last-child{ border-right:none; }
+  #slotTabs button.active{ background:var(--accent); color:#0a0212; font-weight:bold; }
+
+  #pieceList{ flex:1 1 auto; overflow-y:auto; padding:12px; min-height:0; }
+  .pieceCard{ background:#0f0a1c; border:1px solid var(--line); border-radius:4px; padding:10px 12px;
+    margin-bottom:8px; cursor:pointer; transition:border-color .1s; }
+  .pieceCard:hover{ border-color:#4a2a7a; }
+  .pieceCard.selected{ border-color:var(--accent); box-shadow:0 0 12px rgba(162,75,255,0.25); background:#160b2c; }
+  .pieceCard .pName{ font-size:12px; color:var(--text); letter-spacing:0.5px; display:flex; justify-content:space-between; }
+  .pieceCard .pName .check{ color:var(--accent-glow); }
+  .pieceCard .pStats{ font-size:10px; color:var(--data); margin-top:5px; letter-spacing:0.5px; }
+  .pieceCard .pCost{ font-size:9px; color:var(--dim); margin-top:3px; }
+  .slotHint{ font-size:10px; color:var(--dim); padding:0 2px 10px; letter-spacing:0.5px; }
+
+  #statsReadout{ flex-shrink:0; border-top:1px solid var(--line); padding:12px 16px; background:var(--panel2); }
+  #statsReadout .eyebrow{ margin-bottom:8px; }
+  .statGrid{ display:grid; grid-template-columns:1fr 1fr; gap:6px 14px; font-size:11px; }
+  .statGrid .k{ color:var(--dim); }
+  .statGrid .v{ color:var(--data); text-align:right; letter-spacing:0.5px; }
+  #weaponReadout{ margin-top:8px; font-size:10px; color:var(--dim); line-height:1.6; }
+  #weaponReadout b{ color:var(--accent-glow); }
+
+  #actionRow{ display:flex; gap:8px; padding:14px 16px; border-top:1px solid var(--line); flex-shrink:0; }
+  #saveBtn{ flex:1; background:var(--accent); color:#0a0212; border:none; border-radius:3px; font-family:inherit;
+    font-weight:bold; font-size:12px; letter-spacing:1px; padding:11px 0; cursor:pointer; text-transform:uppercase; }
+  #saveBtn:hover{ filter:brightness(1.15); }
+  #saveBtn:disabled{ opacity:0.35; cursor:default; }
+  #deleteBtn{ background:transparent; border:1px solid var(--danger); color:var(--danger); border-radius:3px;
+    font-family:inherit; font-size:11px; padding:11px 14px; cursor:pointer; }
+  #deleteBtn:hover{ background:rgba(255,90,77,0.1); }
+  #saveMsg{ font-size:10px; padding:0 16px 10px; min-height:12px; letter-spacing:0.5px; }
+  #saveMsg.ok{ color:var(--ok); }
+  #saveMsg.err{ color:var(--danger); }
+</style>
+</head>
+<body>
+
+<div id="bgGrid"></div>
+
+<!-- ============================= AUTH ============================= -->
+<div id="authScreen">
+  <div class="authPanel">
+    <div class="eyebrow">Robot Arena</div>
+    <h1>Accesso Officina</h1>
+
+    <div class="tabs">
+      <button id="tabLogin" class="active">Accedi</button>
+      <button id="tabRegister">Registrati</button>
+    </div>
+
+    <div id="loginFields">
+      <label>Username</label>
+      <input id="loginUsername" autocomplete="username">
+      <label>Password</label>
+      <input id="loginPassword" type="password" autocomplete="current-password">
+    </div>
+
+    <div id="registerFields" class="hidden">
+      <label>Username</label>
+      <input id="regUsername" autocomplete="username">
+      <label>Email</label>
+      <input id="regEmail" type="email" autocomplete="email">
+      <label>Password</label>
+      <input id="regPassword" type="password" autocomplete="new-password">
+    </div>
+
+    <button id="authSubmit" class="btnMain">Accedi</button>
+    <div id="authErr" class="authErr"></div>
+
+    <div class="serverRow">
+      Server
+      <input id="serverUrl" value="">
+    </div>
+  </div>
+</div>
+
+<!-- ============================= GARAGE ============================= -->
+<div id="garageScreen" class="hidden">
+  <div id="viewport">
+    <div id="topBar">
+      <div class="brand">Officina Robot<small>Assembly Bay // Sala del Trono Violetta</small></div>
+      <div class="userBox">
+        <span id="userLabel"></span>
+        <button id="logoutBtn">Esci</button>
+      </div>
+    </div>
+    <div id="robotStrip"></div>
+  </div>
+
+  <div id="sidePanel">
+    <div id="nameRow">
+      <div class="eyebrow">Nome Robot</div>
+      <input id="robotNameInput" maxlength="24" placeholder="Es. Falco Rosso">
+    </div>
+
+    <div id="slotTabs">
+      <button data-slot="chassis" class="active">Chassis</button>
+      <button data-slot="movement">Moto</button>
+      <button data-slot="weapon">Armi</button>
+      <button data-slot="armor">Corazza</button>
+      <button data-slot="core">Core</button>
+    </div>
+
+    <div id="pieceList"></div>
+
+    <div id="statsReadout">
+      <div class="eyebrow">Statistiche Derivate</div>
+      <div class="statGrid" id="statGrid"></div>
+      <div id="weaponReadout"></div>
+    </div>
+
+    <div id="saveMsg"></div>
+    <div id="actionRow">
+      <button id="saveBtn">Salva Robot</button>
+      <button id="deleteBtn" class="hidden">Elimina</button>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+/* ============================================================
+   ROBOT ARENA - Client Officina (garage)
+   Parla col server via WebSocket (garage_server.py). Protocollo
+   a messaggi JSON, vedi commenti in cima a garage_server.py.
+   ============================================================ */
+
+// ---------------------------------------------------------------
+// Stato applicativo
+// ---------------------------------------------------------------
+const state = {
+  ws: null,
+  account: null,
+  catalog: null,          // { pieces:[...], slots:[...] }
+  robots: [],              // lista robot salvati dell'account
+  currentRobotId: null,    // null = robot nuovo, non ancora salvato
+  loadout: {               // loadout in editing
+    chassis_id: null, movement_id: null, weapon_ids: [], armor_id: null, core_id: null,
+  },
+  activeSlotTab: "chassis",
+};
+
+// Costanti di bilanciamento duplicate da garage.py per l'anteprima
+// live delle statistiche PRIMA del salvataggio (il server resta
+// comunque l'autorita' finale: ri-valida tutto lato suo).
+const WEIGHT_SPEED_FACTOR = 0.02;
+const MIN_EFFECTIVE_SPEED = 0.5;
+
+function pieceById(id){
+  if(!id || !state.catalog) return null;
+  return state.catalog.pieces.find(p => p.id === id) || null;
+}
+
+function computeDerivedStats(){
+  const chassis = pieceById(state.loadout.chassis_id);
+  const movement = pieceById(state.loadout.movement_id);
+  const weapons = (state.loadout.weapon_ids || []).map(pieceById).filter(Boolean);
+  const armor = pieceById(state.loadout.armor_id);
+  const core = pieceById(state.loadout.core_id);
+  if(!chassis || !movement) return null;
+
+  const totalWeight = chassis.stats.weight + movement.stats.weight
+    + weapons.reduce((s,w) => s + w.stats.weight, 0)
+    + (armor ? armor.stats.weight : 0);
+
+  const speed = Math.max(MIN_EFFECTIVE_SPEED, movement.stats.speed - WEIGHT_SPEED_FACTOR * totalWeight);
+
+  return {
+    max_hp: chassis.stats.max_hp,
+    weight: totalWeight,
+    speed: Math.round(speed * 1000) / 1000,
+    turn_rate: movement.stats.turn_rate,
+    damage_reduction: armor ? armor.stats.damage_reduction : 0,
+    hp_regen_per_sec: core ? core.stats.hp_regen_per_sec : 0,
+    reload_bonus: core ? core.stats.reload_bonus : 0,
+    weapons,
+    chassis, movement, armor, core,
+  };
+}
+
+// ---------------------------------------------------------------
+// WebSocket
+// ---------------------------------------------------------------
+function defaultServerUrl(){
+  // In locale il backend gira su una porta fissa accanto al client.
+  // In produzione (es. Render) client e backend sono su domini/URL
+  // diversi: niente porta indovinata, l'utente incolla l'indirizzo
+  // wss:// del backend nel campo Server (persistito in localStorage).
+  const saved = localStorage.getItem("robotArenaServerUrl");
+  if(saved) return saved;
+  const host = location.hostname || "localhost";
+  if(host === "localhost" || host === "127.0.0.1"){
+    return `ws://${host}:8766`;
+  }
+  return "";
+}
+document.getElementById("serverUrl").addEventListener("change", (e) => {
+  localStorage.setItem("robotArenaServerUrl", e.target.value.trim());
+});
+document.getElementById("serverUrl").value = defaultServerUrl();
+
+function connectAndSend(msg, onReplyOnce){
+  if(state.ws && state.ws.readyState === WebSocket.OPEN){
+    if(onReplyOnce) state.ws._pending.push(onReplyOnce);
+    state.ws.send(JSON.stringify(msg));
+    return;
+  }
+  const url = document.getElementById("serverUrl").value.trim() || defaultServerUrl();
+  const ws = new WebSocket(url);
+  ws._pending = [];
+  ws.onopen = () => {
+    if(onReplyOnce) ws._pending.push(onReplyOnce);
+    ws.send(JSON.stringify(msg));
+  };
+  ws.onmessage = (ev) => {
+    const data = JSON.parse(ev.data);
+    routeMessage(data);
+    const cb = ws._pending.shift();
+    if(cb) cb(data);
+  };
+  ws.onerror = () => showAuthErr("Impossibile raggiungere il server. Controlla l'indirizzo.");
+  ws.onclose = () => { if(state.ws === ws) state.ws = null; };
+  state.ws = ws;
+}
+
+// Messaggi "push" gestiti indipendentemente dal chiamante (nessuno per
+// ora, ma teniamo un router centrale per estendibilita' futura).
+function routeMessage(data){ /* no-op: risposte gestite via callback puntuali */ }
+
+// ---------------------------------------------------------------
+// Schermata AUTH
+// ---------------------------------------------------------------
+let authMode = "login";
+
+function showAuthErr(msg){ document.getElementById("authErr").textContent = msg || ""; }
+
+document.getElementById("tabLogin").onclick = () => {
+  authMode = "login";
+  document.getElementById("tabLogin").classList.add("active");
+  document.getElementById("tabRegister").classList.remove("active");
+  document.getElementById("loginFields").classList.remove("hidden");
+  document.getElementById("registerFields").classList.add("hidden");
+  document.getElementById("authSubmit").textContent = "Accedi";
+  showAuthErr("");
+};
+document.getElementById("tabRegister").onclick = () => {
+  authMode = "register";
+  document.getElementById("tabRegister").classList.add("active");
+  document.getElementById("tabLogin").classList.remove("active");
+  document.getElementById("registerFields").classList.remove("hidden");
+  document.getElementById("loginFields").classList.add("hidden");
+  document.getElementById("authSubmit").textContent = "Crea Account";
+  showAuthErr("");
+};
+
+document.getElementById("authSubmit").onclick = () => {
+  showAuthErr("");
+  const btn = document.getElementById("authSubmit");
+  btn.disabled = true;
+
+  if(authMode === "login"){
+    const username = document.getElementById("loginUsername").value.trim();
+    const password = document.getElementById("loginPassword").value;
+    connectAndSend({type:"login", username, password}, (reply) => {
+      btn.disabled = false;
+      if(reply.type === "error"){ showAuthErr(reply.message); return; }
+      onLoggedIn(reply.account);
+    });
+  } else {
+    const username = document.getElementById("regUsername").value.trim();
+    const email = document.getElementById("regEmail").value.trim();
+    const password = document.getElementById("regPassword").value;
+    connectAndSend({type:"register", username, email, password}, (reply) => {
+      btn.disabled = false;
+      if(reply.type === "error"){ showAuthErr(reply.message); return; }
+      // Registrazione ok -> login automatico
+      connectAndSend({type:"login", username, password}, (reply2) => {
+        if(reply2.type === "error"){ showAuthErr(reply2.message); return; }
+        onLoggedIn(reply2.account);
+      });
+    });
+  }
+};
+
+document.getElementById("logoutBtn").onclick = () => {
+  if(state.ws) state.ws.close();
+  state.ws = null; state.account = null; state.robots = [];
+  state.currentRobotId = null;
+  document.getElementById("garageScreen").classList.add("hidden");
+  document.getElementById("authScreen").classList.remove("hidden");
+};
+
+function onLoggedIn(account){
+  state.account = account;
+  document.getElementById("authScreen").classList.add("hidden");
+  document.getElementById("garageScreen").classList.remove("hidden");
+  document.getElementById("userLabel").textContent = account.username;
+  connectAndSend({type:"get_catalog"}, (reply) => {
+    state.catalog = reply;
+    startNewRobot();
+    renderPieceList();
+    connectAndSend({type:"list_robots"}, (reply2) => {
+      state.robots = reply2.robots || [];
+      renderRobotStrip();
+    });
+    initViewportIfNeeded();
+  });
+}
+
+// ---------------------------------------------------------------
+// Robot: nuovo / carica / strip
+// ---------------------------------------------------------------
+function defaultLoadout(){
+  return { chassis_id:"chassis_light", movement_id:"move_wheels", weapon_ids:["weap_mg"], armor_id:null, core_id:null };
+}
+
+function startNewRobot(){
+  state.currentRobotId = null;
+  state.loadout = defaultLoadout();
+  document.getElementById("robotNameInput").value = "";
+  document.getElementById("deleteBtn").classList.add("hidden");
+  refreshAll();
+}
+
+function loadRobotIntoEditor(robot){
+  state.currentRobotId = robot.id;
+  state.loadout = {
+    chassis_id: robot.chassis_id, movement_id: robot.movement_id,
+    weapon_ids: robot.weapon_ids.slice(), armor_id: robot.armor_id, core_id: robot.core_id,
+  };
+  document.getElementById("robotNameInput").value = robot.name;
+  document.getElementById("deleteBtn").classList.remove("hidden");
+  refreshAll();
+}
+
+function renderRobotStrip(){
+  const strip = document.getElementById("robotStrip");
+  strip.innerHTML = "";
+  state.robots.forEach(r => {
+    const chip = document.createElement("button");
+    chip.className = "robotChip" + (r.id === state.currentRobotId ? " active" : "");
+    chip.textContent = r.name;
+    chip.onclick = () => loadRobotIntoEditor(r);
+    strip.appendChild(chip);
+  });
+  const newChip = document.createElement("button");
+  newChip.className = "robotChip newChip" + (state.currentRobotId === null ? " active" : "");
+  newChip.textContent = "+ Nuovo";
+  newChip.onclick = startNewRobot;
+  strip.appendChild(newChip);
+}
+
+// ---------------------------------------------------------------
+// Pannello pezzi
+// ---------------------------------------------------------------
+document.querySelectorAll("#slotTabs button").forEach(btn => {
+  btn.onclick = () => {
+    document.querySelectorAll("#slotTabs button").forEach(b => b.classList.remove("active"));
+    btn.classList.add("active");
+    state.activeSlotTab = btn.dataset.slot;
+    renderPieceList();
+  };
+});
+
+function statLine(slot, stats){
+  switch(slot){
+    case "chassis": return `HP ${stats.max_hp} · Slot Armi ${stats.weapon_slots} · Peso ${stats.weight}`;
+    case "movement": return `Velocita' ${stats.speed} · Sterzo ${stats.turn_rate} · Peso ${stats.weight}`;
+    case "weapon": return `Danno ${stats.damage} · Cadenza ${stats.fire_rate}/s · Gittata ${stats.range} · Peso ${stats.weight}`;
+    case "armor": return `Riduzione Danno ${Math.round(stats.damage_reduction*100)}% · Peso ${stats.weight}`;
+    case "core": return `Rigen ${stats.hp_regen_per_sec}/s · Ricarica +${Math.round(stats.reload_bonus*100)}%`;
+    default: return "";
+  }
+}
+
+function isSelected(slot, id){
+  if(slot === "weapon") return state.loadout.weapon_ids.includes(id);
+  return state.loadout[slot + "_id"] === id;
+}
+
+function togglePiece(slot, id){
+  if(slot === "weapon"){
+    const chassis = pieceById(state.loadout.chassis_id);
+    const maxSlots = chassis ? chassis.stats.weapon_slots : 1;
+    const list = state.loadout.weapon_ids;
+    const idx = list.indexOf(id);
+    if(idx >= 0){
+      list.splice(idx, 1);
+    } else {
+      if(list.length >= maxSlots){
+        setSaveMsg(`Slot armi pieni (max ${maxSlots} per questo chassis).`, "err");
+        return;
+      }
+      list.push(id);
+    }
+  } else if(slot === "armor" || slot === "core"){
+    // opzionali: click su un pezzo gia' selezionato lo rimuove
+    state.loadout[slot + "_id"] = (state.loadout[slot + "_id"] === id) ? null : id;
+  } else {
+    state.loadout[slot + "_id"] = id;
+    if(slot === "chassis"){
+      // se il nuovo chassis ha meno slot delle armi montate, tronchiamo
+      const chassis = pieceById(id);
+      if(state.loadout.weapon_ids.length > chassis.stats.weapon_slots){
+        state.loadout.weapon_ids = state.loadout.weapon_ids.slice(0, chassis.stats.weapon_slots);
+      }
+    }
+  }
+  refreshAll();
+}
+
+function renderPieceList(){
+  const container = document.getElementById("pieceList");
+  container.innerHTML = "";
+  if(!state.catalog) return;
+  const slot = state.activeSlotTab;
+  const pieces = state.catalog.pieces.filter(p => p.slot === slot);
+
+  if(slot === "weapon"){
+    const chassis = pieceById(state.loadout.chassis_id);
+    const maxSlots = chassis ? chassis.stats.weapon_slots : 1;
+    const hint = document.createElement("div");
+    hint.className = "slotHint";
+    hint.textContent = `Slot arma disponibili: ${state.loadout.weapon_ids.length} / ${maxSlots}`;
+    container.appendChild(hint);
+  }
+  if(slot === "armor" || slot === "core"){
+    const hint = document.createElement("div");
+    hint.className = "slotHint";
+    hint.textContent = "Opzionale — clicca di nuovo un pezzo selezionato per rimuoverlo.";
+    container.appendChild(hint);
+  }
+
+  pieces.forEach(p => {
+    const card = document.createElement("div");
+    const selected = isSelected(slot, p.id);
+    card.className = "pieceCard" + (selected ? " selected" : "");
+    card.innerHTML = `
+      <div class="pName"><span>${p.name}</span>${selected ? '<span class="check">&#10003;</span>' : ""}</div>
+      <div class="pStats">${statLine(slot, p.stats)}</div>
+      <div class="pCost">Costo: ${p.cost}</div>
+    `;
+    card.onclick = () => togglePiece(slot, p.id);
+    container.appendChild(card);
+  });
+}
+
+// ---------------------------------------------------------------
+// Readout statistiche
+// ---------------------------------------------------------------
+function renderStatsReadout(){
+  const d = computeDerivedStats();
+  const grid = document.getElementById("statGrid");
+  const wr = document.getElementById("weaponReadout");
+  if(!d){ grid.innerHTML = ""; wr.innerHTML = ""; return; }
+
+  grid.innerHTML = `
+    <div class="k">Vita Max</div><div class="v">${d.max_hp}</div>
+    <div class="k">Velocita'</div><div class="v">${d.speed}</div>
+    <div class="k">Peso Tot.</div><div class="v">${d.weight}</div>
+    <div class="k">Sterzo</div><div class="v">${d.turn_rate}</div>
+    <div class="k">Rid. Danno</div><div class="v">${Math.round(d.damage_reduction*100)}%</div>
+    <div class="k">Rigen HP/s</div><div class="v">${d.hp_regen_per_sec}</div>
+  `;
+  wr.innerHTML = d.weapons.map(w =>
+    `<div><b>${w.name}</b> — dmg ${w.stats.damage} · ${w.stats.fire_rate}/s · gittata ${w.stats.range}</div>`
+  ).join("") || '<div style="opacity:.5">Nessuna arma equipaggiata</div>';
+}
+
+// ---------------------------------------------------------------
+// Salvataggio / eliminazione
+// ---------------------------------------------------------------
+function setSaveMsg(text, cls){
+  const el = document.getElementById("saveMsg");
+  el.textContent = text || "";
+  el.className = cls || "";
+}
+
+document.getElementById("saveBtn").onclick = () => {
+  const name = document.getElementById("robotNameInput").value.trim();
+  if(!name){ setSaveMsg("Dai un nome al robot prima di salvare.", "err"); return; }
+  setSaveMsg("Salvataggio...", "");
+  connectAndSend({
+    type:"save_robot", robot_id: state.currentRobotId, name, loadout: state.loadout,
+  }, (reply) => {
+    if(reply.type === "error"){ setSaveMsg(reply.message, "err"); return; }
+    setSaveMsg("Robot salvato.", "ok");
+    state.currentRobotId = reply.robot.id;
+    document.getElementById("deleteBtn").classList.remove("hidden");
+    connectAndSend({type:"list_robots"}, (r2) => {
+      state.robots = r2.robots || [];
+      renderRobotStrip();
+    });
+  });
+};
+
+document.getElementById("deleteBtn").onclick = () => {
+  if(state.currentRobotId === null) return;
+  connectAndSend({type:"delete_robot", robot_id: state.currentRobotId}, (reply) => {
+    if(reply.type === "error"){ setSaveMsg(reply.message, "err"); return; }
+    setSaveMsg("Robot eliminato.", "ok");
+    connectAndSend({type:"list_robots"}, (r2) => {
+      state.robots = r2.robots || [];
+      renderRobotStrip();
+      startNewRobot();
+    });
+  });
+};
+
+// ---------------------------------------------------------------
+// Refresh centralizzato
+// ---------------------------------------------------------------
+function refreshAll(){
+  renderPieceList();
+  renderStatsReadout();
+  renderRobotStrip();
+  updateRobotModel();
+  setSaveMsg("", "");
+}
+
+// =================================================================
+// VIEWPORT 3D — vetrina olografica del robot
+// =================================================================
+let three = null;
+
+function initViewportIfNeeded(){
+  if(three) { updateRobotModel(); return; }
+
+  const container = document.getElementById("viewport");
+  const renderer = new THREE.WebGLRenderer({ antialias:true, alpha:true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(container.clientWidth, container.clientHeight);
+  container.appendChild(renderer.domElement);
+
+  const scene = new THREE.Scene();
+  scene.fog = new THREE.FogExp2(0x05030a, 0.035);
+
+  const camera = new THREE.PerspectiveCamera(42, container.clientWidth / container.clientHeight, 0.1, 100);
+  camera.position.set(3.4, 2.4, 4.4);
+  camera.lookAt(0, 1.0, 0);
+
+  // Luci: base viola fredda + key light per far leggere le forme
+  scene.add(new THREE.AmbientLight(0x4a2a7a, 0.9));
+  const key = new THREE.DirectionalLight(0xe3c6ff, 1.0);
+  key.position.set(4, 6, 3);
+  scene.add(key);
+  const rim = new THREE.PointLight(0xa24bff, 1.4, 12);
+  rim.position.set(-3, 2, -3);
+  scene.add(rim);
+
+  // Pavimento blueprint: griglia viola su disco scuro semi-trasparente
+  const floorGrid = new THREE.GridHelper(6, 24, 0xa24bff, 0x3a1a5a);
+  floorGrid.position.y = 0;
+  floorGrid.material.transparent = true;
+  floorGrid.material.opacity = 0.5;
+  scene.add(floorGrid);
+  const floorDisc = new THREE.Mesh(
+    new THREE.CircleGeometry(3, 48),
+    new THREE.MeshBasicMaterial({ color:0x0a0518, transparent:true, opacity:0.55 })
+  );
+  floorDisc.rotation.x = -Math.PI/2;
+  floorDisc.position.y = -0.01;
+  scene.add(floorDisc);
+
+  // Anello di scansione olografica che sale e scende (segnale "vetrina attiva")
+  const scanRing = new THREE.Mesh(
+    new THREE.RingGeometry(0.9, 0.94, 48),
+    new THREE.MeshBasicMaterial({ color:0xa24bff, transparent:true, opacity:0.35, side:THREE.DoubleSide })
+  );
+  scanRing.rotation.x = -Math.PI/2;
+  scene.add(scanRing);
+
+  const robotGroup = new THREE.Group();
+  scene.add(robotGroup);
+
+  // Rotazione con drag del mouse/touch, altrimenti auto-rotate lento
+  let dragging = false, lastX = 0, userYaw = 0, autoYaw = 0;
+  const dom = renderer.domElement;
+  dom.style.cursor = "grab";
+  dom.addEventListener("pointerdown", (e) => { dragging = true; lastX = e.clientX; dom.style.cursor = "grabbing"; });
+  window.addEventListener("pointerup", () => { dragging = false; dom.style.cursor = "grab"; });
+  window.addEventListener("pointermove", (e) => {
+    if(!dragging) return;
+    const dx = e.clientX - lastX; lastX = e.clientX;
+    userYaw += dx * 0.008;
+  });
+
+  function onResize(){
+    const w = container.clientWidth, h = container.clientHeight;
+    renderer.setSize(w, h);
+    camera.aspect = w / h;
+    camera.updateProjectionMatrix();
+  }
+  window.addEventListener("resize", onResize);
+
+  const clock = new THREE.Clock();
+  function animate(){
+    requestAnimationFrame(animate);
+    const t = clock.getElapsedTime();
+    if(!dragging) autoYaw += 0.0025;
+    robotGroup.rotation.y = autoYaw + userYaw;
+    scanRing.position.y = 0.15 + (Math.sin(t*0.7)*0.5+0.5) * 1.5;
+    scanRing.material.opacity = 0.15 + (Math.sin(t*0.7)*0.5+0.5) * 0.25;
+    renderer.render(scene, camera);
+  }
+  animate();
+
+  three = { renderer, scene, camera, robotGroup, container };
+  updateRobotModel();
+}
+
+// ----- costruzione procedurale del robot dai pezzi equipaggiati -----
+
+function matSolid(hex, emissive, intensity){
+  return new THREE.MeshStandardMaterial({
+    color: hex, emissive: emissive || 0x000000, emissiveIntensity: intensity || 0,
+    metalness:0.55, roughness:0.35,
+  });
+}
+
+function addEdgeGlow(mesh, color){
+  const edges = new THREE.EdgesGeometry(mesh.geometry);
+  const line = new THREE.LineSegments(edges, new THREE.LineBasicMaterial({ color: color || 0xe3c6ff, transparent:true, opacity:0.5 }));
+  mesh.add(line);
+}
+
+function buildTorso(chassis){
+  const scale = 0.62 + (chassis.stats.max_hp / 200) * 0.5; // chassis piu' pesanti -> corpo piu' grande
+  const geo = new THREE.BoxGeometry(0.62*scale, 0.5*scale, 0.5*scale);
+  const mesh = new THREE.Mesh(geo, matSolid(0x2a1a4a, 0xa24bff, 0.25));
+  addEdgeGlow(mesh);
+  mesh.position.y = 0.85;
+  return mesh;
+}
+
+function buildMovement(movementId){
+  const group = new THREE.Group();
+  const mat = matSolid(0x1a1030, 0x4bd6ff, 0.15);
+
+  if(movementId === "move_treads"){
+    [-1,1].forEach(side => {
+      const tread = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.28, 0.9), mat);
+      tread.position.set(side*0.42, 0.28, 0);
+      addEdgeGlow(tread, 0x4bd6ff);
+      group.add(tread);
+    });
+  } else if(movementId === "move_legs"){
+    [[-0.28,-0.2],[0.28,-0.2],[-0.28,0.2],[0.28,0.2]].forEach(([x,z]) => {
+      const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.06, 0.55, 8), mat);
+      leg.position.set(x, 0.3, z);
+      group.add(leg);
+      const foot = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.06, 0.18), mat);
+      foot.position.set(x, 0.03, z);
+      group.add(foot);
+    });
+  } else { // move_wheels (default)
+    [[-0.34,-0.28],[0.34,-0.28],[-0.34,0.28],[0.34,0.28]].forEach(([x,z]) => {
+      const wheel = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.16, 0.12, 16), mat);
+      wheel.rotation.z = Math.PI/2;
+      wheel.position.set(x, 0.16, z);
+      addEdgeGlow(wheel, 0x4bd6ff);
+      group.add(wheel);
+    });
+  }
+  return group;
+}
+
+const WEAPON_MOUNTS = {
+  1: [[0, 1.0, 0.32]],
+  2: [[-0.22, 0.95, 0.3], [0.22, 0.95, 0.3]],
+  3: [[-0.22, 0.95, 0.3], [0.22, 0.95, 0.3], [0, 1.25, 0]],
+};
+
+function buildWeapon(weapon){
+  const group = new THREE.Group();
+  const mat = matSolid(0x3a1a1a, 0xff5a4d, 0.2);
+  if(weapon.id === "weap_melee"){
+    const head = new THREE.Mesh(new THREE.BoxGeometry(0.16,0.16,0.16), mat);
+    group.add(head);
+  } else if(weapon.id === "weap_missiles"){
+    [-0.05,0.05].forEach(o => {
+      const tube = new THREE.Mesh(new THREE.CylinderGeometry(0.045,0.045,0.32,8), mat);
+      tube.rotation.x = Math.PI/2; tube.position.x = o;
+      group.add(tube);
+    });
+  } else if(weapon.id === "weap_laser"){
+    const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.035,0.05,0.4,10), mat);
+    barrel.rotation.x = Math.PI/2;
+    group.add(barrel);
+  } else { // weap_mg / default
+    const barrel = new THREE.Mesh(new THREE.BoxGeometry(0.08,0.08,0.34), mat);
+    group.add(barrel);
+  }
+  return group;
+}
+
+function buildArmor(armor, chassisScale){
+  const geo = new THREE.BoxGeometry(0.74*chassisScale, 0.58*chassisScale, 0.58*chassisScale);
+  const opacity = armor.id === "armor_heavy" ? 0.28 : 0.16;
+  const mesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color:0xe3c6ff, transparent:true, opacity, wireframe:false }));
+  addEdgeGlow(mesh, 0xe3c6ff);
+  mesh.position.y = 0.85;
+  return mesh;
+}
+
+function buildCore(core){
+  const color = core.id === "core_overcharge" ? 0xffb35c : 0x7dffa8;
+  const mesh = new THREE.Mesh(
+    new THREE.IcosahedronGeometry(0.09, 0),
+    new THREE.MeshStandardMaterial({ color, emissive:color, emissiveIntensity:0.9, metalness:0.2, roughness:0.2 })
+  );
+  mesh.position.set(0, 0.85, 0.27);
+  return mesh;
+}
+
+function updateRobotModel(){
+  if(!three) return;
+  const group = three.robotGroup;
+  while(group.children.length) group.remove(group.children[0]);
+
+  const chassis = pieceById(state.loadout.chassis_id);
+  const movement = pieceById(state.loadout.movement_id);
+  if(!chassis || !movement) return;
+
+  const chassisScale = 0.62 + (chassis.stats.max_hp / 200) * 0.5;
+
+  group.add(buildTorso(chassis));
+  group.add(buildMovement(state.loadout.movement_id));
+
+  const weapons = state.loadout.weapon_ids.map(pieceById).filter(Boolean);
+  const maxSlots = chassis.stats.weapon_slots;
+  const mounts = WEAPON_MOUNTS[maxSlots] || WEAPON_MOUNTS[1];
+  weapons.forEach((w, i) => {
+    const wm = buildWeapon(w);
+    const pos = mounts[i] || mounts[mounts.length-1];
+    wm.position.set(pos[0], pos[1], pos[2]);
+    group.add(wm);
+  });
+
+  const armor = pieceById(state.loadout.armor_id);
+  if(armor) group.add(buildArmor(armor, chassisScale));
+
+  const core = pieceById(state.loadout.core_id);
+  if(core) group.add(buildCore(core));
+}
+</script>
+</body>
+</html>
