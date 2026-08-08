@@ -937,125 +937,303 @@ function orientBetween(mesh, a, b){
   return len;
 }
 
+// Ruota una mesh (asse locale Y di default) per allinearla a una
+// direzione qualsiasi, senza toccarne la posizione: usata per pezzi di
+// lunghezza fissa (flange, clip, staffe) che vanno solo orientati.
+function alignToDir(mesh, dir){
+  const d = dir.clone().normalize();
+  const up = new THREE.Vector3(0, 1, 0);
+  const axis = new THREE.Vector3().crossVectors(up, d);
+  const angle = Math.acos(THREE.MathUtils.clamp(up.dot(d), -1, 1));
+  if(axis.lengthSq() > 1e-8) mesh.quaternion.setFromAxisAngle(axis.normalize(), angle);
+}
+
+// Come sopra ma per un anello (Torus, asse normale locale Z): usato per
+// far "abbracciare" un collare/socket a un tubo o a una sfera.
+function alignRingToDir(mesh, dir){
+  const d = dir.clone().normalize();
+  const zAxis = new THREE.Vector3(0, 0, 1);
+  const axis = new THREE.Vector3().crossVectors(zAxis, d);
+  const angle = Math.acos(THREE.MathUtils.clamp(zAxis.dot(d), -1, 1));
+  if(axis.lengthSq() > 1e-8) mesh.quaternion.setFromAxisAngle(axis.normalize(), angle);
+}
+
+function vec3(arr){ return new THREE.Vector3(arr[0], arr[1], arr[2]); }
+
+// Anello di rinforzo ("collare") dove un pezzo si aggancia al successivo:
+// il dettaglio che fa leggere una giuntura come vera meccanica assemblata
+// invece che un tubo che semplicemente finisce nel vuoto.
+function addCollar(group, point, dir, radius, mat){
+  const ring = new THREE.Mesh(new THREE.TorusGeometry(Math.max(0.012, radius*1.1), Math.max(0.006, radius*0.22), 6, 12), mat);
+  ring.position.set(point[0], point[1], point[2]);
+  alignRingToDir(ring, dir);
+  group.add(ring);
+}
+
+// Molla elicoidale tra due punti: il dettaglio che fa leggere un
+// ammortizzatore come tale invece che due tubi telescopici anonimi.
+function buildCoilSpring(av, bv, radius, turns, mat){
+  const len = av.distanceTo(bv);
+  if(len < 0.02) return null;
+  const dir = bv.clone().sub(av).normalize();
+  const segs = Math.max(20, turns*10);
+  const pts = [];
+  for(let i = 0; i <= segs; i++){
+    const t = i/segs;
+    const ang = t*turns*Math.PI*2;
+    pts.push(new THREE.Vector3(Math.cos(ang)*radius, (t-0.5)*len, Math.sin(ang)*radius));
+  }
+  const geo = new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), segs, Math.max(0.004, radius*0.14), 6, false);
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.position.copy(av.clone().lerp(bv, 0.5));
+  alignToDir(mesh, dir);
+  return mesh;
+}
+
+// Asta "lavorata": leggero rastremo + strizione centrale (come un vero
+// pezzo tornito), non un semplice cilindro dritto. Costruita gia' con
+// altezza unitaria lungo Y locale (-0.5..+0.5) per poter usare lo stesso
+// trucco di scala di orientBetween.
+function buildTurnedRod(rNear, rFar, mat){
+  const mid = (rNear + rFar)/2 * 0.9;
+  const points = [
+    new THREE.Vector2(Math.max(0.003, rNear*0.88), -0.5),
+    new THREE.Vector2(rNear, -0.44),
+    new THREE.Vector2(mid, 0),
+    new THREE.Vector2(rFar, 0.44),
+    new THREE.Vector2(Math.max(0.003, rFar*0.88), 0.5),
+  ];
+  return new THREE.Mesh(new THREE.LatheGeometry(points, 10), mat);
+}
+
 // ----- pezzi della catena arto: ognuno sa disegnarsi tra due punti -----
 function addSegment(group, p, a, b){
   const v = p.visual;
+  const av = vec3(a), bv = vec3(b);
+  const dir = bv.clone().sub(av).normalize();
+  const mat = matSolid(0x1a1030, 0x4bd6ff, 0.15);
+  const collarMat = matSolid(0x241633, 0xffb35c, 0.35);
   let mesh;
+  let rFar = v.radius;
+
   if(v.style === "armored"){
-    mesh = new THREE.Mesh(new THREE.BoxGeometry(v.radius*1.5, 1, v.radius*1.5), matSolid(0x241633, 0xa24bff, 0.2));
+    // prisma esagonale con spigolo in alto: legge subito come piastra
+    // corazzata, non come un semplice cubo
+    mesh = new THREE.Mesh(new THREE.CylinderGeometry(v.radius, v.radius, 1, 6), matSolid(0x241633, 0xa24bff, 0.2));
+    mesh.rotation.z = Math.PI/6;
   } else {
-    const rFar = (v.style === "tapered") ? v.radius*0.6 : v.radius; // estremita' lontana dal busto
-    mesh = new THREE.Mesh(new THREE.CylinderGeometry(rFar, v.radius, 1, 10), matSolid(0x1a1030, 0x4bd6ff, 0.15));
+    rFar = (v.style === "tapered") ? v.radius*0.6 : v.radius;
+    mesh = buildTurnedRod(v.radius, rFar, mat);
   }
   const len = orientBetween(mesh, a, b);
   mesh.scale.y = len;
   addEdgeGlow(mesh, 0x4bd6ff);
   group.add(mesh);
+
+  // collari alle due estremita', dove il pezzo si aggancia alla catena
+  addCollar(group, a, dir, v.radius, collarMat);
+  addCollar(group, b, dir, rFar, collarMat);
 }
 
 function addJoint(group, p, a, b){
   const v = p.visual;
-  let mesh;
+  const av = vec3(a), bv = vec3(b);
+  const mid = av.clone().lerp(bv, 0.5);
+  const dir = bv.clone().sub(av).normalize();
+
   if(v.style === "ball"){
-    mesh = new THREE.Mesh(new THREE.SphereGeometry(v.radius, 14, 10), matSolid(0x241633, 0xffb35c, 0.4));
-    mesh.position.set((a[0]+b[0])/2, (a[1]+b[1])/2, (a[2]+b[2])/2);
+    // snodo sferico vero: sfera + anello "socket" che la abbraccia
+    const ball = new THREE.Mesh(new THREE.SphereGeometry(v.radius, 16, 12), matSolid(0x241633, 0xffb35c, 0.4));
+    ball.position.copy(mid);
+    group.add(ball);
+    const socket = new THREE.Mesh(new THREE.TorusGeometry(v.radius*0.94, v.radius*0.3, 8, 16), matSolid(0x1a1030, 0xffb35c, 0.25));
+    socket.position.copy(mid);
+    alignRingToDir(socket, dir);
+    group.add(socket);
   } else {
-    mesh = new THREE.Mesh(new THREE.CylinderGeometry(v.radius, v.radius, 1, 16), matSolid(0x241633, 0xffb35c, 0.4));
-    const len = orientBetween(mesh, a, b);
-    mesh.scale.y = Math.max(0.35, len); // resta visibile come "disco" anche se la lunghezza e' piccola
+    // cerniera vera: due flange (dischi) affiancate + perno passante
+    // visibile, orientato sull'asse su cui l'arto si piega davvero
+    const flangeMat = matSolid(0x241633, 0xffb35c, 0.4);
+    const flangeLen = Math.max(0.014, v.length*0.4);
+    [0.2, 0.8].forEach(t => {
+      const flange = new THREE.Mesh(new THREE.CylinderGeometry(v.radius, v.radius, flangeLen, 14), flangeMat);
+      flange.position.copy(av.clone().lerp(bv, t));
+      alignToDir(flange, dir);
+      group.add(flange);
+    });
+    const pin = new THREE.Mesh(new THREE.CylinderGeometry(v.radius*0.16, v.radius*0.16, v.radius*2.6, 8),
+      matSolid(0x0a0518, 0xff5a4d, 0.5));
+    pin.position.copy(mid);
+    pin.rotation.z = Math.PI/2; // il piegamento avviene sempre attorno all'asse X globale
+    group.add(pin);
   }
-  group.add(mesh);
 }
 
 function addActuator(group, p, a, b){
   const v = p.visual;
-  const av = new THREE.Vector3(a[0], a[1], a[2]), bv = new THREE.Vector3(b[0], b[1], b[2]);
+  const av = vec3(a), bv = vec3(b);
   const mid = av.clone().lerp(bv, 0.55);
+  const dir = bv.clone().sub(av).normalize();
 
-  const sleeve = new THREE.Mesh(new THREE.CylinderGeometry(v.radius, v.radius, 1, 10), matSolid(0x1a1030, 0x4bd6ff, 0.15));
+  const sleeve = new THREE.Mesh(new THREE.CylinderGeometry(v.radius, v.radius*0.96, 1, 12), matSolid(0x1a1030, 0x4bd6ff, 0.15));
   sleeve.scale.y = orientBetween(sleeve, av.toArray(), mid.toArray());
+  addEdgeGlow(sleeve, 0x4bd6ff);
   group.add(sleeve);
 
-  const rod = new THREE.Mesh(new THREE.CylinderGeometry(v.radius*0.5, v.radius*0.5, 1, 10), matSolid(0x2a1a4a, 0x4bd6ff, 0.2));
+  const rod = new THREE.Mesh(new THREE.CylinderGeometry(v.radius*0.4, v.radius*0.4, 1, 10), matSolid(0xc9bde0, 0x4bd6ff, 0.1));
   rod.scale.y = orientBetween(rod, mid.toArray(), bv.toArray());
   group.add(rod);
 
-  const ring = new THREE.Mesh(new THREE.TorusGeometry(v.radius*1.05, v.radius*0.16, 8, 16),
-    new THREE.MeshStandardMaterial({ color:0xffb35c, emissive:0xffb35c, emissiveIntensity:0.6 }));
-  ring.position.copy(mid);
-  const dir = bv.clone().sub(av).normalize();
-  const zAxis = new THREE.Vector3(0, 0, 1);
-  const axis = new THREE.Vector3().crossVectors(zAxis, dir);
-  const angle = Math.acos(THREE.MathUtils.clamp(zAxis.dot(dir), -1, 1));
-  if(axis.lengthSq() > 1e-8) ring.quaternion.setFromAxisAngle(axis.normalize(), angle);
-  group.add(ring);
+  // molla elicoidale intorno all'asta: il dettaglio che lo fa leggere
+  // davvero come un ammortizzatore
+  const coil = buildCoilSpring(mid, bv, v.radius*0.7, 5, matSolid(0x2a1a4a, 0xffb35c, 0.3));
+  if(coil) group.add(coil);
+
+  // staffe di aggancio (clevis) alle due estremita'
+  const bracketMat = matSolid(0x241633, 0xffb35c, 0.3);
+  [av, bv].forEach(pt => {
+    const bracket = new THREE.Mesh(new THREE.BoxGeometry(v.radius*1.7, v.radius*0.42, v.radius*0.42), bracketMat);
+    bracket.position.copy(pt);
+    alignToDir(bracket, dir);
+    group.add(bracket);
+  });
 }
 
 function addTendon(group, p, spanA, spanB, side){
   if(!spanA || !spanB) return;
   const v = p.visual;
-  const av = new THREE.Vector3(spanA[0], spanA[1], spanA[2]);
-  const bv = new THREE.Vector3(spanB[0], spanB[1], spanB[2]);
+  const av = vec3(spanA), bv = vec3(spanB);
   const perp = new THREE.Vector3(side < 0 ? -1 : 1, 0, 0);
   const mat = matSolid(0x2a1a4a, 0xff5a4d, 0.3);
+  const clipMat = matSolid(0x1a1030, 0xff5a4d, 0.35);
+  const sag = Math.max(0.01, av.distanceTo(bv) * 0.1);
 
   function oneCable(offsetAmt, radius){
     const a2 = av.clone().addScaledVector(perp, offsetAmt);
     const b2 = bv.clone().addScaledVector(perp, offsetAmt);
-    const mesh = new THREE.Mesh(new THREE.CylinderGeometry(radius, radius, 1, 6), mat);
-    mesh.scale.y = orientBetween(mesh, a2.toArray(), b2.toArray());
-    group.add(mesh);
+    // leggero cedimento a meta' cavo: sembra un vero cavo lasco, non
+    // un'asta rigida tirata tra due punti
+    const mid2 = a2.clone().lerp(b2, 0.5).addScaledVector(perp, sag*0.5).addScaledVector(new THREE.Vector3(0,-1,0), sag*0.4);
+    const curve = new THREE.CatmullRomCurve3([a2, mid2, b2]);
+    const geo = new THREE.TubeGeometry(curve, 10, Math.max(0.004, radius), 6, false);
+    group.add(new THREE.Mesh(geo, mat));
+    [a2, b2].forEach(pt => {
+      const clip = new THREE.Mesh(new THREE.SphereGeometry(Math.max(0.008, radius*1.7), 6, 5), clipMat);
+      clip.position.copy(pt);
+      group.add(clip);
+    });
   }
 
   if(v.style === "twin"){
     oneCable(0.03, v.radius);
-    oneCable(0.055, v.radius);
+    oneCable(0.055, v.radius*0.9);
   } else {
-    oneCable(0.035, v.radius); // "single" e "braided" (braided = solo piu' spesso)
+    oneCable(v.style === "braided" ? 0.045 : 0.035, v.style === "braided" ? v.radius*1.3 : v.radius);
   }
 }
 
 function addTerminal(group, p, a, b){
   const v = p.visual;
-  const bv = new THREE.Vector3(b[0], b[1], b[2]);
+  const bv = vec3(b);
   const s = v.radius;
+  const jointMat = matSolid(0x241633, 0xffb35c, 0.35);
+  const skinMat = matSolid(0x241633, 0x4bd6ff, 0.2);
+  const darkMat = matSolid(0x1a1030, 0x4bd6ff, 0.15);
+
+  // piccola sfera di snodo (polso/caviglia) dove il terminale si
+  // aggancia all'ultimo pezzo della catena
+  const wristBall = new THREE.Mesh(new THREE.SphereGeometry(s*0.4, 10, 8), jointMat);
+  wristBall.position.copy(bv);
+  group.add(wristBall);
+
+  function fingerAt(x, z, len, rot){
+    const f = new THREE.Group();
+    const seg = new THREE.Mesh(new THREE.CylinderGeometry(s*0.13, s*0.1, len, 6), darkMat);
+    seg.position.y = -len/2;
+    f.add(seg);
+    const tip = new THREE.Mesh(new THREE.SphereGeometry(s*0.1, 6, 5), darkMat);
+    tip.position.y = -len;
+    f.add(tip);
+    f.position.set(bv.x + x, bv.y - s*0.75, bv.z + z);
+    f.rotation.x = rot;
+    group.add(f);
+  }
 
   if(v.style === "round_hand"){
-    const mesh = new THREE.Mesh(new THREE.SphereGeometry(s*0.62, 10, 8), matSolid(0x241633, 0x4bd6ff, 0.2));
-    mesh.position.copy(bv);
-    group.add(mesh);
+    const palm = new THREE.Mesh(new THREE.SphereGeometry(s*0.58, 12, 9), skinMat);
+    palm.position.set(bv.x, bv.y - s*0.35, bv.z);
+    group.add(palm);
+    fingerAt(-s*0.3, s*0.1, s*0.42, -0.35);
+    fingerAt(0, s*0.15, s*0.48, -0.25);
+    fingerAt(s*0.3, s*0.1, s*0.42, -0.35);
   } else if(v.style === "grip_hand"){
-    const mesh = new THREE.Mesh(new THREE.BoxGeometry(s, s, s), matSolid(0x241633, 0x4bd6ff, 0.2));
-    mesh.position.copy(bv);
-    group.add(mesh);
+    const palm = new THREE.Mesh(new THREE.BoxGeometry(s*0.95, s*0.55, s*0.7), skinMat);
+    palm.position.set(bv.x, bv.y - s*0.4, bv.z);
+    group.add(palm);
+    [-1, 0, 1].forEach(i => fingerAt(i*s*0.32, s*0.25, s*0.5, -0.55));
+    const thumb = new THREE.Mesh(new THREE.CylinderGeometry(s*0.13, s*0.1, s*0.35, 6), darkMat);
+    thumb.position.set(bv.x + s*0.5, bv.y - s*0.35, bv.z);
+    thumb.rotation.z = -0.9;
+    group.add(thumb);
   } else if(v.style === "pincer"){
-    const clawMat = matSolid(0x3a1a1a, 0xff5a4d, 0.3);
+    const base = new THREE.Mesh(new THREE.CylinderGeometry(s*0.32, s*0.4, s*0.3, 10), jointMat);
+    base.position.set(bv.x, bv.y - s*0.15, bv.z);
+    group.add(base);
+    const bladeMat = matSolid(0x3a1a1a, 0xff5a4d, 0.3);
     [-1, 1].forEach(o => {
-      const blade = new THREE.Mesh(new THREE.ConeGeometry(s*0.32, s*1.3, 4), clawMat);
+      const blade = new THREE.Mesh(new THREE.ConeGeometry(s*0.26, s*1.15, 4), bladeMat);
       blade.rotation.x = Math.PI;
-      blade.position.set(bv.x + o*s*0.32, bv.y - s*0.4, bv.z);
+      blade.rotation.z = o*0.32;
+      blade.position.set(bv.x + o*s*0.22, bv.y - s*0.65, bv.z);
       group.add(blade);
     });
+    const pin = new THREE.Mesh(new THREE.CylinderGeometry(s*0.06, s*0.06, s*0.5, 6), matSolid(0x0a0518, 0xff5a4d, 0.5));
+    pin.position.set(bv.x, bv.y - s*0.35, bv.z);
+    pin.rotation.x = Math.PI/2;
+    group.add(pin);
   } else if(v.style === "flat_foot"){
-    const mesh = new THREE.Mesh(new THREE.BoxGeometry(s*1.4, s*0.35, s*1.9), matSolid(0x241633, 0x4bd6ff, 0.15));
-    mesh.position.set(bv.x, bv.y - s*0.16, bv.z + s*0.5);
-    group.add(mesh);
+    const sole = new THREE.Mesh(new THREE.BoxGeometry(s*1.3, s*0.28, s*1.85), darkMat);
+    sole.position.set(bv.x, bv.y - s*0.28, bv.z + s*0.45);
+    addEdgeGlow(sole, 0x4bd6ff);
+    group.add(sole);
+    const heel = new THREE.Mesh(new THREE.BoxGeometry(s*1.15, s*0.3, s*0.5), skinMat);
+    heel.position.set(bv.x, bv.y - s*0.28, bv.z - s*0.35);
+    group.add(heel);
   } else if(v.style === "pad_foot"){
-    const mesh = new THREE.Mesh(new THREE.CylinderGeometry(s*0.9, s*0.9, s*0.4, 14), matSolid(0x241633, 0x4bd6ff, 0.15));
-    mesh.position.set(bv.x, bv.y - s*0.18, bv.z + s*0.2);
-    group.add(mesh);
+    const pad = new THREE.Mesh(new THREE.CylinderGeometry(s*0.88, s*0.7, s*0.4, 16), darkMat);
+    pad.position.set(bv.x, bv.y - s*0.3, bv.z + s*0.15);
+    addEdgeGlow(pad, 0x4bd6ff);
+    group.add(pad);
+    const heel = new THREE.Mesh(new THREE.SphereGeometry(s*0.5, 10, 8), skinMat);
+    heel.position.set(bv.x, bv.y - s*0.25, bv.z - s*0.35);
+    group.add(heel);
   } else if(v.style === "talon"){
-    const clawMat = matSolid(0x241633, 0xff5a4d, 0.25);
+    const heel = new THREE.Mesh(new THREE.SphereGeometry(s*0.4, 8, 6), skinMat);
+    heel.position.set(bv.x, bv.y - s*0.2, bv.z - s*0.1);
+    group.add(heel);
+    const clawMat = matSolid(0x1a1030, 0xff5a4d, 0.3);
     for(let i = -1; i <= 1; i++){
-      const toe = new THREE.Mesh(new THREE.ConeGeometry(s*0.22, s*1.1, 4), clawMat);
-      toe.rotation.x = Math.PI/2 * 0.65;
-      toe.position.set(bv.x + i*s*0.4, bv.y - s*0.15, bv.z + s*0.55);
-      group.add(toe);
+      const toeBase = new THREE.Mesh(new THREE.CylinderGeometry(s*0.13, s*0.16, s*0.5, 6), skinMat);
+      toeBase.position.set(bv.x + i*s*0.38, bv.y - s*0.32, bv.z + s*0.28);
+      toeBase.rotation.x = Math.PI/2 * 0.55;
+      group.add(toeBase);
+      const claw = new THREE.Mesh(new THREE.ConeGeometry(s*0.16, s*0.55, 5), clawMat);
+      claw.position.set(bv.x + i*s*0.38, bv.y - s*0.5, bv.z + s*0.62);
+      claw.rotation.x = Math.PI/2 * 0.75;
+      group.add(claw);
     }
-  } else { // stub (universale)
-    const mesh = new THREE.Mesh(new THREE.CylinderGeometry(s*0.6, s*0.75, s, 10), matSolid(0x241633, 0x4bd6ff, 0.15));
-    mesh.position.copy(bv);
-    group.add(mesh);
+  } else { // stub (universale): piastra di aggancio con bulloni a vista
+    const cap = new THREE.Mesh(new THREE.CylinderGeometry(s*0.7, s*0.78, s*0.5, 12), darkMat);
+    cap.position.copy(bv);
+    addEdgeGlow(cap, 0x4bd6ff);
+    group.add(cap);
+    const boltMat = matSolid(0x0a0518, 0xffb35c, 0.4);
+    for(let i = 0; i < 5; i++){
+      const ang = (i/5) * Math.PI*2;
+      const bolt = new THREE.Mesh(new THREE.CylinderGeometry(s*0.06, s*0.06, s*0.1, 6), boltMat);
+      bolt.position.set(bv.x + Math.cos(ang)*s*0.5, bv.y - s*0.28, bv.z + Math.sin(ang)*s*0.5);
+      group.add(bolt);
+    }
   }
 }
 
@@ -1126,6 +1304,20 @@ function buildTorsoPart(torso){
     group.add(mesh);
   }
 
+  // piastra pettorale leggermente sporgente + prese d'aria laterali:
+  // il dettaglio che fa leggere il busto come una scocca costruita a
+  // pannelli, non un solido unico
+  const plate = new THREE.Mesh(new THREE.BoxGeometry(w*0.48, h*0.4, d*0.1), matSolid(0x1a1030, 0xa24bff, 0.3));
+  plate.position.set(0, h*0.04, d/2 + d*0.045);
+  addEdgeGlow(plate, 0xa24bff);
+  group.add(plate);
+  const ventMat = matSolid(0x0a0518, 0x4bd6ff, 0.2);
+  [-1, 1].forEach(side => {
+    const vent = new THREE.Mesh(new THREE.BoxGeometry(w*0.05, h*0.28, d*0.65), ventMat);
+    vent.position.set(side*w*0.36, -h*0.06, 0);
+    group.add(vent);
+  });
+
   const shoulderY = h*0.42, hipY = -h*0.46;
   const shW = (w * v.shoulder_w) / 2, hpW = (w * v.hip_w) / 2;
   const anchors = {
@@ -1133,6 +1325,16 @@ function buildTorsoPart(torso){
     hipL: [-hpW, hipY, 0], hipR: [hpW, hipY, 0],
     neck: [0, h/2, 0],
   };
+
+  // spallacci (pauldron) alle attaccature delle braccia: raccordano
+  // visivamente il busto al collare del primo pezzo del braccio
+  const pauldronMat = matSolid(0x241633, 0xffb35c, 0.3);
+  [anchors.shoulderL, anchors.shoulderR].forEach(pt => {
+    const cap = new THREE.Mesh(new THREE.SphereGeometry(w*0.1, 10, 8), pauldronMat);
+    cap.position.set(pt[0], pt[1], pt[2]);
+    group.add(cap);
+  });
+
   return { group, anchors, height: h };
 }
 
@@ -1155,9 +1357,20 @@ function buildHeadPart(head){
       new THREE.MeshStandardMaterial({ color:0x4bd6ff, emissive:0x4bd6ff, emissiveIntensity:1.2 }));
     visor.position.set(0, s*0.08, s*0.66);
     group.add(visor);
+    const earMat = matSolid(0x1a1030, 0x4bd6ff, 0.2);
+    [-1, 1].forEach(side => {
+      const ear = new THREE.Mesh(new THREE.BoxGeometry(s*0.14, s*0.5, s*0.4), earMat);
+      ear.position.set(side*s*0.82, 0, 0);
+      group.add(ear);
+    });
   } else if(v.style === "angular"){
+    const base = new THREE.Mesh(new THREE.CylinderGeometry(s*0.75, s*0.75, s*0.3, 6), mat);
+    base.position.y = -s*0.6;
+    addEdgeGlow(base, 0xa24bff);
+    group.add(base);
     const m = new THREE.Mesh(new THREE.ConeGeometry(s*1.05, s*1.7, 4), mat);
     m.rotation.y = Math.PI/4;
+    m.position.y = s*0.1;
     addEdgeGlow(m, 0xa24bff);
     group.add(m);
   } else if(v.style === "antenna"){
@@ -1167,6 +1380,9 @@ function buildHeadPart(head){
     const antMat = matSolid(0x1a1030, 0xff5a4d, 0.3);
     const tipMat = new THREE.MeshStandardMaterial({ color:0xff5a4d, emissive:0xff5a4d, emissiveIntensity:1.2 });
     [-1, 1].forEach(side => {
+      const base = new THREE.Mesh(new THREE.CylinderGeometry(s*0.05, s*0.06, s*0.1, 8), antMat);
+      base.position.set(side*s*0.4, s*0.6, 0);
+      group.add(base);
       const ant = new THREE.Mesh(new THREE.CylinderGeometry(0.008, 0.008, s*1.5, 6), antMat);
       ant.position.set(side*s*0.4, s*1.15, 0);
       group.add(ant);
@@ -1178,12 +1394,24 @@ function buildHeadPart(head){
     const m = new THREE.Mesh(new THREE.BoxGeometry(s*1.4, s*1.3, s*1.3), mat);
     addEdgeGlow(m, 0xa24bff);
     group.add(m);
-    const eye = new THREE.Mesh(new THREE.CylinderGeometry(s*0.42, s*0.42, 0.06, 20),
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(s*0.44, s*0.08, 8, 16),
+      matSolid(0x1a1030, 0xff5a4d, 0.3));
+    ring.position.set(0, 0, s*0.68);
+    group.add(ring);
+    const eye = new THREE.Mesh(new THREE.CylinderGeometry(s*0.36, s*0.36, 0.06, 20),
       new THREE.MeshStandardMaterial({ color:0xff5a4d, emissive:0xff5a4d, emissiveIntensity:1.3 }));
     eye.rotation.x = Math.PI/2;
     eye.position.set(0, 0, s*0.68);
     group.add(eye);
   }
+
+  // collare alla base, dove la testa si aggancia al collo: la stessa
+  // logica dei collari degli arti, per coerenza visiva in tutto il robot
+  const collar = new THREE.Mesh(new THREE.TorusGeometry(s*0.5, s*0.1, 6, 14), matSolid(0x1a1030, 0xffb35c, 0.3));
+  collar.rotation.x = Math.PI/2;
+  collar.position.y = -s*0.85;
+  group.add(collar);
+
   return group;
 }
 
