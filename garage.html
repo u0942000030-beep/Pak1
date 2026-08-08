@@ -430,6 +430,7 @@ document.getElementById("authSubmit").onclick = () => {
     connectAndSend({type:"login", username, password}, (reply) => {
       btn.disabled = false;
       if(reply.type === "error"){ showAuthErr(reply.message); return; }
+      saveToken(reply.token);
       onLoggedIn(reply.account);
     });
   } else {
@@ -442,13 +443,29 @@ document.getElementById("authSubmit").onclick = () => {
       // Registrazione ok -> login automatico
       connectAndSend({type:"login", username, password}, (reply2) => {
         if(reply2.type === "error"){ showAuthErr(reply2.message); return; }
+        saveToken(reply2.token);
         onLoggedIn(reply2.account);
       });
     });
   }
 };
 
+// ---------------------------------------------------------------
+// Sessione "ricordami": un token opaco viene salvato in localStorage al
+// login e riusato per rientrare in automatico ad ogni apertura della
+// pagina, senza dover reinserire username/password (vedi login_token in
+// main.py/accounts.py). La password NON viene mai salvata lato client.
+// ---------------------------------------------------------------
+const TOKEN_KEY = "robotArenaToken";
+function saveToken(token){ if(token) localStorage.setItem(TOKEN_KEY, token); }
+function clearToken(){ localStorage.removeItem(TOKEN_KEY); }
+
 document.getElementById("logoutBtn").onclick = () => {
+  const token = localStorage.getItem(TOKEN_KEY);
+  if(state.ws && state.ws.readyState === WebSocket.OPEN && token){
+    state.ws.send(JSON.stringify({type:"logout", token}));
+  }
+  clearToken();
   if(state.ws) state.ws.close();
   state.ws = null; state.account = null; state.robots = [];
   state.currentRobotId = null;
@@ -472,6 +489,28 @@ function onLoggedIn(account){
     initViewportIfNeeded();
   });
 }
+
+// Tentativo di riaccesso automatico all'apertura della pagina: se c'e' un
+// token salvato da una sessione precedente, si prova a validarlo prima di
+// mostrare il form di login. Se e' scaduto o non valido (reply.type ===
+// "error"), si cancella e si mostra il login normale.
+(function tryAutoLogin(){
+  const token = localStorage.getItem(TOKEN_KEY);
+  if(!token) return;
+  showAuthErr("Riconnessione automatica in corso...");
+  document.getElementById("authSubmit").disabled = true;
+  connectAndSend({type:"login_token", token}, (reply) => {
+    document.getElementById("authSubmit").disabled = false;
+    if(reply.type === "error"){
+      clearToken();
+      showAuthErr("");
+      return;
+    }
+    saveToken(reply.token);
+    showAuthErr("");
+    onLoggedIn(reply.account);
+  });
+})();
 
 // ---------------------------------------------------------------
 // Robot: nuovo / carica / strip

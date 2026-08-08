@@ -104,7 +104,27 @@ CREATE TABLE IF NOT EXISTS accounts (
 -- se in futuro si passa a confronti case-insensitive con colonne derivate)
 CREATE INDEX IF NOT EXISTS idx_accounts_username ON accounts(username);
 CREATE INDEX IF NOT EXISTS idx_accounts_email ON accounts(email);
+
+-- Sessioni "ricordami": un token opaco e casuale (mai la password) salvato
+-- lato client (localStorage) e qui. Alla riapertura della pagina il client
+-- manda {type:"login_token", token:...} invece di richiedere username/
+-- password: se il token esiste ed e' entro SESSION_MAX_AGE_SECONDS viene
+-- fatto il login automatico. Un token e' revocabile subito (logout) o scade
+-- da solo dopo tanto tempo, cosi' un dispositivo perso/rubato non resta
+-- valido per sempre.
+CREATE TABLE IF NOT EXISTS sessions (
+    token      TEXT PRIMARY KEY,
+    account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    created_at REAL NOT NULL,
+    last_seen  REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_account ON sessions(account_id);
 """
+
+# Dopo tanto tempo senza riaprire l'app il token smette di funzionare da
+# solo (l'utente rivedra' semplicemente la schermata di login). 60 giorni:
+# comodo per non doversi riloggare spesso, ma non "per sempre".
+SESSION_MAX_AGE_SECONDS = 60 * 24 * 3600
 
 
 def init_db(conn: sqlite3.Connection) -> None:
@@ -206,6 +226,61 @@ def authenticate(conn: sqlite3.Connection, username: str, password: str) -> dict
         "created_at": row["created_at"],
         "last_login": now,
     }
+
+
+# ---------------------------------------------------------------------------
+# Sessioni "ricordami" (login automatico via token, senza ripassare la
+# password)
+# ---------------------------------------------------------------------------
+
+def create_session(conn: sqlite3.Connection, account_id: int) -> str:
+    """Crea un nuovo token di sessione per l'account e lo ritorna. Da
+    chiamare dopo un login/register riuscito e da salvare lato client
+    (localStorage)."""
+    token = secrets.token_urlsafe(32)
+    now = time.time()
+    conn.execute(
+        "INSERT INTO sessions (token, account_id, created_at, last_seen) VALUES (?, ?, ?, ?)",
+        (token, account_id, now, now),
+    )
+    conn.commit()
+    return token
+
+
+def get_account_by_token(conn: sqlite3.Connection, token: str) -> dict | None:
+    """Ritorna l'account associato al token se questo esiste ed e' ancora
+    valido (non scaduto), altrimenti None. Aggiorna last_seen/last_login."""
+    if not token:
+        return None
+    row = conn.execute(
+        "SELECT account_id, last_seen FROM sessions WHERE token = ?", (token,)
+    ).fetchone()
+    if row is None:
+        return None
+
+    now = time.time()
+    if now - row["last_seen"] > SESSION_MAX_AGE_SECONDS:
+        conn.execute("DELETE FROM sessions WHERE token = ?", (token,))
+        conn.commit()
+        return None
+
+    account = get_account(conn, row["account_id"])
+    if account is None:
+        return None
+
+    conn.execute("UPDATE sessions SET last_seen = ? WHERE token = ?", (now, token))
+    conn.execute("UPDATE accounts SET last_login = ? WHERE id = ?", (now, account["id"]))
+    conn.commit()
+    account["last_login"] = now
+    return account
+
+
+def delete_session(conn: sqlite3.Connection, token: str) -> None:
+    """Invalida un token (logout esplicito)."""
+    if not token:
+        return
+    conn.execute("DELETE FROM sessions WHERE token = ?", (token,))
+    conn.commit()
 
 
 def get_account(conn: sqlite3.Connection, account_id: int) -> dict | None:

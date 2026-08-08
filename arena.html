@@ -327,9 +327,19 @@ document.getElementById("authSubmit").onclick = () => {
   sendExpectOne({type:"login", username, password}, (reply) => {
     btn.disabled = false;
     if(reply.type === "error"){ showAuthErr(reply.message); return; }
+    saveToken(reply.token);
     onLoggedIn(reply.account);
   });
 };
+
+// ---------------------------------------------------------------
+// Sessione "ricordami" (stesso meccanismo di garage.html, stesso dominio
+// quindi stesso localStorage: se hai gia' fatto login in Officina entri
+// qui in automatico, e viceversa).
+// ---------------------------------------------------------------
+const TOKEN_KEY = "robotArenaToken";
+function saveToken(token){ if(token) localStorage.setItem(TOKEN_KEY, token); }
+function clearToken(){ localStorage.removeItem(TOKEN_KEY); }
 
 function onLoggedIn(account){
   app.account = account;
@@ -343,6 +353,24 @@ function onLoggedIn(account){
     });
   });
 }
+
+(function tryAutoLogin(){
+  const token = localStorage.getItem(TOKEN_KEY);
+  if(!token) return;
+  showAuthErr("Riconnessione automatica in corso...");
+  document.getElementById("authSubmit").disabled = true;
+  sendExpectOne({type:"login_token", token}, (reply) => {
+    document.getElementById("authSubmit").disabled = false;
+    if(reply.type === "error"){
+      clearToken();
+      showAuthErr("");
+      return;
+    }
+    saveToken(reply.token);
+    showAuthErr("");
+    onLoggedIn(reply.account);
+  });
+})();
 
 // ---------------------------------------------------------------
 // Schermata SELEZIONE ROBOT
@@ -372,6 +400,10 @@ function renderRobotList(){
 }
 
 document.getElementById("selectBackBtn").onclick = () => {
+  // Solo "torna indietro" alla schermata di login: NON cancella il token,
+  // quindi al prossimo giro si rientra in automatico. Per un logout vero
+  // (fine sessione su questo dispositivo) va usato il pulsante Logout
+  // nell'Officina (garage.html), che cancella il token.
   if(app.ws) app.ws.close();
   app.ws = null; app.account = null; app.robots = [];
   document.getElementById("selectScreen").classList.add("hidden");
