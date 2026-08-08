@@ -48,32 +48,132 @@ class GarageError(Exception):
 # effettiva del robot (vedi compute_derived_stats).
 
 PIECES = {
-    # --- CHASSIS: vita massima, n. slot arma, peso base -------------------
-    "chassis_light": {
-        "id": "chassis_light", "name": "Chassis Leggero", "slot": "chassis", "cost": 0,
-        "stats": {"max_hp": 80, "weapon_slots": 1, "weight": 10},
+    # --- BUSTO (torso): forma/dimensione del tronco. Definisce anche i
+    # punti di aggancio (spalle/anche/collo) usati dal renderer 3D per
+    # attaccare correttamente braccia, gambe e testa qualunque sia la
+    # combinazione scelta. Nessun impatto sulle statistiche per ora
+    # (arriva quando disegneremo bene il sistema di combattimento):
+    # 'weight' resta a 0 e non concorre al calcolo di compute_derived_stats.
+    "torso_slim": {
+        "id": "torso_slim", "name": "Busto Slim", "slot": "torso", "cost": 0,
+        "stats": {"weight": 0},
+        "visual": {
+            "shape": "slim", "dims": [0.42, 0.55, 0.30],
+            "shoulder_w": 1.05, "hip_w": 0.75, "color": 0x2a1a4a,
+        },
     },
-    "chassis_medium": {
-        "id": "chassis_medium", "name": "Chassis Medio", "slot": "chassis", "cost": 150,
-        "stats": {"max_hp": 130, "weapon_slots": 2, "weight": 18},
+    "torso_standard": {
+        "id": "torso_standard", "name": "Busto Standard", "slot": "torso", "cost": 0,
+        "stats": {"weight": 0},
+        "visual": {
+            "shape": "standard", "dims": [0.52, 0.60, 0.38],
+            "shoulder_w": 1.0, "hip_w": 0.85, "color": 0x2a1a4a,
+        },
     },
-    "chassis_heavy": {
-        "id": "chassis_heavy", "name": "Chassis Pesante", "slot": "chassis", "cost": 350,
-        "stats": {"max_hp": 200, "weapon_slots": 3, "weight": 30},
+    "torso_heavy": {
+        "id": "torso_heavy", "name": "Busto Corazzato", "slot": "torso", "cost": 0,
+        "stats": {"weight": 0},
+        "visual": {
+            "shape": "heavy", "dims": [0.70, 0.64, 0.52],
+            "shoulder_w": 1.05, "hip_w": 1.0, "color": 0x241633,
+        },
+    },
+    "torso_barrel": {
+        "id": "torso_barrel", "name": "Busto a Botte", "slot": "torso", "cost": 0,
+        "stats": {"weight": 0},
+        "visual": {
+            "shape": "barrel", "dims": [0.58, 0.62, 0.58],
+            "shoulder_w": 0.95, "hip_w": 0.9, "color": 0x2a1a4a,
+        },
+    },
+    "torso_wide": {
+        "id": "torso_wide", "name": "Busto Ampio", "slot": "torso", "cost": 0,
+        "stats": {"weight": 0},
+        "visual": {
+            "shape": "wide", "dims": [0.56, 0.58, 0.36],
+            "shoulder_w": 1.35, "hip_w": 0.6, "color": 0x2a1a4a,
+        },
     },
 
-    # --- MOVIMENTO: velocita' base, turn_rate, peso ------------------------
-    "move_treads": {
-        "id": "move_treads", "name": "Cingoli", "slot": "movement", "cost": 0,
-        "stats": {"speed": 2.2, "turn_rate": 1.4, "weight": 12},
+    # --- TESTA -------------------------------------------------------------
+    "head_round": {
+        "id": "head_round", "name": "Testa Sferica", "slot": "head", "cost": 0,
+        "stats": {"weight": 0},
+        "visual": {"style": "round", "size": 0.15},
     },
-    "move_wheels": {
-        "id": "move_wheels", "name": "Ruote", "slot": "movement", "cost": 120,
-        "stats": {"speed": 3.4, "turn_rate": 2.6, "weight": 6},
+    "head_visor": {
+        "id": "head_visor", "name": "Testa a Visiera", "slot": "head", "cost": 0,
+        "stats": {"weight": 0},
+        "visual": {"style": "visor", "size": 0.15},
     },
-    "move_legs": {
-        "id": "move_legs", "name": "Gambe", "slot": "movement", "cost": 200,
-        "stats": {"speed": 3.0, "turn_rate": 3.2, "weight": 8},
+    "head_angular": {
+        "id": "head_angular", "name": "Testa Angolare", "slot": "head", "cost": 0,
+        "stats": {"weight": 0},
+        "visual": {"style": "angular", "size": 0.16},
+    },
+    "head_antenna": {
+        "id": "head_antenna", "name": "Testa con Antenne", "slot": "head", "cost": 0,
+        "stats": {"weight": 0},
+        "visual": {"style": "antenna", "size": 0.12},
+    },
+    "head_cyclops": {
+        "id": "head_cyclops", "name": "Testa Monocolo", "slot": "head", "cost": 0,
+        "stats": {"weight": 0},
+        "visual": {"style": "cyclops", "size": 0.16},
+    },
+
+    # --- BRACCIA -------------------------------------------------------------
+    "arms_slim": {
+        "id": "arms_slim", "name": "Braccia Slim", "slot": "arms", "cost": 0,
+        "stats": {"weight": 0},
+        "visual": {"style": "slim", "upper_len": 0.26, "fore_len": 0.24, "radius": 0.04, "hand": 0.05},
+    },
+    "arms_standard": {
+        "id": "arms_standard", "name": "Braccia Standard", "slot": "arms", "cost": 0,
+        "stats": {"weight": 0},
+        "visual": {"style": "standard", "upper_len": 0.28, "fore_len": 0.26, "radius": 0.055, "hand": 0.06},
+    },
+    "arms_heavy": {
+        "id": "arms_heavy", "name": "Braccia Pesanti", "slot": "arms", "cost": 0,
+        "stats": {"weight": 0},
+        "visual": {"style": "heavy", "upper_len": 0.24, "fore_len": 0.22, "radius": 0.095, "hand": 0.09},
+    },
+    "arms_long": {
+        "id": "arms_long", "name": "Braccia Lunghe", "slot": "arms", "cost": 0,
+        "stats": {"weight": 0},
+        "visual": {"style": "long", "upper_len": 0.38, "fore_len": 0.36, "radius": 0.045, "hand": 0.055},
+    },
+    "arms_claw": {
+        "id": "arms_claw", "name": "Braccia ad Artiglio", "slot": "arms", "cost": 0,
+        "stats": {"weight": 0},
+        "visual": {"style": "claw", "upper_len": 0.27, "fore_len": 0.25, "radius": 0.045, "hand": 0.07},
+    },
+
+    # --- GAMBE -------------------------------------------------------------
+    "legs_slim": {
+        "id": "legs_slim", "name": "Gambe Slim", "slot": "legs", "cost": 0,
+        "stats": {"weight": 0},
+        "visual": {"style": "slim", "thigh_len": 0.28, "shin_len": 0.26, "radius": 0.045, "foot": 0.14, "stance": 0.16},
+    },
+    "legs_standard": {
+        "id": "legs_standard", "name": "Gambe Standard", "slot": "legs", "cost": 0,
+        "stats": {"weight": 0},
+        "visual": {"style": "standard", "thigh_len": 0.32, "shin_len": 0.30, "radius": 0.06, "foot": 0.16, "stance": 0.2},
+    },
+    "legs_heavy": {
+        "id": "legs_heavy", "name": "Gambe Pesanti", "slot": "legs", "cost": 0,
+        "stats": {"weight": 0},
+        "visual": {"style": "heavy", "thigh_len": 0.28, "shin_len": 0.26, "radius": 0.10, "foot": 0.22, "stance": 0.28},
+    },
+    "legs_digitigrade": {
+        "id": "legs_digitigrade", "name": "Gambe Digitigrade", "slot": "legs", "cost": 0,
+        "stats": {"weight": 0},
+        "visual": {"style": "digitigrade", "thigh_len": 0.26, "shin_len": 0.30, "radius": 0.05, "foot": 0.20, "stance": 0.2},
+    },
+    "legs_spider": {
+        "id": "legs_spider", "name": "Gambe Ragno (x4)", "slot": "legs", "cost": 0,
+        "stats": {"weight": 0},
+        "visual": {"style": "spider", "thigh_len": 0.26, "shin_len": 0.30, "radius": 0.04, "foot": 0.10, "stance": 0.34},
     },
 
     # --- ARMI: danno, cadenza di fuoco (colpi/sec), gittata (celle), peso -
@@ -115,7 +215,17 @@ PIECES = {
     },
 }
 
-SLOTS = ("chassis", "movement", "weapon", "armor", "core")
+SLOTS = ("torso", "head", "arms", "legs", "weapon", "armor", "core")
+
+# torso/head/arms/legs sono per ora SOLO estetici (nessuna 'stats' che
+# concorra al calcolo sotto): la personalizzazione umanoide serve a dare
+# struttura/dimensione diversa al robot mentre decidiamo con calma come
+# le stat di combattimento dovranno dipendere da questi pezzi.
+# Fino ad allora ogni robot umanoide parte dalle stesse stat di base.
+BASE_MAX_HP = 130
+BASE_SPEED = 3.0
+BASE_TURN_RATE = 2.8
+BASE_WEAPON_SLOTS = 2
 
 # Costante di attrito peso->velocita': ogni unita' di peso oltre il peso
 # "di riferimento" del movimento rallenta il robot. Valore da bilanciare
@@ -147,32 +257,47 @@ def catalog_snapshot():
 # ---------------------------------------------------------------------------
 
 def validate_loadout(loadout: dict) -> dict:
-    """Valida un loadout (dict con chassis_id/movement_id/weapon_ids/
-    armor_id/core_id). Solleva GarageError con messaggio parlante al primo
-    problema trovato. Ritorna i pezzi risolti (dict di oggetti pezzo)."""
+    """Valida un loadout (dict con torso_id/head_id/arms_id/legs_id/
+    weapon_ids/armor_id/core_id). Solleva GarageError con messaggio
+    parlante al primo problema trovato. Ritorna i pezzi risolti (dict di
+    oggetti pezzo)."""
 
-    chassis_id = loadout.get("chassis_id")
-    movement_id = loadout.get("movement_id")
+    torso_id = loadout.get("torso_id")
+    head_id = loadout.get("head_id")
+    arms_id = loadout.get("arms_id")
+    legs_id = loadout.get("legs_id")
     weapon_ids = loadout.get("weapon_ids") or []
     armor_id = loadout.get("armor_id")
     core_id = loadout.get("core_id")
 
-    if not chassis_id:
-        raise GarageError("Manca lo chassis.")
-    if not movement_id:
-        raise GarageError("Manca il modulo di movimento.")
+    if not torso_id:
+        raise GarageError("Manca il busto.")
+    if not head_id:
+        raise GarageError("Manca la testa.")
+    if not arms_id:
+        raise GarageError("Mancano le braccia.")
+    if not legs_id:
+        raise GarageError("Mancano le gambe.")
     if not weapon_ids:
         raise GarageError("Serve almeno un'arma.")
     if not isinstance(weapon_ids, list):
         raise GarageError("weapon_ids deve essere una lista.")
 
-    chassis = get_piece(chassis_id)
-    if chassis["slot"] != "chassis":
-        raise GarageError(f"'{chassis_id}' non e' uno chassis.")
+    torso = get_piece(torso_id)
+    if torso["slot"] != "torso":
+        raise GarageError(f"'{torso_id}' non e' un busto.")
 
-    movement = get_piece(movement_id)
-    if movement["slot"] != "movement":
-        raise GarageError(f"'{movement_id}' non e' un modulo di movimento.")
+    head = get_piece(head_id)
+    if head["slot"] != "head":
+        raise GarageError(f"'{head_id}' non e' una testa.")
+
+    arms = get_piece(arms_id)
+    if arms["slot"] != "arms":
+        raise GarageError(f"'{arms_id}' non e' un paio di braccia.")
+
+    legs = get_piece(legs_id)
+    if legs["slot"] != "legs":
+        raise GarageError(f"'{legs_id}' non e' un paio di gambe.")
 
     weapons = []
     for wid in weapon_ids:
@@ -181,10 +306,9 @@ def validate_loadout(loadout: dict) -> dict:
             raise GarageError(f"'{wid}' non e' un'arma.")
         weapons.append(w)
 
-    max_slots = chassis["stats"]["weapon_slots"]
-    if len(weapons) > max_slots:
+    if len(weapons) > BASE_WEAPON_SLOTS:
         raise GarageError(
-            f"Troppe armi: {chassis['name']} ha {max_slots} slot, "
+            f"Troppe armi: al momento sono disponibili {BASE_WEAPON_SLOTS} slot, "
             f"ne hai equipaggiate {len(weapons)}."
         )
 
@@ -201,37 +325,38 @@ def validate_loadout(loadout: dict) -> dict:
             raise GarageError(f"'{core_id}' non e' un core.")
 
     return {
-        "chassis": chassis, "movement": movement, "weapons": weapons,
-        "armor": armor, "core": core,
+        "torso": torso, "head": head, "arms": arms, "legs": legs,
+        "weapons": weapons, "armor": armor, "core": core,
     }
 
 
 def compute_derived_stats(resolved: dict) -> dict:
     """A partire dai pezzi risolti (output di validate_loadout), calcola
-    le statistiche finali del robot pronte per l'arena."""
-    chassis = resolved["chassis"]
-    movement = resolved["movement"]
+    le statistiche finali del robot pronte per l'arena.
+
+    NOTA: torso/head/arms/legs sono per ora solo estetici (vedi commento
+    su SLOTS) quindi max_hp/speed/turn_rate partono da una base fissa
+    uguale per tutte le combinazioni umanoidi. Solo armi/armatura/core
+    influenzano le stat, esattamente come prima."""
     weapons = resolved["weapons"]
     armor = resolved["armor"]
     core = resolved["core"]
 
     total_weight = (
-        chassis["stats"]["weight"]
-        + movement["stats"]["weight"]
-        + sum(w["stats"]["weight"] for w in weapons)
+        sum(w["stats"]["weight"] for w in weapons)
         + (armor["stats"]["weight"] if armor else 0)
     )
 
     effective_speed = max(
         MIN_EFFECTIVE_SPEED,
-        movement["stats"]["speed"] - WEIGHT_SPEED_FACTOR * total_weight,
+        BASE_SPEED - WEIGHT_SPEED_FACTOR * total_weight,
     )
 
     return {
-        "max_hp": chassis["stats"]["max_hp"],
+        "max_hp": BASE_MAX_HP,
         "weight": total_weight,
         "speed": round(effective_speed, 3),
-        "turn_rate": movement["stats"]["turn_rate"],
+        "turn_rate": BASE_TURN_RATE,
         "damage_reduction": armor["stats"]["damage_reduction"] if armor else 0.0,
         "hp_regen_per_sec": core["stats"]["hp_regen_per_sec"] if core else 0.0,
         "reload_bonus": core["stats"]["reload_bonus"] if core else 0.0,
@@ -256,8 +381,10 @@ CREATE TABLE IF NOT EXISTS robots (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     owner_id     INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
     name         TEXT NOT NULL,
-    chassis_id   TEXT NOT NULL,
-    movement_id  TEXT NOT NULL,
+    torso_id     TEXT NOT NULL,
+    head_id      TEXT NOT NULL,
+    arms_id      TEXT NOT NULL,
+    legs_id      TEXT NOT NULL,
     weapon_ids   TEXT NOT NULL,   -- JSON array di piece id
     armor_id     TEXT,
     core_id      TEXT,
@@ -267,6 +394,12 @@ CREATE TABLE IF NOT EXISTS robots (
 
 CREATE INDEX IF NOT EXISTS idx_robots_owner ON robots(owner_id);
 """
+# NOTA MIGRAZIONE: questo schema sostituisce le vecchie colonne
+# chassis_id/movement_id con torso_id/head_id/arms_id/legs_id. Su un DB
+# gia' esistente con la vecchia tabella 'robots', CREATE TABLE IF NOT
+# EXISTS non la altera: cancella/rinomina il vecchio file .db (o la
+# vecchia tabella) prima di ripartire, i robot salvati in precedenza
+# non sono comunque compatibili con il nuovo formato loadout.
 
 
 def init_db(conn: sqlite3.Connection) -> None:
@@ -283,8 +416,10 @@ def _row_to_robot(row: sqlite3.Row) -> dict:
         "id": row["id"],
         "owner_id": row["owner_id"],
         "name": row["name"],
-        "chassis_id": row["chassis_id"],
-        "movement_id": row["movement_id"],
+        "torso_id": row["torso_id"],
+        "head_id": row["head_id"],
+        "arms_id": row["arms_id"],
+        "legs_id": row["legs_id"],
         "weapon_ids": json.loads(row["weapon_ids"]),
         "armor_id": row["armor_id"],
         "core_id": row["core_id"],
@@ -319,9 +454,10 @@ def save_robot(conn: sqlite3.Connection, owner_id: int, name: str, loadout: dict
 
         cur = conn.execute(
             "INSERT INTO robots "
-            "(owner_id, name, chassis_id, movement_id, weapon_ids, armor_id, core_id, "
-            " created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (owner_id, name, loadout["chassis_id"], loadout["movement_id"],
+            "(owner_id, name, torso_id, head_id, arms_id, legs_id, weapon_ids, armor_id, "
+            " core_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (owner_id, name, loadout["torso_id"], loadout["head_id"],
+             loadout["arms_id"], loadout["legs_id"],
              weapon_ids_json, loadout.get("armor_id"), loadout.get("core_id"), now, now),
         )
         conn.commit()
@@ -336,9 +472,10 @@ def save_robot(conn: sqlite3.Connection, owner_id: int, name: str, loadout: dict
             raise GarageError("Questo robot non appartiene a questo account.")
 
         conn.execute(
-            "UPDATE robots SET name=?, chassis_id=?, movement_id=?, weapon_ids=?, "
-            "armor_id=?, core_id=?, updated_at=? WHERE id=?",
-            (name, loadout["chassis_id"], loadout["movement_id"], weapon_ids_json,
+            "UPDATE robots SET name=?, torso_id=?, head_id=?, arms_id=?, legs_id=?, "
+            "weapon_ids=?, armor_id=?, core_id=?, updated_at=? WHERE id=?",
+            (name, loadout["torso_id"], loadout["head_id"], loadout["arms_id"],
+             loadout["legs_id"], weapon_ids_json,
              loadout.get("armor_id"), loadout.get("core_id"), now, robot_id),
         )
         conn.commit()
@@ -396,19 +533,20 @@ if __name__ == "__main__":
         owner_id = acc["id"]
 
         loadout = {
-            "chassis_id": "chassis_medium",
-            "movement_id": "move_wheels",
+            "torso_id": "torso_standard",
+            "head_id": "head_visor",
+            "arms_id": "arms_standard",
+            "legs_id": "legs_standard",
             "weapon_ids": ["weap_laser", "weap_mg"],
             "armor_id": "armor_light",
             "core_id": "core_regen",
         }
         robot = save_robot(conn, owner_id, "Falco Rosso", loadout)
         print("Robot creato:", json.dumps(robot, indent=2, ensure_ascii=False))
-        assert robot["derived_stats"]["max_hp"] == 130
+        assert robot["derived_stats"]["max_hp"] == BASE_MAX_HP
 
-        # Troppe armi per lo slot disponibile -> deve fallire
-        bad_loadout = dict(loadout, chassis_id="chassis_light",
-                            weapon_ids=["weap_laser", "weap_mg"])
+        # Troppe armi rispetto agli slot disponibili -> deve fallire
+        bad_loadout = dict(loadout, weapon_ids=["weap_laser", "weap_mg", "weap_missiles"])
         try:
             save_robot(conn, owner_id, "Errore", bad_loadout)
             print("ERRORE: doveva fallire (troppe armi)")
@@ -417,7 +555,7 @@ if __name__ == "__main__":
 
         # Pezzo inesistente -> deve fallire
         try:
-            save_robot(conn, owner_id, "Errore2", dict(loadout, chassis_id="chassis_fantasma"))
+            save_robot(conn, owner_id, "Errore2", dict(loadout, torso_id="torso_fantasma"))
             print("ERRORE: doveva fallire (pezzo inesistente)")
         except GarageError as e:
             print("OK, rifiutato:", e)
