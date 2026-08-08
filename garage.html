@@ -169,6 +169,7 @@
       <div class="brand">Officina Robot<small>Assembly Bay // Sala del Trono Violetta</small></div>
       <div class="userBox">
         <span id="userLabel"></span>
+        <a href="/arena" id="goArenaBtn" style="text-decoration:none; background:transparent; border:1px solid var(--line); color:var(--accent-glow); font-family:inherit; font-size:10px; letter-spacing:1px; padding:6px 10px; border-radius:3px;">Vai in Arena →</a>
         <button id="logoutBtn">Esci</button>
       </div>
     </div>
@@ -270,18 +271,17 @@ function computeDerivedStats(){
 // WebSocket
 // ---------------------------------------------------------------
 function defaultServerUrl(){
-  // In locale il backend gira su una porta fissa accanto al client.
-  // In produzione (es. Render) client e backend sono su domini/URL
-  // diversi: niente porta indovinata, l'utente incolla l'indirizzo
-  // wss:// del backend nel campo Server (persistito in localStorage).
+  // Stesso servizio serve sia questa pagina che il WebSocket (vedi
+  // serve_client in server.py): stessa origine, stessa porta, si passa
+  // solo da http(s) a ws(s). Il campo resta comunque modificabile a
+  // mano (utile in sviluppo locale con porte diverse) e il valore
+  // scelto viene ricordato in localStorage.
   const saved = localStorage.getItem("robotArenaServerUrl");
   if(saved) return saved;
-  const host = location.hostname || "localhost";
-  if(host === "localhost" || host === "127.0.0.1"){
-    return `ws://${host}:8766`;
-  }
-  return "";
+  const proto = location.protocol === "https:" ? "wss:" : "ws:";
+  return `${proto}//${location.host}`;
 }
+document.getElementById("serverUrl").value = defaultServerUrl();
 document.getElementById("serverUrl").addEventListener("change", (e) => {
   localStorage.setItem("robotArenaServerUrl", e.target.value.trim());
 });

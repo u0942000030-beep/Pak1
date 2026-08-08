@@ -177,6 +177,7 @@
   <div id="topBar">
     <div class="brand">Sala del Trono Violetta<small id="connStatus">connessione...</small></div>
     <div class="rightRow">
+      <a href="/" style="text-decoration:none; background:rgba(12,8,22,0.85); border:1px solid var(--line); color:var(--dim); font-family:inherit; font-size:10px; letter-spacing:1px; padding:7px 12px; border-radius:3px;">← Officina</a>
       <button id="camToggleBtn">Camera: 3a Persona</button>
       <button id="leaveBtn" class="leaveBtn">Lascia Arena</button>
     </div>
@@ -240,16 +241,14 @@ function pieceById(id){
 // WebSocket
 // ---------------------------------------------------------------
 function defaultServerUrl(){
-  // Stesso server unificato (garage+arena) del garage: vedi server.py.
-  // In locale porta fissa 8766; in produzione l'utente incolla l'URL
-  // wss:// reale del backend (persistito in localStorage).
+  // Stesso servizio serve sia questa pagina che il WebSocket (vedi
+  // serve_client in server.py): stessa origine, stessa porta, si passa
+  // solo da http(s) a ws(s). Modificabile a mano, ricordato in
+  // localStorage.
   const saved = localStorage.getItem("robotArenaServerUrl");
   if(saved) return saved;
-  const host = location.hostname || "localhost";
-  if(host === "localhost" || host === "127.0.0.1"){
-    return `ws://${host}:8766`;
-  }
-  return "";
+  const proto = location.protocol === "https:" ? "wss:" : "ws:";
+  return `${proto}//${location.host}`;
 }
 document.getElementById("serverUrl").value = defaultServerUrl();
 document.getElementById("serverUrl").addEventListener("change", (e) => {

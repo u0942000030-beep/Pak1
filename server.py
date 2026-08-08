@@ -36,10 +36,13 @@ Avvio su Render:
 import asyncio
 import json
 import os
+import pathlib
 import sys
 import uuid
 
 import websockets
+from websockets.datastructures import Headers
+from websockets.http11 import Response
 
 import accounts
 import garage
@@ -49,6 +52,59 @@ from common import TICK_DT
 DB_PATH = os.environ.get("DB_PATH", "robot_arena.db")
 DEFAULT_PORT = 8766
 BROADCAST_EVERY_N_TICKS = 3  # stato broadcast a TICK_HZ/3 (~20Hz), fisica a 60Hz piena
+
+# Stesso pattern di main.py (Pac-Man Arena): un solo processo/servizio
+# basta per tutto, niente static site separato su Render. Le richieste
+# HTTP GET normali (non upgrade a WebSocket) ricevono garage.html o
+# arena.html a seconda del path; le vere richieste WebSocket del gioco
+# proseguono normalmente (vedi serve_client sotto).
+_HERE = pathlib.Path(__file__).parent
+
+
+def _load_html(filename):
+    path = _HERE / filename
+    try:
+        return path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+
+
+GARAGE_HTML = _load_html("garage.html")
+ARENA_HTML = _load_html("arena.html")
+
+
+async def serve_client(connection, request):
+    """process_request: intercetta le richieste HTTP GET normali (aperture
+    di link da browser, health check della piattaforma di hosting) e
+    risponde con la pagina giusta in base al path. Le richieste di upgrade
+    WebSocket (Upgrade: websocket) proseguono invece normalmente restituendo
+    None. Vedi la nota identica in main.py di Pac-Man Arena sul motivo per
+    cui la firma dev'essere esattamente (connection, request) -> Response|None
+    con un vero oggetto websockets.http11.Response."""
+    upgrade = request.headers.get("Upgrade", "")
+    if upgrade.lower() == "websocket":
+        return None  # lascia proseguire come WebSocket
+
+    path = request.path.split("?", 1)[0]
+    if path in ("/arena", "/arena.html") and ARENA_HTML is not None:
+        body = ARENA_HTML.encode("utf-8")
+    elif GARAGE_HTML is not None:
+        # / , /garage, /garage.html o qualunque altro path -> officina
+        # (schermata di partenza del gioco).
+        body = GARAGE_HTML.encode("utf-8")
+    else:
+        body = b"Robot Arena server OK\n"
+        headers = Headers([
+            ("Content-Type", "text/plain; charset=utf-8"),
+            ("Content-Length", str(len(body))),
+        ])
+        return Response(200, "OK", headers, body)
+
+    headers = Headers([
+        ("Content-Type", "text/html; charset=utf-8"),
+        ("Content-Length", str(len(body))),
+    ])
+    return Response(200, "OK", headers, body)
 
 
 def make_error(message: str) -> dict:
@@ -273,7 +329,10 @@ async def main():
     tick_task = asyncio.create_task(server.tick_loop())
 
     print(f"Server unificato (garage+arena) in ascolto su ws://0.0.0.0:{port}  (mappa: {server.arena.name})")
-    async with websockets.serve(server.handle_client, "0.0.0.0", port):
+    async with websockets.serve(
+        server.handle_client, "0.0.0.0", port, process_request=serve_client,
+        compression=None,
+    ):
         await tick_task
 
 
