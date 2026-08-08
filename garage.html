@@ -83,7 +83,7 @@
   #robotNameInput:focus{ outline:none; border-color:var(--accent); }
 
   #slotTabs{ display:flex; flex-wrap:wrap; border-bottom:1px solid var(--line); flex-shrink:0; }
-  #slotTabs button{ flex:1 1 14%; min-width:52px; background:var(--panel2); border:none; border-right:1px solid var(--line);
+  #slotTabs button{ flex:1 1 22%; min-width:52px; background:var(--panel2); border:none; border-right:1px solid var(--line);
     border-bottom:1px solid var(--line); color:var(--dim); font-family:inherit; font-size:8.5px; letter-spacing:0.5px;
     padding:9px 2px; cursor:pointer; text-transform:uppercase; }
   #slotTabs button:last-child{ border-right:none; }
@@ -99,6 +99,32 @@
   .pieceCard .pStats{ font-size:10px; color:var(--data); margin-top:5px; letter-spacing:0.5px; }
   .pieceCard .pCost{ font-size:9px; color:var(--dim); margin-top:3px; }
   .slotHint{ font-size:10px; color:var(--dim); padding:0 2px 10px; letter-spacing:0.5px; }
+
+  /* ---------- costruttore catena arto (braccia/gambe) ---------- */
+  .chainMsg{ font-size:10px; padding:6px 8px; border-radius:3px; margin-bottom:10px; letter-spacing:0.3px; }
+  .chainMsg.ok{ color:var(--ok); background:rgba(125,255,168,0.08); border:1px solid rgba(125,255,168,0.25); }
+  .chainMsg.err{ color:var(--warn); background:rgba(255,179,92,0.08); border:1px solid rgba(255,179,92,0.25); }
+  .chainList{ display:flex; flex-direction:column; gap:5px; margin-bottom:12px; }
+  .chainStep{ display:flex; align-items:center; gap:6px; background:#0f0a1c; border:1px solid var(--line);
+    border-radius:4px; padding:6px 8px; font-size:10.5px; }
+  .chainStep .stepIdx{ color:var(--dim); font-size:9px; min-width:14px; }
+  .chainStep .stepName{ flex:1; color:var(--text); }
+  .chainStep .stepBtns{ display:flex; gap:3px; }
+  .chainStep button{ background:var(--panel2); border:1px solid var(--line); color:var(--dim); border-radius:3px;
+    font-family:inherit; font-size:10px; width:20px; height:20px; cursor:pointer; line-height:1; }
+  .chainStep button:hover{ border-color:var(--accent); color:var(--accent-glow); }
+  .chainStep button.rm:hover{ border-color:var(--danger); color:var(--danger); }
+  .chainEmpty{ font-size:10px; color:var(--dim); padding:10px 4px; text-align:center; border:1px dashed var(--line); border-radius:4px; }
+  .chainCatTabs{ display:flex; flex-wrap:wrap; gap:4px; margin-bottom:8px; }
+  .chainCatTabs button{ background:var(--panel2); border:1px solid var(--line); color:var(--dim); border-radius:3px;
+    font-family:inherit; font-size:9.5px; letter-spacing:0.3px; padding:5px 8px; cursor:pointer; }
+  .chainCatTabs button.active{ background:var(--accent); color:#0a0212; border-color:var(--accent); font-weight:bold; }
+  .chainAddGrid{ display:flex; flex-direction:column; gap:6px; }
+  .chainAddCard{ background:#0f0a1c; border:1px solid var(--line); border-radius:4px; padding:8px 10px;
+    cursor:pointer; transition:border-color 0.1s; }
+  .chainAddCard:hover{ border-color:var(--accent); }
+  .chainAddCard .pName{ font-size:11px; color:var(--text); }
+  .chainAddCard .pStats{ font-size:9.5px; color:var(--data); margin-top:3px; }
 
   #statsReadout{ flex-shrink:0; border-top:1px solid var(--line); padding:12px 16px; background:var(--panel2); }
   #statsReadout .eyebrow{ margin-bottom:8px; }
@@ -185,8 +211,10 @@
     <div id="slotTabs">
       <button data-slot="torso" class="active">Busto</button>
       <button data-slot="head">Testa</button>
-      <button data-slot="arms">Braccia</button>
-      <button data-slot="legs">Gambe</button>
+      <button data-slot="arm_left">Br. Sx</button>
+      <button data-slot="arm_right">Br. Dx</button>
+      <button data-slot="leg_left">Ga. Sx</button>
+      <button data-slot="leg_right">Ga. Dx</button>
       <button data-slot="weapon">Armi</button>
       <button data-slot="armor">Corazza</button>
       <button data-slot="core">Core</button>
@@ -226,10 +254,12 @@ const state = {
   robots: [],              // lista robot salvati dell'account
   currentRobotId: null,    // null = robot nuovo, non ancora salvato
   loadout: {               // loadout in editing
-    torso_id: null, head_id: null, arms_id: null, legs_id: null,
+    torso_id: null, head_id: null,
+    arm_left: [], arm_right: [], leg_left: [], leg_right: [],
     weapon_ids: [], armor_id: null, core_id: null,
   },
   activeSlotTab: "torso",
+  activeChainCategory: "limb_segment",  // sotto-tab attiva nel costruttore arto
 };
 
 // Costanti di bilanciamento duplicate da garage.py per l'anteprima
@@ -242,22 +272,59 @@ const BASE_SPEED = 3.0;
 const BASE_TURN_RATE = 2.8;
 const BASE_WEAPON_SLOTS = 2;
 
+// Slot che sono "catene arto" (braccio/gamba costruiti pezzo su pezzo)
+// invece di una singola selezione. Duplicato lato client di garage.py.
+const LIMB_SLOTS = ["arm_left", "arm_right", "leg_left", "leg_right"];
+const LIMB_CHAIN_CATEGORIES = ["limb_segment", "limb_joint", "limb_actuator", "limb_tendon", "limb_terminal"];
+const LIMB_CHAIN_LABELS = {
+  limb_segment: "Segmenti", limb_joint: "Giunture", limb_actuator: "Ammortizzatori",
+  limb_tendon: "Tendini", limb_terminal: "Terminali",
+};
+const MIN_CHAIN_LEN = 2, MAX_CHAIN_LEN = 8;
+const ARM_TERMINAL_KINDS = ["hand", "claw", "universal"];
+const LEG_TERMINAL_KINDS = ["foot", "universal"];
+
 function pieceById(id){
   if(!id || !state.catalog) return null;
   return state.catalog.pieces.find(p => p.id === id) || null;
 }
 
+function chainPieces(slot){
+  return (state.loadout[slot] || []).map(pieceById).filter(Boolean);
+}
+
+// Verifica una catena arto e ritorna { ok, msg } - stessa logica di
+// garage.py validate_limb_chain, in versione permissiva per l'editor
+// (qui serve solo per il messaggio a video, il server ri-valida tutto).
+function checkChain(slot){
+  const isLeg = slot.startsWith("leg_");
+  const label = isLeg ? "gamba" : "braccio";
+  const ids = state.loadout[slot] || [];
+  if(ids.length < MIN_CHAIN_LEN) return { ok:false, msg:`Serve almeno 1 pezzo strutturale + 1 terminale per la ${label}.` };
+  if(ids.length > MAX_CHAIN_LEN) return { ok:false, msg:`Troppi pezzi (max ${MAX_CHAIN_LEN}) per la ${label}.` };
+  const pieces = ids.map(pieceById);
+  const last = pieces[pieces.length-1];
+  if(!last || last.slot !== "limb_terminal") return { ok:false, msg:`L'ultimo pezzo deve essere un terminale.` };
+  const allowedKinds = isLeg ? LEG_TERMINAL_KINDS : ARM_TERMINAL_KINDS;
+  if(!allowedKinds.includes(last.visual.kind)) return { ok:false, msg:`'${last.name}' non puo' chiudere una ${label}.` };
+  for(let i=0;i<pieces.length-1;i++){
+    if(pieces[i].slot === "limb_terminal") return { ok:false, msg:`Solo l'ultimo pezzo puo' essere un terminale.` };
+  }
+  const structural = pieces.filter(p => ["limb_segment","limb_joint","limb_actuator"].includes(p.slot));
+  if(structural.length < 1) return { ok:false, msg:`Serve almeno un segmento/giuntura/ammortizzatore oltre al terminale.` };
+  return { ok:true, msg:`OK: ${pieces.length} pezzi, lunghezza ${structural.reduce((s,p)=>s+p.visual.length,0).toFixed(2)}m` };
+}
+
 function computeDerivedStats(){
   const torso = pieceById(state.loadout.torso_id);
   const head = pieceById(state.loadout.head_id);
-  const arms = pieceById(state.loadout.arms_id);
-  const legs = pieceById(state.loadout.legs_id);
   const weapons = (state.loadout.weapon_ids || []).map(pieceById).filter(Boolean);
   const armor = pieceById(state.loadout.armor_id);
   const core = pieceById(state.loadout.core_id);
-  if(!torso || !head || !arms || !legs) return null;
+  if(!torso || !head) return null;
+  if(LIMB_SLOTS.some(slot => !checkChain(slot).ok)) return null;
 
-  // torso/head/arms/legs sono per ora solo estetici: le stat di
+  // torso/head/braccia/gambe sono per ora solo estetici: le stat di
   // combattimento arrivano quando disegneremo il sistema con calma
   // (vedi nota gemella in garage.py compute_derived_stats).
   const totalWeight = weapons.reduce((s,w) => s + w.stats.weight, 0)
@@ -274,7 +341,7 @@ function computeDerivedStats(){
     hp_regen_per_sec: core ? core.stats.hp_regen_per_sec : 0,
     reload_bonus: core ? core.stats.reload_bonus : 0,
     weapons,
-    torso, head, arms, legs, armor, core,
+    torso, head, armor, core,
   };
 }
 
@@ -411,7 +478,11 @@ function onLoggedIn(account){
 // ---------------------------------------------------------------
 function defaultLoadout(){
   return {
-    torso_id:"torso_standard", head_id:"head_visor", arms_id:"arms_standard", legs_id:"legs_standard",
+    torso_id:"torso_standard", head_id:"head_visor",
+    arm_left: ["seg_med_standard", "joint_hinge_small", "seg_med_thin", "term_hand_round"],
+    arm_right: ["seg_med_standard", "joint_hinge_small", "seg_med_thin", "term_hand_round"],
+    leg_left: ["seg_long_thin", "joint_hinge_large", "seg_med_standard", "term_foot_flat"],
+    leg_right: ["seg_long_thin", "joint_hinge_large", "seg_med_standard", "term_foot_flat"],
     weapon_ids:["weap_mg"], armor_id:null, core_id:null,
   };
 }
@@ -427,7 +498,9 @@ function startNewRobot(){
 function loadRobotIntoEditor(robot){
   state.currentRobotId = robot.id;
   state.loadout = {
-    torso_id: robot.torso_id, head_id: robot.head_id, arms_id: robot.arms_id, legs_id: robot.legs_id,
+    torso_id: robot.torso_id, head_id: robot.head_id,
+    arm_left: robot.arm_left.slice(), arm_right: robot.arm_right.slice(),
+    leg_left: robot.leg_left.slice(), leg_right: robot.leg_right.slice(),
     weapon_ids: robot.weapon_ids.slice(), armor_id: robot.armor_id, core_id: robot.core_id,
   };
   document.getElementById("robotNameInput").value = robot.name;
@@ -464,13 +537,16 @@ document.querySelectorAll("#slotTabs button").forEach(btn => {
   };
 });
 
-function statLine(slot, piece){
+function statLine(piece){
   const v = piece.visual || {};
-  switch(slot){
+  switch(piece.slot){
     case "torso": return `Forma: ${v.shape} · Spalle x${v.shoulder_w} · Bacino x${v.hip_w}`;
     case "head": return `Stile: ${v.style}`;
-    case "arms": return `Stile: ${v.style} · Lunghezza braccio ${(v.upper_len+v.fore_len).toFixed(2)}m`;
-    case "legs": return `Stile: ${v.style} · Lunghezza gamba ${(v.thigh_len+v.shin_len).toFixed(2)}m${v.style==="spider" ? " · 4 zampe" : ""}`;
+    case "limb_segment": return `Stile: ${v.style} · Lungh. ${v.length.toFixed(2)}m · Raggio ${v.radius.toFixed(3)}m`;
+    case "limb_joint": return `Stile: ${v.style} · Piega ${v.bend_deg}° · Lungh. ${v.length.toFixed(2)}m`;
+    case "limb_actuator": return `Pistone · Lungh. ${v.length.toFixed(2)}m · Raggio ${v.radius.toFixed(3)}m · non piega`;
+    case "limb_tendon": return `Decorativo · Stile: ${v.style} · non allunga l'arto`;
+    case "limb_terminal": return `Tipo: ${v.kind} · Stile: ${v.style} · Lungh. ${v.length.toFixed(2)}m`;
     case "weapon": return `Danno ${piece.stats.damage} · Cadenza ${piece.stats.fire_rate}/s · Gittata ${piece.stats.range} · Peso ${piece.stats.weight}`;
     case "armor": return `Riduzione Danno ${Math.round(piece.stats.damage_reduction*100)}% · Peso ${piece.stats.weight}`;
     case "core": return `Rigen ${piece.stats.hp_regen_per_sec}/s · Ricarica +${Math.round(piece.stats.reload_bonus*100)}%`;
@@ -500,9 +576,41 @@ function togglePiece(slot, id){
     // opzionali: click su un pezzo gia' selezionato lo rimuove
     state.loadout[slot + "_id"] = (state.loadout[slot + "_id"] === id) ? null : id;
   } else {
-    // torso / head / arms / legs: sempre uno selezionato, si sostituisce
+    // torso / head: sempre uno selezionato, si sostituisce
     state.loadout[slot + "_id"] = id;
   }
+  refreshAll();
+}
+
+// ---- gestione catene arto (braccia/gambe) ----
+function chainAppend(limbSlot, pieceId){
+  const chain = state.loadout[limbSlot];
+  if(chain.length >= MAX_CHAIN_LEN){
+    setSaveMsg(`Catena piena (max ${MAX_CHAIN_LEN} pezzi).`, "err");
+    return;
+  }
+  chain.push(pieceId);
+  refreshAll();
+}
+function chainRemove(limbSlot, index){
+  state.loadout[limbSlot].splice(index, 1);
+  refreshAll();
+}
+function chainMove(limbSlot, index, dir){
+  const chain = state.loadout[limbSlot];
+  const j = index + dir;
+  if(j < 0 || j >= chain.length) return;
+  [chain[index], chain[j]] = [chain[j], chain[index]];
+  refreshAll();
+}
+function chainCopyToOtherSide(limbSlot){
+  // Comodo per simmetria: copia la catena sx->dx (o dx->sx) con un click,
+  // restando comunque libero di poi modificarle in modo indipendente.
+  const isLeg = limbSlot.startsWith("leg_");
+  const mirror = limbSlot.endsWith("_left")
+    ? (isLeg ? "leg_right" : "arm_right")
+    : (isLeg ? "leg_left" : "arm_left");
+  state.loadout[mirror] = state.loadout[limbSlot].slice();
   refreshAll();
 }
 
@@ -511,6 +619,12 @@ function renderPieceList(){
   container.innerHTML = "";
   if(!state.catalog) return;
   const slot = state.activeSlotTab;
+
+  if(LIMB_SLOTS.includes(slot)){
+    renderChainBuilder(container, slot);
+    return;
+  }
+
   const pieces = state.catalog.pieces.filter(p => p.slot === slot);
 
   if(slot === "weapon"){
@@ -532,12 +646,95 @@ function renderPieceList(){
     card.className = "pieceCard" + (selected ? " selected" : "");
     card.innerHTML = `
       <div class="pName"><span>${p.name}</span>${selected ? '<span class="check">&#10003;</span>' : ""}</div>
-      <div class="pStats">${statLine(slot, p)}</div>
+      <div class="pStats">${statLine(p)}</div>
       <div class="pCost">Costo: ${p.cost}</div>
     `;
     card.onclick = () => togglePiece(slot, p.id);
     container.appendChild(card);
   });
+}
+
+function renderChainBuilder(container, limbSlot){
+  const isLeg = limbSlot.startsWith("leg_");
+  const label = limbSlot === "arm_left" ? "Braccio Sinistro" : limbSlot === "arm_right" ? "Braccio Destro"
+    : limbSlot === "leg_left" ? "Gamba Sinistra" : "Gamba Destra";
+
+  const hint = document.createElement("div");
+  hint.className = "slotHint";
+  hint.textContent = `${label} — costruisci la catena dall'attacco al ${isLeg ? "bacino" : "busto"} fino al terminale. Clicca un pezzo qui sotto per aggiungerlo in fondo.`;
+  container.appendChild(hint);
+
+  const check = checkChain(limbSlot);
+  const msg = document.createElement("div");
+  msg.className = "chainMsg " + (check.ok ? "ok" : "err");
+  msg.textContent = check.msg;
+  container.appendChild(msg);
+
+  const mirrorBtn = document.createElement("div");
+  mirrorBtn.className = "slotHint";
+  const mirrorLabel = limbSlot.endsWith("_left") ? "destro" : "sinistro";
+  mirrorBtn.innerHTML = `<span style="text-decoration:underline; cursor:pointer;" id="mirrorLink">Copia questa catena sul lato ${mirrorLabel} &#8594;</span>`;
+  container.appendChild(mirrorBtn);
+  container.querySelector("#mirrorLink").onclick = () => chainCopyToOtherSide(limbSlot);
+
+  // --- catena attuale, come lista ordinata con rimuovi/sposta ---
+  const list = document.createElement("div");
+  list.className = "chainList";
+  const ids = state.loadout[limbSlot];
+  if(ids.length === 0){
+    list.innerHTML = `<div class="chainEmpty">Catena vuota — aggiungi il primo pezzo qui sotto.</div>`;
+  } else {
+    ids.forEach((pid, i) => {
+      const p = pieceById(pid);
+      const row = document.createElement("div");
+      row.className = "chainStep";
+      row.innerHTML = `
+        <span class="stepIdx">${i+1}.</span>
+        <span class="stepName">${p ? p.name : "?"}${p && p.slot === "limb_terminal" ? " (terminale)" : ""}</span>
+        <span class="stepBtns">
+          <button class="up" title="Sposta su" ${i===0?"disabled":""}>&#8593;</button>
+          <button class="dn" title="Sposta giu'" ${i===ids.length-1?"disabled":""}>&#8595;</button>
+          <button class="rm" title="Rimuovi">&#10005;</button>
+        </span>
+      `;
+      row.querySelector(".up").onclick = () => chainMove(limbSlot, i, -1);
+      row.querySelector(".dn").onclick = () => chainMove(limbSlot, i, 1);
+      row.querySelector(".rm").onclick = () => chainRemove(limbSlot, i);
+      list.appendChild(row);
+    });
+  }
+  container.appendChild(list);
+
+  // --- sotto-tab per categoria + griglia pezzi aggiungibili ---
+  const catTabs = document.createElement("div");
+  catTabs.className = "chainCatTabs";
+  LIMB_CHAIN_CATEGORIES.forEach(cat => {
+    const b = document.createElement("button");
+    b.textContent = LIMB_CHAIN_LABELS[cat];
+    if(cat === state.activeChainCategory) b.classList.add("active");
+    b.onclick = () => { state.activeChainCategory = cat; renderPieceList(); };
+    catTabs.appendChild(b);
+  });
+  container.appendChild(catTabs);
+
+  const addGrid = document.createElement("div");
+  addGrid.className = "chainAddGrid";
+  let addPieces = state.catalog.pieces.filter(p => p.slot === state.activeChainCategory);
+  if(state.activeChainCategory === "limb_terminal"){
+    const allowedKinds = isLeg ? LEG_TERMINAL_KINDS : ARM_TERMINAL_KINDS;
+    addPieces = addPieces.filter(p => allowedKinds.includes(p.visual.kind));
+  }
+  addPieces.forEach(p => {
+    const card = document.createElement("div");
+    card.className = "chainAddCard";
+    card.innerHTML = `<div class="pName">+ ${p.name}</div><div class="pStats">${statLine(p)}</div>`;
+    card.onclick = () => chainAppend(limbSlot, p.id);
+    addGrid.appendChild(card);
+  });
+  if(addPieces.length === 0){
+    addGrid.innerHTML = `<div class="chainEmpty">Nessun pezzo compatibile in questa categoria.</div>`;
+  }
+  container.appendChild(addGrid);
 }
 
 // ---------------------------------------------------------------
@@ -721,22 +918,185 @@ function addEdgeGlow(mesh, color){
   mesh.add(line);
 }
 
-// Crea un "osso" (cilindro) tra due punti 3D qualunque: usato per
-// braccia e gambe, cosi' ogni segmento puo' piegarsi/allargarsi in
-// qualunque direzione senza dover fare i conti a mano con le rotazioni.
-function boneBetween(a, b, rTop, rBottom, mat){
+// Orienta e posiziona una mesh gia' creata (altezza unitaria lungo Y
+// locale, cioe' da -0.5 a +0.5) tra due punti 3D qualunque, poi la
+// "allunga" con scale.y. Usata per costruire liberamente la catena di
+// un arto: ogni pezzo puo' puntare in qualunque direzione senza dover
+// fare i conti a mano con le rotazioni. Ritorna la lunghezza (a,b).
+function orientBetween(mesh, a, b){
   const start = new THREE.Vector3(a[0], a[1], a[2]);
   const end = new THREE.Vector3(b[0], b[1], b[2]);
+  mesh.position.copy(start).add(end).multiplyScalar(0.5);
   const dir = new THREE.Vector3().subVectors(end, start);
   const len = Math.max(0.001, dir.length());
-  const mesh = new THREE.Mesh(new THREE.CylinderGeometry(rTop, rBottom, len, 8), mat);
-  mesh.position.copy(start).add(end).multiplyScalar(0.5);
-  const up = new THREE.Vector3(0, 1, 0);
   const dirNorm = dir.clone().normalize();
+  const up = new THREE.Vector3(0, 1, 0);
   const axis = new THREE.Vector3().crossVectors(up, dirNorm);
   const angle = Math.acos(THREE.MathUtils.clamp(up.dot(dirNorm), -1, 1));
   if(axis.lengthSq() > 1e-8) mesh.quaternion.setFromAxisAngle(axis.normalize(), angle);
-  return mesh;
+  return len;
+}
+
+// ----- pezzi della catena arto: ognuno sa disegnarsi tra due punti -----
+function addSegment(group, p, a, b){
+  const v = p.visual;
+  let mesh;
+  if(v.style === "armored"){
+    mesh = new THREE.Mesh(new THREE.BoxGeometry(v.radius*1.5, 1, v.radius*1.5), matSolid(0x241633, 0xa24bff, 0.2));
+  } else {
+    const rFar = (v.style === "tapered") ? v.radius*0.6 : v.radius; // estremita' lontana dal busto
+    mesh = new THREE.Mesh(new THREE.CylinderGeometry(rFar, v.radius, 1, 10), matSolid(0x1a1030, 0x4bd6ff, 0.15));
+  }
+  const len = orientBetween(mesh, a, b);
+  mesh.scale.y = len;
+  addEdgeGlow(mesh, 0x4bd6ff);
+  group.add(mesh);
+}
+
+function addJoint(group, p, a, b){
+  const v = p.visual;
+  let mesh;
+  if(v.style === "ball"){
+    mesh = new THREE.Mesh(new THREE.SphereGeometry(v.radius, 14, 10), matSolid(0x241633, 0xffb35c, 0.4));
+    mesh.position.set((a[0]+b[0])/2, (a[1]+b[1])/2, (a[2]+b[2])/2);
+  } else {
+    mesh = new THREE.Mesh(new THREE.CylinderGeometry(v.radius, v.radius, 1, 16), matSolid(0x241633, 0xffb35c, 0.4));
+    const len = orientBetween(mesh, a, b);
+    mesh.scale.y = Math.max(0.35, len); // resta visibile come "disco" anche se la lunghezza e' piccola
+  }
+  group.add(mesh);
+}
+
+function addActuator(group, p, a, b){
+  const v = p.visual;
+  const av = new THREE.Vector3(a[0], a[1], a[2]), bv = new THREE.Vector3(b[0], b[1], b[2]);
+  const mid = av.clone().lerp(bv, 0.55);
+
+  const sleeve = new THREE.Mesh(new THREE.CylinderGeometry(v.radius, v.radius, 1, 10), matSolid(0x1a1030, 0x4bd6ff, 0.15));
+  sleeve.scale.y = orientBetween(sleeve, av.toArray(), mid.toArray());
+  group.add(sleeve);
+
+  const rod = new THREE.Mesh(new THREE.CylinderGeometry(v.radius*0.5, v.radius*0.5, 1, 10), matSolid(0x2a1a4a, 0x4bd6ff, 0.2));
+  rod.scale.y = orientBetween(rod, mid.toArray(), bv.toArray());
+  group.add(rod);
+
+  const ring = new THREE.Mesh(new THREE.TorusGeometry(v.radius*1.05, v.radius*0.16, 8, 16),
+    new THREE.MeshStandardMaterial({ color:0xffb35c, emissive:0xffb35c, emissiveIntensity:0.6 }));
+  ring.position.copy(mid);
+  const dir = bv.clone().sub(av).normalize();
+  const zAxis = new THREE.Vector3(0, 0, 1);
+  const axis = new THREE.Vector3().crossVectors(zAxis, dir);
+  const angle = Math.acos(THREE.MathUtils.clamp(zAxis.dot(dir), -1, 1));
+  if(axis.lengthSq() > 1e-8) ring.quaternion.setFromAxisAngle(axis.normalize(), angle);
+  group.add(ring);
+}
+
+function addTendon(group, p, spanA, spanB, side){
+  if(!spanA || !spanB) return;
+  const v = p.visual;
+  const av = new THREE.Vector3(spanA[0], spanA[1], spanA[2]);
+  const bv = new THREE.Vector3(spanB[0], spanB[1], spanB[2]);
+  const perp = new THREE.Vector3(side < 0 ? -1 : 1, 0, 0);
+  const mat = matSolid(0x2a1a4a, 0xff5a4d, 0.3);
+
+  function oneCable(offsetAmt, radius){
+    const a2 = av.clone().addScaledVector(perp, offsetAmt);
+    const b2 = bv.clone().addScaledVector(perp, offsetAmt);
+    const mesh = new THREE.Mesh(new THREE.CylinderGeometry(radius, radius, 1, 6), mat);
+    mesh.scale.y = orientBetween(mesh, a2.toArray(), b2.toArray());
+    group.add(mesh);
+  }
+
+  if(v.style === "twin"){
+    oneCable(0.03, v.radius);
+    oneCable(0.055, v.radius);
+  } else {
+    oneCable(0.035, v.radius); // "single" e "braided" (braided = solo piu' spesso)
+  }
+}
+
+function addTerminal(group, p, a, b){
+  const v = p.visual;
+  const bv = new THREE.Vector3(b[0], b[1], b[2]);
+  const s = v.radius;
+
+  if(v.style === "round_hand"){
+    const mesh = new THREE.Mesh(new THREE.SphereGeometry(s*0.62, 10, 8), matSolid(0x241633, 0x4bd6ff, 0.2));
+    mesh.position.copy(bv);
+    group.add(mesh);
+  } else if(v.style === "grip_hand"){
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(s, s, s), matSolid(0x241633, 0x4bd6ff, 0.2));
+    mesh.position.copy(bv);
+    group.add(mesh);
+  } else if(v.style === "pincer"){
+    const clawMat = matSolid(0x3a1a1a, 0xff5a4d, 0.3);
+    [-1, 1].forEach(o => {
+      const blade = new THREE.Mesh(new THREE.ConeGeometry(s*0.32, s*1.3, 4), clawMat);
+      blade.rotation.x = Math.PI;
+      blade.position.set(bv.x + o*s*0.32, bv.y - s*0.4, bv.z);
+      group.add(blade);
+    });
+  } else if(v.style === "flat_foot"){
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(s*1.4, s*0.35, s*1.9), matSolid(0x241633, 0x4bd6ff, 0.15));
+    mesh.position.set(bv.x, bv.y - s*0.16, bv.z + s*0.5);
+    group.add(mesh);
+  } else if(v.style === "pad_foot"){
+    const mesh = new THREE.Mesh(new THREE.CylinderGeometry(s*0.9, s*0.9, s*0.4, 14), matSolid(0x241633, 0x4bd6ff, 0.15));
+    mesh.position.set(bv.x, bv.y - s*0.18, bv.z + s*0.2);
+    group.add(mesh);
+  } else if(v.style === "talon"){
+    const clawMat = matSolid(0x241633, 0xff5a4d, 0.25);
+    for(let i = -1; i <= 1; i++){
+      const toe = new THREE.Mesh(new THREE.ConeGeometry(s*0.22, s*1.1, 4), clawMat);
+      toe.rotation.x = Math.PI/2 * 0.65;
+      toe.position.set(bv.x + i*s*0.4, bv.y - s*0.15, bv.z + s*0.55);
+      group.add(toe);
+    }
+  } else { // stub (universale)
+    const mesh = new THREE.Mesh(new THREE.CylinderGeometry(s*0.6, s*0.75, s, 10), matSolid(0x241633, 0x4bd6ff, 0.15));
+    mesh.position.copy(bv);
+    group.add(mesh);
+  }
+}
+
+// ----- assembla un'intera catena arto (braccio o gamba) partendo da un
+// punto di aggancio (spalla/anca), avanzando lungo la catena pezzo su
+// pezzo. Le giunture piegano in avanti la direzione di crescita da quel
+// punto in poi; gli ammortizzatori/segmenti no. I tendini sono
+// decorativi e si agganciano al pezzo strutturale appena precedente
+// senza allungare l'arto. Ritorna il gruppo 3D e il punto finale
+// raggiunto (serve per far toccare terra le gambe qualunque sia la
+// combinazione scelta). -----
+function buildLimbChain(pieces, origin, side){
+  const group = new THREE.Group();
+  const cursor = new THREE.Vector3(origin[0], origin[1], origin[2]);
+  const dir = new THREE.Vector3(0, -1, 0);
+  let lastSpan = null;
+
+  pieces.forEach(p => {
+    const v = p.visual;
+    if(p.slot === "limb_tendon"){
+      if(lastSpan) addTendon(group, p, lastSpan[0], lastSpan[1], side);
+      return;
+    }
+    const start = cursor.clone();
+    const end = start.clone().addScaledVector(dir, v.length);
+
+    if(p.slot === "limb_terminal"){
+      addTerminal(group, p, start.toArray(), end.toArray());
+    } else if(p.slot === "limb_joint"){
+      addJoint(group, p, start.toArray(), end.toArray());
+      dir.applyAxisAngle(new THREE.Vector3(1, 0, 0), THREE.MathUtils.degToRad(v.bend_deg));
+    } else if(p.slot === "limb_actuator"){
+      addActuator(group, p, start.toArray(), end.toArray());
+    } else {
+      addSegment(group, p, start.toArray(), end.toArray());
+    }
+    lastSpan = [start.toArray(), end.toArray()];
+    cursor.copy(end);
+  });
+
+  return { group, endPoint: cursor.toArray() };
 }
 
 // ----- BUSTO: forma la scocca centrale e restituisce i punti di
@@ -833,89 +1193,6 @@ function buildHeadGroup(head, neck){
   return g;
 }
 
-// ----- BRACCIA -----
-function buildArmsGroup(arms, shoulderL, shoulderR){
-  const group = new THREE.Group();
-  const mat = matSolid(0x1a1030, 0x4bd6ff, 0.15);
-  const v = arms.visual;
-  const upperLen = v.upper_len, foreLen = v.fore_len, r = v.radius, hand = v.hand;
-
-  function addArm(shoulder, side){
-    const elbow = [shoulder[0] + side*upperLen*0.1, shoulder[1] - upperLen, shoulder[2] + upperLen*0.05];
-    const wrist = [elbow[0] + side*foreLen*0.04, elbow[1] - foreLen, elbow[2] + foreLen*0.05];
-
-    const upperMesh = boneBetween(shoulder, elbow, r*0.95, r, mat);
-    addEdgeGlow(upperMesh, 0x4bd6ff);
-    group.add(upperMesh);
-
-    const foreMesh = boneBetween(elbow, wrist, r*0.7, r*0.85, mat);
-    addEdgeGlow(foreMesh, 0x4bd6ff);
-    group.add(foreMesh);
-
-    if(v.style === "claw"){
-      const clawMat = matSolid(0x3a1a1a, 0xff5a4d, 0.3);
-      [-1, 1].forEach(o => {
-        const blade = new THREE.Mesh(new THREE.ConeGeometry(hand*0.32, hand*1.3, 4), clawMat);
-        blade.rotation.x = Math.PI;
-        blade.position.set(wrist[0] + o*hand*0.32, wrist[1] - hand*0.55, wrist[2]);
-        group.add(blade);
-      });
-    } else {
-      const handGeo = v.style === "heavy"
-        ? new THREE.BoxGeometry(hand, hand, hand)
-        : new THREE.SphereGeometry(hand*0.62, 10, 8);
-      const handMesh = new THREE.Mesh(handGeo, matSolid(0x241633, 0x4bd6ff, 0.2));
-      handMesh.position.set(wrist[0], wrist[1] - hand*0.3, wrist[2]);
-      group.add(handMesh);
-    }
-  }
-
-  addArm(shoulderL, -1);
-  addArm(shoulderR, 1);
-  return group;
-}
-
-// ----- GAMBE -----
-function buildLegsGroup(legs, hipL, hipR){
-  const group = new THREE.Group();
-  const mat = matSolid(0x1a1030, 0x4bd6ff, 0.15);
-  const footMat = matSolid(0x241633, 0x4bd6ff, 0.15);
-  const v = legs.visual;
-  const thigh = v.thigh_len, shin = v.shin_len, r = v.radius, foot = v.foot, stance = v.stance;
-
-  function addLeg(origin, kneeOff, footOff){
-    const hip = origin;
-    const knee = [hip[0]+kneeOff[0], hip[1]-thigh, hip[2]+kneeOff[1]];
-    const footPt = [hip[0]+footOff[0], hip[1]-thigh-shin, hip[2]+footOff[1]];
-
-    const thighMesh = boneBetween(hip, knee, r*0.9, r, mat);
-    addEdgeGlow(thighMesh, 0x4bd6ff);
-    group.add(thighMesh);
-
-    const shinMesh = boneBetween(knee, footPt, r*0.7, r*0.85, mat);
-    addEdgeGlow(shinMesh, 0x4bd6ff);
-    group.add(shinMesh);
-
-    const footMesh = new THREE.Mesh(new THREE.BoxGeometry(foot, foot*0.32, foot*1.3), footMat);
-    footMesh.position.set(footPt[0], footPt[1]-foot*0.16, footPt[2]+foot*0.35);
-    group.add(footMesh);
-  }
-
-  if(v.style === "spider"){
-    const mid = [(hipL[0]+hipR[0])/2, hipL[1], hipL[2]];
-    [[-1,1],[1,1],[-1,-1],[1,-1]].forEach(([sx, sz]) => {
-      addLeg(mid, [sx*stance*0.6, sz*stance*0.55], [sx*stance*1.15, sz*stance*1.0]);
-    });
-  } else if(v.style === "digitigrade"){
-    addLeg(hipL, [0, thigh*0.4], [0, thigh*0.4 - shin*0.45]);
-    addLeg(hipR, [0, thigh*0.4], [0, thigh*0.4 - shin*0.45]);
-  } else {
-    addLeg(hipL, [0, 0.015], [0, 0.03]);
-    addLeg(hipR, [0, 0.015], [0, 0.03]);
-  }
-  return group;
-}
-
 const WEAPON_MOUNTS = {
   1: [[0, 0.18, 0.32]],
   2: [[-0.22, 0.13, 0.3], [0.22, 0.13, 0.3]],
@@ -968,23 +1245,35 @@ function buildCore(core){
 function buildHumanoidGroup(loadout, resolvePiece){
   const torsoPiece = resolvePiece(loadout.torso_id);
   const headPiece = resolvePiece(loadout.head_id);
-  const armsPiece = resolvePiece(loadout.arms_id);
-  const legsPiece = resolvePiece(loadout.legs_id);
-  if(!torsoPiece || !headPiece || !armsPiece || !legsPiece) return null;
+  if(!torsoPiece || !headPiece) return null;
+
+  const armLeftPieces = (loadout.arm_left || []).map(resolvePiece).filter(Boolean);
+  const armRightPieces = (loadout.arm_right || []).map(resolvePiece).filter(Boolean);
+  const legLeftPieces = (loadout.leg_left || []).map(resolvePiece).filter(Boolean);
+  const legRightPieces = (loadout.leg_right || []).map(resolvePiece).filter(Boolean);
 
   const rig = new THREE.Group();
   const { group: torsoGroup, anchors } = buildTorsoPart(torsoPiece);
   rig.add(torsoGroup);
   rig.add(buildHeadGroup(headPiece, anchors.neck));
-  rig.add(buildArmsGroup(armsPiece, anchors.shoulderL, anchors.shoulderR));
-  rig.add(buildLegsGroup(legsPiece, anchors.hipL, anchors.hipR));
 
-  // Il robot deve stare "in piedi" a terra qualunque combinazione di
-  // busto/gambe venga scelta: alziamo l'intero rig di un'altezza pari
-  // alla lunghezza delle gambe + meta' busto (le anche stanno sotto il
-  // centro del busto, vedi buildTorsoPart).
-  const standHeight = torsoPiece.visual.dims[1]/2 + legsPiece.visual.thigh_len
-    + legsPiece.visual.shin_len + legsPiece.visual.foot*0.3;
+  const armL = buildLimbChain(armLeftPieces, anchors.shoulderL, -1);
+  rig.add(armL.group);
+  const armR = buildLimbChain(armRightPieces, anchors.shoulderR, 1);
+  rig.add(armR.group);
+  const legL = buildLimbChain(legLeftPieces, anchors.hipL, -1);
+  rig.add(legL.group);
+  const legR = buildLimbChain(legRightPieces, anchors.hipR, 1);
+  rig.add(legR.group);
+
+  // Il robot deve stare "in piedi" a terra qualunque catena di gambe si
+  // costruisca: guardiamo il punto piu' basso raggiunto (endPoint) da
+  // ciascuna gamba e alziamo l'intero rig di conseguenza. Se una gamba
+  // e' ancora vuota/incompleta (in costruzione nell'editor) il suo
+  // endPoint resta all'anca: va bene, il robot "galleggera'" finche' non
+  // la completi, e' solo un'anteprima.
+  const lowestY = Math.min(legL.endPoint[1], legR.endPoint[1], anchors.hipL[1], anchors.hipR[1]);
+  const standHeight = -lowestY + 0.01;
 
   const weapons = (loadout.weapon_ids || []).map(resolvePiece).filter(Boolean);
   const mounts = WEAPON_MOUNTS[weapons.length] || WEAPON_MOUNTS[2];

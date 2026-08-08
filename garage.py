@@ -122,58 +122,150 @@ PIECES = {
         "visual": {"style": "cyclops", "size": 0.16},
     },
 
-    # --- BRACCIA -------------------------------------------------------------
-    "arms_slim": {
-        "id": "arms_slim", "name": "Braccia Slim", "slot": "arms", "cost": 0,
+    # --- COMPONENTI ARTI: pezzi sciolti da incatenare liberamente per
+    # costruire braccia e gambe pezzo su pezzo (segmento -> giuntura/
+    # ammortizzatore -> segmento -> ... -> terminale). Vedi build_limb_chain
+    # per la logica di assemblaggio e validate_limb_chain per le regole.
+    #
+    # Campi comuni:
+    #   "length": quanto il pezzo fa avanzare la catena lungo l'arto (m).
+    #             I tendini hanno length 0: sono decorativi, si agganciano
+    #             al segmento strutturale precedente senza allungare l'arto.
+    #   "radius": spessore per il disegno 3D.
+    #   "bend_deg": SOLO su giunture/ammortizzatori: quanto piegano in
+    #               avanti la direzione dell'arto da quel punto in poi.
+    #   "kind": SOLO sui terminali: "hand" | "foot" | "claw" | "universal".
+    #           "universal" va bene sia in fondo a un braccio che a una gamba.
+
+    # -- Segmenti (ossa) ------------------------------------------------
+    "seg_short_thin": {
+        "id": "seg_short_thin", "name": "Segmento Corto Sottile", "slot": "limb_segment", "cost": 0,
         "stats": {"weight": 0},
-        "visual": {"style": "slim", "upper_len": 0.26, "fore_len": 0.24, "radius": 0.04, "hand": 0.05},
+        "visual": {"style": "straight", "length": 0.14, "radius": 0.035},
     },
-    "arms_standard": {
-        "id": "arms_standard", "name": "Braccia Standard", "slot": "arms", "cost": 0,
+    "seg_short_armored": {
+        "id": "seg_short_armored", "name": "Segmento Corto Corazzato", "slot": "limb_segment", "cost": 0,
         "stats": {"weight": 0},
-        "visual": {"style": "standard", "upper_len": 0.28, "fore_len": 0.26, "radius": 0.055, "hand": 0.06},
+        "visual": {"style": "armored", "length": 0.16, "radius": 0.09},
     },
-    "arms_heavy": {
-        "id": "arms_heavy", "name": "Braccia Pesanti", "slot": "arms", "cost": 0,
+    "seg_med_thin": {
+        "id": "seg_med_thin", "name": "Segmento Medio Sottile", "slot": "limb_segment", "cost": 0,
         "stats": {"weight": 0},
-        "visual": {"style": "heavy", "upper_len": 0.24, "fore_len": 0.22, "radius": 0.095, "hand": 0.09},
+        "visual": {"style": "straight", "length": 0.22, "radius": 0.045},
     },
-    "arms_long": {
-        "id": "arms_long", "name": "Braccia Lunghe", "slot": "arms", "cost": 0,
+    "seg_med_standard": {
+        "id": "seg_med_standard", "name": "Segmento Medio Standard", "slot": "limb_segment", "cost": 0,
         "stats": {"weight": 0},
-        "visual": {"style": "long", "upper_len": 0.38, "fore_len": 0.36, "radius": 0.045, "hand": 0.055},
+        "visual": {"style": "straight", "length": 0.22, "radius": 0.065},
     },
-    "arms_claw": {
-        "id": "arms_claw", "name": "Braccia ad Artiglio", "slot": "arms", "cost": 0,
+    "seg_med_tapered": {
+        "id": "seg_med_tapered", "name": "Segmento Medio Rastremato", "slot": "limb_segment", "cost": 0,
         "stats": {"weight": 0},
-        "visual": {"style": "claw", "upper_len": 0.27, "fore_len": 0.25, "radius": 0.045, "hand": 0.07},
+        "visual": {"style": "tapered", "length": 0.24, "radius": 0.075},
+    },
+    "seg_long_thin": {
+        "id": "seg_long_thin", "name": "Segmento Lungo Sottile", "slot": "limb_segment", "cost": 0,
+        "stats": {"weight": 0},
+        "visual": {"style": "straight", "length": 0.32, "radius": 0.04},
+    },
+    "seg_long_armored": {
+        "id": "seg_long_armored", "name": "Segmento Lungo Corazzato", "slot": "limb_segment", "cost": 0,
+        "stats": {"weight": 0},
+        "visual": {"style": "armored", "length": 0.30, "radius": 0.09},
     },
 
-    # --- GAMBE -------------------------------------------------------------
-    "legs_slim": {
-        "id": "legs_slim", "name": "Gambe Slim", "slot": "legs", "cost": 0,
+    # -- Giunture ---------------------------------------------------------
+    "joint_hinge_small": {
+        "id": "joint_hinge_small", "name": "Cerniera Piccola", "slot": "limb_joint", "cost": 0,
         "stats": {"weight": 0},
-        "visual": {"style": "slim", "thigh_len": 0.28, "shin_len": 0.26, "radius": 0.045, "foot": 0.14, "stance": 0.16},
+        "visual": {"style": "hinge", "length": 0.05, "radius": 0.05, "bend_deg": 18},
     },
-    "legs_standard": {
-        "id": "legs_standard", "name": "Gambe Standard", "slot": "legs", "cost": 0,
+    "joint_hinge_large": {
+        "id": "joint_hinge_large", "name": "Cerniera Grande", "slot": "limb_joint", "cost": 0,
         "stats": {"weight": 0},
-        "visual": {"style": "standard", "thigh_len": 0.32, "shin_len": 0.30, "radius": 0.06, "foot": 0.16, "stance": 0.2},
+        "visual": {"style": "hinge", "length": 0.07, "radius": 0.075, "bend_deg": 32},
     },
-    "legs_heavy": {
-        "id": "legs_heavy", "name": "Gambe Pesanti", "slot": "legs", "cost": 0,
+    "joint_ball_small": {
+        "id": "joint_ball_small", "name": "Snodo Sferico Piccolo", "slot": "limb_joint", "cost": 0,
         "stats": {"weight": 0},
-        "visual": {"style": "heavy", "thigh_len": 0.28, "shin_len": 0.26, "radius": 0.10, "foot": 0.22, "stance": 0.28},
+        "visual": {"style": "ball", "length": 0.05, "radius": 0.05, "bend_deg": 22},
     },
-    "legs_digitigrade": {
-        "id": "legs_digitigrade", "name": "Gambe Digitigrade", "slot": "legs", "cost": 0,
+    "joint_ball_large": {
+        "id": "joint_ball_large", "name": "Snodo Sferico Grande", "slot": "limb_joint", "cost": 0,
         "stats": {"weight": 0},
-        "visual": {"style": "digitigrade", "thigh_len": 0.26, "shin_len": 0.30, "radius": 0.05, "foot": 0.20, "stance": 0.2},
+        "visual": {"style": "ball", "length": 0.07, "radius": 0.08, "bend_deg": 38},
     },
-    "legs_spider": {
-        "id": "legs_spider", "name": "Gambe Ragno (x4)", "slot": "legs", "cost": 0,
+
+    # -- Ammortizzatori (pistoni): come un segmento ma non piegano l'arto -
+    "actuator_small": {
+        "id": "actuator_small", "name": "Ammortizzatore Piccolo", "slot": "limb_actuator", "cost": 0,
         "stats": {"weight": 0},
-        "visual": {"style": "spider", "thigh_len": 0.26, "shin_len": 0.30, "radius": 0.04, "foot": 0.10, "stance": 0.34},
+        "visual": {"style": "piston", "length": 0.14, "radius": 0.045, "bend_deg": 0},
+    },
+    "actuator_standard": {
+        "id": "actuator_standard", "name": "Ammortizzatore Standard", "slot": "limb_actuator", "cost": 0,
+        "stats": {"weight": 0},
+        "visual": {"style": "piston", "length": 0.19, "radius": 0.06, "bend_deg": 0},
+    },
+    "actuator_heavy": {
+        "id": "actuator_heavy", "name": "Ammortizzatore Pesante", "slot": "limb_actuator", "cost": 0,
+        "stats": {"weight": 0},
+        "visual": {"style": "piston", "length": 0.24, "radius": 0.085, "bend_deg": 0},
+    },
+
+    # -- Tendini artificiali: decorativi, si agganciano al segmento --
+    # -- strutturale appena prima nella catena, non la allungano ------
+    "tendon_single": {
+        "id": "tendon_single", "name": "Tendine Singolo", "slot": "limb_tendon", "cost": 0,
+        "stats": {"weight": 0},
+        "visual": {"style": "single", "length": 0, "radius": 0.012},
+    },
+    "tendon_twin": {
+        "id": "tendon_twin", "name": "Tendini Doppi", "slot": "limb_tendon", "cost": 0,
+        "stats": {"weight": 0},
+        "visual": {"style": "twin", "length": 0, "radius": 0.01},
+    },
+    "tendon_braided": {
+        "id": "tendon_braided", "name": "Tendine Intrecciato", "slot": "limb_tendon", "cost": 0,
+        "stats": {"weight": 0},
+        "visual": {"style": "braided", "length": 0, "radius": 0.02},
+    },
+
+    # -- Terminali: chiudono la catena (mano/piede/artiglio/universale) --
+    "term_hand_round": {
+        "id": "term_hand_round", "name": "Mano Tonda", "slot": "limb_terminal", "cost": 0,
+        "stats": {"weight": 0},
+        "visual": {"style": "round_hand", "length": 0.07, "radius": 0.06, "kind": "hand"},
+    },
+    "term_hand_grip": {
+        "id": "term_hand_grip", "name": "Mano a Presa", "slot": "limb_terminal", "cost": 0,
+        "stats": {"weight": 0},
+        "visual": {"style": "grip_hand", "length": 0.08, "radius": 0.07, "kind": "hand"},
+    },
+    "term_claw_pincer": {
+        "id": "term_claw_pincer", "name": "Artiglio a Pinza", "slot": "limb_terminal", "cost": 0,
+        "stats": {"weight": 0},
+        "visual": {"style": "pincer", "length": 0.09, "radius": 0.05, "kind": "claw"},
+    },
+    "term_foot_flat": {
+        "id": "term_foot_flat", "name": "Piede Piatto", "slot": "limb_terminal", "cost": 0,
+        "stats": {"weight": 0},
+        "visual": {"style": "flat_foot", "length": 0.05, "radius": 0.09, "kind": "foot"},
+    },
+    "term_foot_pad": {
+        "id": "term_foot_pad", "name": "Piede a Cuscinetto", "slot": "limb_terminal", "cost": 0,
+        "stats": {"weight": 0},
+        "visual": {"style": "pad_foot", "length": 0.05, "radius": 0.08, "kind": "foot"},
+    },
+    "term_foot_talon": {
+        "id": "term_foot_talon", "name": "Piede Artigliato", "slot": "limb_terminal", "cost": 0,
+        "stats": {"weight": 0},
+        "visual": {"style": "talon", "length": 0.06, "radius": 0.06, "kind": "foot"},
+    },
+    "term_universal_stub": {
+        "id": "term_universal_stub", "name": "Terminale Universale", "slot": "limb_terminal", "cost": 0,
+        "stats": {"weight": 0},
+        "visual": {"style": "stub", "length": 0.05, "radius": 0.06, "kind": "universal"},
     },
 
     # --- ARMI: danno, cadenza di fuoco (colpi/sec), gittata (celle), peso -
@@ -215,9 +307,23 @@ PIECES = {
     },
 }
 
-SLOTS = ("torso", "head", "arms", "legs", "weapon", "armor", "core")
+SLOTS = (
+    "torso", "head",
+    "limb_segment", "limb_joint", "limb_actuator", "limb_tendon", "limb_terminal",
+    "weapon", "armor", "core",
+)
 
-# torso/head/arms/legs sono per ora SOLO estetici (nessuna 'stats' che
+# Slot che possono comparire in una catena arto (ordine libero, tranne il
+# terminale che deve stare sempre e solo in fondo).
+LIMB_CHAIN_SLOTS = ("limb_segment", "limb_joint", "limb_actuator", "limb_tendon")
+LIMB_STRUCTURAL_SLOTS = ("limb_segment", "limb_joint", "limb_actuator")  # contano ai fini della lunghezza minima
+MIN_CHAIN_LEN = 2      # almeno 1 pezzo strutturale + 1 terminale
+MAX_CHAIN_LEN = 8       # tetto di buon senso per non degenerare in 3D
+
+ARM_TERMINAL_KINDS = ("hand", "claw", "universal")
+LEG_TERMINAL_KINDS = ("foot", "universal")
+
+# torso/head/braccia/gambe sono per ora SOLO estetici (nessuna 'stats' che
 # concorra al calcolo sotto): la personalizzazione umanoide serve a dare
 # struttura/dimensione diversa al robot mentre decidiamo con calma come
 # le stat di combattimento dovranno dipendere da questi pezzi.
@@ -256,16 +362,61 @@ def catalog_snapshot():
 # Validazione loadout + stat derivate
 # ---------------------------------------------------------------------------
 
+def validate_limb_chain(chain_ids: list, limb_kind: str) -> list:
+    """Valida una catena di componenti per UN arto (braccio o gamba).
+    limb_kind: 'arm' o 'leg', determina quali terminali sono ammessi.
+    Ritorna la lista di pezzi risolti (nello stesso ordine). Solleva
+    GarageError con messaggio parlante al primo problema."""
+    label = "braccio" if limb_kind == "arm" else "gamba"
+
+    if not chain_ids or not isinstance(chain_ids, list):
+        raise GarageError(f"Manca la catena di componenti per un {label}.")
+    if len(chain_ids) < MIN_CHAIN_LEN:
+        raise GarageError(
+            f"Catena troppo corta per un {label}: serve almeno 1 pezzo strutturale "
+            f"(segmento/giuntura/ammortizzatore) + 1 terminale."
+        )
+    if len(chain_ids) > MAX_CHAIN_LEN:
+        raise GarageError(f"Catena troppo lunga per un {label}: massimo {MAX_CHAIN_LEN} pezzi.")
+
+    pieces = [get_piece(pid) for pid in chain_ids]
+
+    for i, p in enumerate(pieces):
+        is_last = (i == len(pieces) - 1)
+        if is_last:
+            if p["slot"] != "limb_terminal":
+                raise GarageError(f"L'ultimo pezzo di un {label} deve essere un terminale.")
+            allowed_kinds = ARM_TERMINAL_KINDS if limb_kind == "arm" else LEG_TERMINAL_KINDS
+            if p["visual"]["kind"] not in allowed_kinds:
+                raise GarageError(
+                    f"'{p['name']}' non puo' chiudere un {label} "
+                    f"(tipo terminale non compatibile)."
+                )
+        else:
+            if p["slot"] not in LIMB_CHAIN_SLOTS:
+                raise GarageError(
+                    f"'{p['name']}' non puo' stare nel mezzo di un {label}: "
+                    f"solo l'ultimo pezzo puo' essere un terminale."
+                )
+
+    structural_count = sum(1 for p in pieces if p["slot"] in LIMB_STRUCTURAL_SLOTS)
+    if structural_count < 1:
+        raise GarageError(
+            f"Un {label} ha bisogno di almeno un segmento, giuntura o ammortizzatore "
+            f"oltre al terminale (i tendini da soli sono solo decorativi)."
+        )
+
+    return pieces
+
+
 def validate_loadout(loadout: dict) -> dict:
-    """Valida un loadout (dict con torso_id/head_id/arms_id/legs_id/
-    weapon_ids/armor_id/core_id). Solleva GarageError con messaggio
-    parlante al primo problema trovato. Ritorna i pezzi risolti (dict di
-    oggetti pezzo)."""
+    """Valida un loadout (dict con torso_id/head_id, le 4 catene arto
+    arm_left/arm_right/leg_left/leg_right, weapon_ids/armor_id/core_id).
+    Solleva GarageError con messaggio parlante al primo problema trovato.
+    Ritorna i pezzi risolti (dict di oggetti pezzo / liste di pezzi)."""
 
     torso_id = loadout.get("torso_id")
     head_id = loadout.get("head_id")
-    arms_id = loadout.get("arms_id")
-    legs_id = loadout.get("legs_id")
     weapon_ids = loadout.get("weapon_ids") or []
     armor_id = loadout.get("armor_id")
     core_id = loadout.get("core_id")
@@ -274,10 +425,6 @@ def validate_loadout(loadout: dict) -> dict:
         raise GarageError("Manca il busto.")
     if not head_id:
         raise GarageError("Manca la testa.")
-    if not arms_id:
-        raise GarageError("Mancano le braccia.")
-    if not legs_id:
-        raise GarageError("Mancano le gambe.")
     if not weapon_ids:
         raise GarageError("Serve almeno un'arma.")
     if not isinstance(weapon_ids, list):
@@ -291,13 +438,10 @@ def validate_loadout(loadout: dict) -> dict:
     if head["slot"] != "head":
         raise GarageError(f"'{head_id}' non e' una testa.")
 
-    arms = get_piece(arms_id)
-    if arms["slot"] != "arms":
-        raise GarageError(f"'{arms_id}' non e' un paio di braccia.")
-
-    legs = get_piece(legs_id)
-    if legs["slot"] != "legs":
-        raise GarageError(f"'{legs_id}' non e' un paio di gambe.")
+    arm_left = validate_limb_chain(loadout.get("arm_left"), "arm")
+    arm_right = validate_limb_chain(loadout.get("arm_right"), "arm")
+    leg_left = validate_limb_chain(loadout.get("leg_left"), "leg")
+    leg_right = validate_limb_chain(loadout.get("leg_right"), "leg")
 
     weapons = []
     for wid in weapon_ids:
@@ -325,7 +469,9 @@ def validate_loadout(loadout: dict) -> dict:
             raise GarageError(f"'{core_id}' non e' un core.")
 
     return {
-        "torso": torso, "head": head, "arms": arms, "legs": legs,
+        "torso": torso, "head": head,
+        "arm_left": arm_left, "arm_right": arm_right,
+        "leg_left": leg_left, "leg_right": leg_right,
         "weapons": weapons, "armor": armor, "core": core,
     }
 
@@ -334,10 +480,10 @@ def compute_derived_stats(resolved: dict) -> dict:
     """A partire dai pezzi risolti (output di validate_loadout), calcola
     le statistiche finali del robot pronte per l'arena.
 
-    NOTA: torso/head/arms/legs sono per ora solo estetici (vedi commento
-    su SLOTS) quindi max_hp/speed/turn_rate partono da una base fissa
-    uguale per tutte le combinazioni umanoidi. Solo armi/armatura/core
-    influenzano le stat, esattamente come prima."""
+    NOTA: torso/head/braccia/gambe sono per ora solo estetici (vedi
+    commento su SLOTS) quindi max_hp/speed/turn_rate partono da una base
+    fissa uguale per tutte le combinazioni umanoidi. Solo armi/armatura/
+    core influenzano le stat, esattamente come prima."""
     weapons = resolved["weapons"]
     armor = resolved["armor"]
     core = resolved["core"]
@@ -383,8 +529,10 @@ CREATE TABLE IF NOT EXISTS robots (
     name         TEXT NOT NULL,
     torso_id     TEXT NOT NULL,
     head_id      TEXT NOT NULL,
-    arms_id      TEXT NOT NULL,
-    legs_id      TEXT NOT NULL,
+    arm_left     TEXT NOT NULL,   -- JSON array ordinata di piece id (catena)
+    arm_right    TEXT NOT NULL,   -- JSON array ordinata di piece id (catena)
+    leg_left     TEXT NOT NULL,   -- JSON array ordinata di piece id (catena)
+    leg_right    TEXT NOT NULL,   -- JSON array ordinata di piece id (catena)
     weapon_ids   TEXT NOT NULL,   -- JSON array di piece id
     armor_id     TEXT,
     core_id      TEXT,
@@ -395,11 +543,11 @@ CREATE TABLE IF NOT EXISTS robots (
 CREATE INDEX IF NOT EXISTS idx_robots_owner ON robots(owner_id);
 """
 # NOTA MIGRAZIONE: questo schema sostituisce le vecchie colonne
-# chassis_id/movement_id con torso_id/head_id/arms_id/legs_id. Su un DB
-# gia' esistente con la vecchia tabella 'robots', CREATE TABLE IF NOT
-# EXISTS non la altera: cancella/rinomina il vecchio file .db (o la
-# vecchia tabella) prima di ripartire, i robot salvati in precedenza
-# non sono comunque compatibili con il nuovo formato loadout.
+# arms_id/legs_id (un pezzo unico) con 4 catene libere arm_left/arm_right/
+# leg_left/leg_right (liste di piece id in JSON). Su un DB gia' esistente,
+# CREATE TABLE IF NOT EXISTS non altera la vecchia tabella: cancella/
+# rinomina il vecchio file .db prima di ripartire, i robot salvati in
+# precedenza non sono comunque compatibili con il nuovo formato loadout.
 
 
 def init_db(conn: sqlite3.Connection) -> None:
@@ -418,8 +566,10 @@ def _row_to_robot(row: sqlite3.Row) -> dict:
         "name": row["name"],
         "torso_id": row["torso_id"],
         "head_id": row["head_id"],
-        "arms_id": row["arms_id"],
-        "legs_id": row["legs_id"],
+        "arm_left": json.loads(row["arm_left"]),
+        "arm_right": json.loads(row["arm_right"]),
+        "leg_left": json.loads(row["leg_left"]),
+        "leg_right": json.loads(row["leg_right"]),
         "weapon_ids": json.loads(row["weapon_ids"]),
         "armor_id": row["armor_id"],
         "core_id": row["core_id"],
@@ -444,6 +594,10 @@ def save_robot(conn: sqlite3.Connection, owner_id: int, name: str, loadout: dict
     validate_loadout(loadout)  # solleva GarageError se qualcosa non torna
     now = time.time()
     weapon_ids_json = json.dumps(loadout.get("weapon_ids") or [])
+    arm_left_json = json.dumps(loadout["arm_left"])
+    arm_right_json = json.dumps(loadout["arm_right"])
+    leg_left_json = json.dumps(loadout["leg_left"])
+    leg_right_json = json.dumps(loadout["leg_right"])
 
     if robot_id is None:
         count = conn.execute(
@@ -454,10 +608,11 @@ def save_robot(conn: sqlite3.Connection, owner_id: int, name: str, loadout: dict
 
         cur = conn.execute(
             "INSERT INTO robots "
-            "(owner_id, name, torso_id, head_id, arms_id, legs_id, weapon_ids, armor_id, "
-            " core_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "(owner_id, name, torso_id, head_id, arm_left, arm_right, leg_left, leg_right, "
+            " weapon_ids, armor_id, core_id, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (owner_id, name, loadout["torso_id"], loadout["head_id"],
-             loadout["arms_id"], loadout["legs_id"],
+             arm_left_json, arm_right_json, leg_left_json, leg_right_json,
              weapon_ids_json, loadout.get("armor_id"), loadout.get("core_id"), now, now),
         )
         conn.commit()
@@ -472,11 +627,11 @@ def save_robot(conn: sqlite3.Connection, owner_id: int, name: str, loadout: dict
             raise GarageError("Questo robot non appartiene a questo account.")
 
         conn.execute(
-            "UPDATE robots SET name=?, torso_id=?, head_id=?, arms_id=?, legs_id=?, "
-            "weapon_ids=?, armor_id=?, core_id=?, updated_at=? WHERE id=?",
-            (name, loadout["torso_id"], loadout["head_id"], loadout["arms_id"],
-             loadout["legs_id"], weapon_ids_json,
-             loadout.get("armor_id"), loadout.get("core_id"), now, robot_id),
+            "UPDATE robots SET name=?, torso_id=?, head_id=?, arm_left=?, arm_right=?, "
+            "leg_left=?, leg_right=?, weapon_ids=?, armor_id=?, core_id=?, updated_at=? WHERE id=?",
+            (name, loadout["torso_id"], loadout["head_id"],
+             arm_left_json, arm_right_json, leg_left_json, leg_right_json,
+             weapon_ids_json, loadout.get("armor_id"), loadout.get("core_id"), now, robot_id),
         )
         conn.commit()
 
@@ -535,8 +690,10 @@ if __name__ == "__main__":
         loadout = {
             "torso_id": "torso_standard",
             "head_id": "head_visor",
-            "arms_id": "arms_standard",
-            "legs_id": "legs_standard",
+            "arm_left": ["seg_med_standard", "joint_hinge_small", "seg_med_thin", "term_hand_round"],
+            "arm_right": ["actuator_standard", "seg_med_tapered", "term_hand_grip"],
+            "leg_left": ["seg_long_thin", "joint_hinge_large", "seg_med_standard", "term_foot_flat"],
+            "leg_right": ["seg_long_thin", "joint_hinge_large", "seg_med_standard", "term_foot_flat"],
             "weapon_ids": ["weap_laser", "weap_mg"],
             "armor_id": "armor_light",
             "core_id": "core_regen",
@@ -557,6 +714,38 @@ if __name__ == "__main__":
         try:
             save_robot(conn, owner_id, "Errore2", dict(loadout, torso_id="torso_fantasma"))
             print("ERRORE: doveva fallire (pezzo inesistente)")
+        except GarageError as e:
+            print("OK, rifiutato:", e)
+
+        # Catena arto senza terminale in fondo -> deve fallire
+        try:
+            save_robot(conn, owner_id, "Errore3",
+                       dict(loadout, arm_left=["seg_med_standard", "seg_med_thin"]))
+            print("ERRORE: doveva fallire (arto senza terminale)")
+        except GarageError as e:
+            print("OK, rifiutato:", e)
+
+        # Terminale piede in fondo a un braccio -> deve fallire (kind incompatibile)
+        try:
+            save_robot(conn, owner_id, "Errore4",
+                       dict(loadout, arm_left=["seg_med_standard", "term_foot_flat"]))
+            print("ERRORE: doveva fallire (piede su un braccio)")
+        except GarageError as e:
+            print("OK, rifiutato:", e)
+
+        # Solo tendine + terminale, nessun pezzo strutturale -> deve fallire
+        try:
+            save_robot(conn, owner_id, "Errore5",
+                       dict(loadout, arm_left=["tendon_single", "term_hand_round"]))
+            print("ERRORE: doveva fallire (arto senza struttura)")
+        except GarageError as e:
+            print("OK, rifiutato:", e)
+
+        # Catena troppo lunga -> deve fallire
+        try:
+            save_robot(conn, owner_id, "Errore6",
+                       dict(loadout, arm_left=["seg_short_thin"] * 8 + ["term_hand_round"]))
+            print("ERRORE: doveva fallire (catena troppo lunga)")
         except GarageError as e:
             print("OK, rifiutato:", e)
 

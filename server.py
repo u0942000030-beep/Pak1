@@ -228,7 +228,8 @@ class GameServer:
             arena_key = uuid.uuid4().hex[:8]
             loadout = {
                 "torso_id": robot["torso_id"], "head_id": robot["head_id"],
-                "arms_id": robot["arms_id"], "legs_id": robot["legs_id"],
+                "arm_left": robot["arm_left"], "arm_right": robot["arm_right"],
+                "leg_left": robot["leg_left"], "leg_right": robot["leg_right"],
                 "weapon_ids": robot["weapon_ids"], "armor_id": robot["armor_id"], "core_id": robot["core_id"],
             }
             self.arena.add_robot(
